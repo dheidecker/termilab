@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "description": "Termilab — A modern SSH client for managing your servers",
-  "homepage": "https://github.com/elswsxx/termilab",
+  "homepage": "https://github.com/dheidecker/termilab",
   "main": "electron/main.js",
   "author": {
     "name": "Derek",
@@ -90,7 +90,7 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "elswsxx",
+      "owner": "dheidecker",
       "repo": "termilab"
     }
   }
