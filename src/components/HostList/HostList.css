@@ -1,0 +1,381 @@
+/* HostList.css — Termius-style visual host cards */
+
+.host-list {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.host-list-header {
+  padding: 16px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.host-list-header h2 {
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.host-search {
+  position: relative;
+}
+
+.host-search svg {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.host-search input {
+  width: 100%;
+  padding: 7px 10px 7px 32px;
+  font-size: var(--font-size-sm);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+}
+
+.host-list-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.host-list-action-btn {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: all var(--transition-base);
+  border: 1px solid var(--border-primary);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+}
+
+.host-list-action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.host-list-action-btn.primary {
+  background: var(--accent);
+  color: var(--text-inverse);
+  border-color: var(--accent);
+}
+
+.host-list-action-btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+.host-list-action-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Inline new group input */
+.host-new-group-input {
+  padding: 0;
+}
+
+.host-new-group-input input {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: var(--font-size-sm);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  border: 1px solid var(--accent);
+  color: var(--text-primary);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+}
+
+/* Scrollable content */
+.host-list-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+/* ─── Group ─── */
+.host-group {
+  margin-bottom: 4px;
+}
+
+.host-group-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  transition: background var(--transition-base);
+  gap: 6px;
+  user-select: none;
+}
+
+.host-group-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.host-group-header.drag-over {
+  background: rgba(88, 166, 255, 0.12);
+  border: 1px dashed var(--accent);
+  margin: -1px;
+}
+
+/* Host card dragging */
+.host-card[draggable] {
+  cursor: grab;
+}
+
+.host-card[draggable]:active {
+  cursor: grabbing;
+  opacity: 0.5;
+}
+
+.host-group-chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--text-tertiary);
+  transition: transform var(--transition-base);
+  flex-shrink: 0;
+}
+
+.host-group-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.host-group-color {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.host-group-label {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.host-group-count {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+.host-group-items {
+  padding-left: 4px;
+}
+
+/* ─── Host Card (Termius style) ─── */
+.host-card {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition-base);
+  gap: 10px;
+  margin-bottom: 2px;
+  position: relative;
+}
+
+.host-card:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.host-card:active {
+  background: rgba(255, 255, 255, 0.08);
+  transform: scale(0.99);
+}
+
+/* Avatar */
+.host-card-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  font-size: 12px;
+  font-weight: 700;
+  color: white;
+  letter-spacing: 0.5px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.host-card-status-dot {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-success);
+  border: 2px solid var(--bg-secondary);
+  box-shadow: 0 0 6px rgba(63, 185, 80, 0.5);
+}
+
+/* Info */
+.host-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.host-card-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.host-card-address {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+/* Hover action buttons */
+.host-card-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.host-card:hover .host-card-actions {
+  opacity: 1;
+}
+
+.host-card-action-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  transition: all var(--transition-fast);
+}
+
+.host-card-action-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.host-card-action-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Connected indicator glow on the card */
+.host-card.connected {
+  background: rgba(63, 185, 80, 0.04);
+}
+
+.host-card.connected:hover {
+  background: rgba(63, 185, 80, 0.08);
+}
+
+/* ─── Context menu ─── */
+.host-context-menu {
+  position: fixed;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: 4px;
+  min-width: 180px;
+  box-shadow: var(--shadow-lg);
+  z-index: 10000;
+  animation: fadeIn 0.1s ease;
+}
+
+.host-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  width: 100%;
+  text-align: left;
+  transition: all var(--transition-fast);
+}
+
+.host-context-menu-item:hover {
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+}
+
+.host-context-menu-item.danger:hover {
+  background: var(--color-danger-muted);
+  color: var(--color-danger);
+}
+
+.host-context-menu-item svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.host-context-separator {
+  height: 1px;
+  background: var(--border-primary);
+  margin: 4px 8px;
+}
+
+/* ─── Empty state ─── */
+.host-list-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  text-align: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.host-list-empty svg {
+  width: 48px;
+  height: 48px;
+  color: var(--text-tertiary);
+  opacity: 0.5;
+}
+
+.host-list-empty p {
+  font-size: var(--font-size-sm);
+  color: var(--text-tertiary);
+  line-height: 1.6;
+}

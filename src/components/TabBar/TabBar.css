@@ -1,0 +1,209 @@
+/* TabBar.css */
+
+.tab-bar {
+  height: var(--tab-height);
+  min-height: var(--tab-height);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  display: flex;
+  align-items: stretch;
+  position: relative;
+}
+
+.tab-bar-tabs {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tab-bar-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  min-width: 120px;
+  max-width: 200px;
+  height: 100%;
+  cursor: pointer;
+  transition: all var(--transition-base);
+  border-right: 1px solid var(--border-secondary);
+  position: relative;
+  flex-shrink: 0;
+}
+
+.tab:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tab.active {
+  background: var(--bg-primary);
+}
+
+.tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+}
+
+.tab-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.tab.active .tab-icon {
+  color: var(--accent);
+}
+
+.tab-label {
+  flex: 1;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.tab.active .tab-label {
+  color: var(--text-primary);
+}
+
+.tab-close {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  opacity: 0;
+  transition: all var(--transition-base);
+  flex-shrink: 0;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.tab-close svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Add button */
+.tab-bar-add {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.tab-add-btn {
+  width: 34px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  transition: all var(--transition-base);
+}
+
+.tab-add-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tab-add-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Tab add dropdown */
+.tab-add-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  min-width: 200px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: 4px;
+  box-shadow: var(--shadow-lg);
+  z-index: 5000;
+  animation: fadeIn 0.1s ease;
+}
+
+.tab-add-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  width: 100%;
+  text-align: left;
+  transition: all var(--transition-fast);
+}
+
+.tab-add-dropdown-item:hover {
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+}
+
+.tab-add-dropdown-item svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* Tab context menu */
+.tab-context-menu {
+  position: fixed;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: 4px;
+  min-width: 160px;
+  box-shadow: var(--shadow-lg);
+  z-index: 10000;
+  animation: fadeIn 0.1s ease;
+}
+
+.tab-context-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 12px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+}
+
+.tab-context-menu-item:hover {
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+}
+
+.tab-context-menu-item.danger:hover {
+  background: var(--color-danger-muted);
+  color: var(--color-danger);
+}

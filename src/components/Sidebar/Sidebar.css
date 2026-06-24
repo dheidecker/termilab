@@ -1,0 +1,99 @@
+/* Sidebar.css */
+
+.sidebar {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0;
+  gap: 2px;
+  height: 100%;
+  z-index: 100;
+}
+
+.sidebar-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+}
+
+.sidebar-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  margin-top: auto;
+  padding-bottom: 4px;
+}
+
+.sidebar-btn {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  transition: all var(--transition-base);
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+.sidebar-btn:hover {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sidebar-btn.active {
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.sidebar-btn.active::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 0 3px 3px 0;
+}
+
+.sidebar-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Tooltip */
+.sidebar-btn .tooltip {
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 4px 10px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--transition-base);
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border-primary);
+  z-index: 1000;
+}
+
+.sidebar-btn:hover .tooltip {
+  opacity: 1;
+}

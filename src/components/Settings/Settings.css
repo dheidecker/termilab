@@ -1,0 +1,335 @@
+/* Settings.css */
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.settings-panel.full-page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 32px 24px;
+  overflow-y: auto;
+  height: 100%;
+  width: 100%;
+}
+
+.settings-header {
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.settings-header h2 {
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.settings-full-header {
+  margin-bottom: 24px;
+}
+
+.settings-full-header h2 {
+  font-size: var(--font-size-2xl);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.settings-full-header p {
+  font-size: var(--font-size-sm);
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+/* Section */
+.settings-section {
+  padding: 16px;
+  border-bottom: 1px solid var(--border-secondary);
+}
+
+.settings-panel.full-page .settings-section {
+  padding: 20px 0;
+}
+
+.settings-section-title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 14px;
+}
+
+.settings-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.settings-field:last-child {
+  margin-bottom: 0;
+}
+
+.settings-field-label {
+  flex: 1;
+}
+
+.settings-field-label span {
+  display: block;
+  font-size: var(--font-size-md);
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+
+.settings-field-label small {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.settings-field input[type="number"],
+.settings-field input[type="text"],
+.settings-field select {
+  width: 180px;
+  padding: 6px 10px;
+  font-size: var(--font-size-sm);
+}
+
+.settings-field input[type="number"] {
+  width: 100px;
+}
+
+/* Toggle / Checkbox */
+.settings-toggle {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  cursor: pointer;
+  transition: all var(--transition-base);
+  flex-shrink: 0;
+}
+
+.settings-toggle.active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.settings-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition: all var(--transition-base);
+}
+
+.settings-toggle.active::after {
+  left: 20px;
+  background: #fff;
+}
+
+/* Color picker */
+.settings-color-picker {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.settings-color-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.settings-color-swatch:hover {
+  transform: scale(1.15);
+}
+
+.settings-color-swatch.active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px var(--bg-primary);
+}
+
+/* Save bar */
+.settings-save-bar {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-primary);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-save-btn {
+  padding: 8px 24px;
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-size: var(--font-size-md);
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  transition: background var(--transition-base);
+}
+
+.settings-save-btn:hover {
+  background: var(--accent-hover);
+}
+
+/* Sync placeholder */
+.settings-sync-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  text-align: center;
+  gap: 12px;
+}
+
+.settings-sync-placeholder svg {
+  width: 48px;
+  height: 48px;
+  color: var(--text-tertiary);
+  opacity: 0.5;
+}
+
+.settings-sync-placeholder p {
+  font-size: var(--font-size-sm);
+  color: var(--text-tertiary);
+}
+
+/* About section */
+.settings-about {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+}
+
+.settings-about-logo svg {
+  width: 32px;
+  height: 32px;
+}
+
+.settings-about-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-about-version {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+/* Update section */
+.settings-update-section {
+  margin-top: 8px;
+}
+
+.settings-update-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-primary);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.settings-update-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.settings-update-btn.primary {
+  background: var(--accent);
+  color: var(--text-inverse);
+  border-color: var(--accent);
+}
+
+.settings-update-btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+.settings-update-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.settings-update-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.settings-update-status.success {
+  color: var(--color-success);
+}
+
+.settings-update-status.error {
+  color: var(--color-danger);
+}
+
+.settings-update-status svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.settings-update-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.settings-update-available {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-update-progress {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.settings-update-progress-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
