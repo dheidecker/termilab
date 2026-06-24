@@ -271,6 +271,25 @@ export default function TerminalView({ tab }) {
 
   }, [tab.sessionId, tab.connecting]); // Re-run when sessionId arrives
 
+  /* Apply terminal settings reactively (font size, cursor, etc.) */
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+
+    const newFontSize = termSettings.fontSize || 14;
+    const newFontFamily = termSettings.fontFamily || 'JetBrains Mono, Consolas, monospace';
+    const newCursorStyle = termSettings.cursorStyle || 'block';
+
+    if (term.options.fontSize !== newFontSize) term.options.fontSize = newFontSize;
+    if (term.options.fontFamily !== newFontFamily) term.options.fontFamily = newFontFamily;
+    if (term.options.cursorStyle !== newCursorStyle) term.options.cursorStyle = newCursorStyle;
+
+    /* Re-fit after font change */
+    requestAnimationFrame(() => {
+      try { fitAddonRef.current?.fit(); } catch (e) { /* ignore */ }
+    });
+  }, [termSettings.fontSize, termSettings.fontFamily, termSettings.cursorStyle]);
+
 
   /* Search handlers */
   const handleSearch = useCallback(() => {

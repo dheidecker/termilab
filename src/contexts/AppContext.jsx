@@ -221,6 +221,23 @@ export function AppProvider({ children }) {
     loadData();
   }, []);
 
+  /* Apply accent color to CSS variables when settings change */
+  useEffect(() => {
+    const accent = state.settings?.appearance?.accentColor;
+    if (accent) {
+      const root = document.documentElement;
+      root.style.setProperty('--accent', accent);
+      /* Generate lighter variant for hover */
+      const r = parseInt(accent.slice(1, 3), 16);
+      const g = parseInt(accent.slice(3, 5), 16);
+      const b = parseInt(accent.slice(5, 7), 16);
+      const lighter = `rgb(${Math.min(r + 30, 255)}, ${Math.min(g + 30, 255)}, ${Math.min(b + 30, 255)})`;
+      root.style.setProperty('--accent-hover', lighter);
+      root.style.setProperty('--accent-muted', `rgba(${r}, ${g}, ${b}, 0.15)`);
+      root.style.setProperty('--accent-subtle', `rgba(${r}, ${g}, ${b}, 0.08)`);
+    }
+  }, [state.settings?.appearance?.accentColor]);
+
   /* ── Action creators ── */
   const actions = {
     /* Hosts */

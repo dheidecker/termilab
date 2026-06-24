@@ -4,29 +4,28 @@ import { useApp } from '../../contexts/AppContext';
 import './SplitPane.css';
 
 /*
-  Layout tree structure:
+  Layout tree:
   - Leaf:   { type: 'terminal', tabId: 'xxx' }
   - Branch: { type: 'split', direction: 'horizontal'|'vertical', ratio: 0.5, children: [layout, layout] }
+
+  KEY DESIGN: All TerminalViews are rendered in a FLAT list (never unmounted).
+  The layout tree only creates empty "slots" with refs. A ResizeObserver tracks
+  slot positions and we overlay each terminal on its slot via absolute positioning.
 */
 
-/* Generate a unique pane id */
 let paneCounter = 0;
 function nextPaneId() {
   return `pane-${Date.now()}-${++paneCounter}`;
 }
 
-/* Create a new local terminal tab for a split pane */
-function createPaneTab() {
-  const id = nextPaneId();
-  return {
-    id,
-    type: 'local-terminal',
-    label: 'Local Terminal',
-    sessionId: `local-${id}`,
-  };
+/* Collect all tabIds from a layout tree */
+function collectTabIds(node) {
+  if (!node) return [];
+  if (node.type === 'terminal') return [node.tabId];
+  return [...collectTabIds(node.children[0]), ...collectTabIds(node.children[1])];
 }
 
-/* ─── Split Toolbar (appears on hover) ─── */
+/* ─── Pane Toolbar (hover controls) ─── */
 function PaneToolbar({ onSplitH, onSplitV, onClose, canClose }) {
   return (
     <div className="pane-toolbar">
@@ -56,19 +55,13 @@ function PaneToolbar({ onSplitH, onSplitV, onClose, canClose }) {
 
 /* ─── Draggable Divider ─── */
 function Divider({ direction, onDrag }) {
-  const dragging = useRef(false);
-
   const handleMouseDown = (e) => {
     e.preventDefault();
-    dragging.current = true;
     document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
     document.body.style.userSelect = 'none';
 
-    const handleMouseMove = (e) => {
-      if (dragging.current) onDrag(e);
-    };
+    const handleMouseMove = (ev) => onDrag(ev);
     const handleMouseUp = () => {
-      dragging.current = false;
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       window.removeEventListener('mousemove', handleMouseMove);
@@ -79,231 +72,235 @@ function Divider({ direction, onDrag }) {
     window.addEventListener('mouseup', handleMouseUp);
   };
 
+  return <div className={`split-divider ${direction}`} onMouseDown={handleMouseDown} />;
+}
+
+/* ─── SplitContainer: two children + draggable divider ─── */
+function SplitContainer({ direction, initialRatio, onRatioChange, children }) {
+  const [ratio, setRatio] = useState(initialRatio || 0.5);
+  const containerRef = useRef(null);
+  const isH = direction === 'horizontal';
+
+  const handleDrag = useCallback((e) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    let r = isH ? (e.clientX - rect.left) / rect.width : (e.clientY - rect.top) / rect.height;
+    r = Math.max(0.15, Math.min(0.85, r));
+    setRatio(r);
+    onRatioChange?.(r);
+  }, [isH, onRatioChange]);
+
+  const first = isH ? { width: `${ratio * 100}%`, height: '100%' } : { height: `${ratio * 100}%`, width: '100%' };
+  const second = isH ? { width: `${(1 - ratio) * 100}%`, height: '100%' } : { height: `${(1 - ratio) * 100}%`, width: '100%' };
+
   return (
-    <div
-      className={`split-divider ${direction}`}
-      onMouseDown={handleMouseDown}
-    />
+    <div ref={containerRef} className={`split-container ${direction}`}>
+      <div className="split-child" style={first}>{children[0]}</div>
+      <Divider direction={direction} onDrag={handleDrag} />
+      <div className="split-child" style={second}>{children[1]}</div>
+    </div>
   );
 }
 
-/* ─── Recursive SplitPane ─── */
-export default function SplitPane({ tab, layout: externalLayout, onLayoutChange }) {
-  /* If no external layout control, manage internally */
-  const [internalLayout, setInternalLayout] = useState({
-    type: 'terminal',
-    tabId: tab.id,
-  });
-
-  const layout = externalLayout || internalLayout;
-  const setLayout = onLayoutChange || setInternalLayout;
+/* ─── Main SplitPane Component ─── */
+export default function SplitPane({ tab }) {
   const { actions } = useApp();
 
-  /* Track extra pane tabs created by splits */
+  const [layout, setLayout] = useState({ type: 'terminal', tabId: tab.id });
   const [paneTabs, setPaneTabs] = useState({});
-  const containerRef = useRef(null);
+  const slotRefs = useRef({});
+  const rootRef = useRef(null);
+  const [slotRects, setSlotRects] = useState({});
+  const observerRef = useRef(null);
+  const rafRef = useRef(null);
 
-  /* Get or create a tab for a pane */
+  /* Get a tab object for a pane */
   const getTabForPane = useCallback((tabId) => {
     if (tabId === tab.id) return tab;
     return paneTabs[tabId] || null;
   }, [tab, paneTabs]);
 
-  /* Split a terminal pane */
+  /* All tab IDs currently in the layout */
+  const allTabIds = collectTabIds(layout);
+
+  /* ─── Measure slot positions ─── */
+  const measureSlots = useCallback(() => {
+    if (!rootRef.current) return;
+    const rootRect = rootRef.current.getBoundingClientRect();
+    const newRects = {};
+
+    for (const tabId of collectTabIds(layout)) {
+      const el = slotRefs.current[tabId];
+      if (el) {
+        const r = el.getBoundingClientRect();
+        newRects[tabId] = {
+          top: r.top - rootRect.top,
+          left: r.left - rootRect.left,
+          width: r.width,
+          height: r.height,
+        };
+      }
+    }
+    setSlotRects(prev => {
+      const prevStr = JSON.stringify(prev);
+      const newStr = JSON.stringify(newRects);
+      return prevStr === newStr ? prev : newRects;
+    });
+  }, [layout]);
+
+  /* Observe resize on all slots */
+  useEffect(() => {
+    if (observerRef.current) observerRef.current.disconnect();
+
+    const ro = new ResizeObserver(() => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(measureSlots);
+    });
+
+    observerRef.current = ro;
+
+    if (rootRef.current) ro.observe(rootRef.current);
+    for (const tabId of allTabIds) {
+      const el = slotRefs.current[tabId];
+      if (el) ro.observe(el);
+    }
+
+    /* Initial measure */
+    requestAnimationFrame(measureSlots);
+
+    return () => ro.disconnect();
+  }, [layout, allTabIds.join(','), measureSlots]);
+
+  /* ─── Split a pane ─── */
   const splitPane = useCallback((path, direction) => {
-    const newTab = createPaneTab();
+    const newTab = {
+      id: nextPaneId(),
+      type: 'local-terminal',
+      label: 'Terminal',
+      sessionId: `local-${Date.now()}`,
+    };
 
-    /* Add the new pane tab to internal tracking */
     setPaneTabs(prev => ({ ...prev, [newTab.id]: newTab }));
-
-    /* Add tab to global state — noSwitch prevents tab switching, hidden keeps it out of tab bar */
     actions.addTab({ ...newTab, noSwitch: true, hidden: true });
 
     setLayout(prev => {
       const clone = JSON.parse(JSON.stringify(prev));
 
       if (path.length === 0) {
-        /* Split the root */
         return {
-          type: 'split',
-          direction,
-          ratio: 0.5,
+          type: 'split', direction, ratio: 0.5,
           children: [clone, { type: 'terminal', tabId: newTab.id }],
         };
       }
 
-      /* Navigate to the target node */
       let node = clone;
-      for (let i = 0; i < path.length - 1; i++) {
-        node = node.children[path[i]];
-      }
+      for (let i = 0; i < path.length - 1; i++) node = node.children[path[i]];
       const idx = path[path.length - 1];
       const target = node.children[idx];
-
       node.children[idx] = {
-        type: 'split',
-        direction,
-        ratio: 0.5,
+        type: 'split', direction, ratio: 0.5,
         children: [target, { type: 'terminal', tabId: newTab.id }],
       };
-
       return clone;
     });
-  }, [setLayout, actions]);
+  }, [actions]);
 
-  /* Close a pane — replace parent split with sibling */
+  /* ─── Close a pane ─── */
   const closePane = useCallback((path) => {
-    if (path.length === 0) return; /* Can't close the root */
-
+    if (path.length === 0) return;
     setLayout(prev => {
       const clone = JSON.parse(JSON.stringify(prev));
-
       if (path.length === 1) {
-        /* Parent is root */
-        const siblingIdx = path[0] === 0 ? 1 : 0;
-        return clone.children[siblingIdx];
+        return clone.children[path[0] === 0 ? 1 : 0];
       }
-
-      /* Navigate to grandparent */
-      let grandparent = clone;
-      for (let i = 0; i < path.length - 2; i++) {
-        grandparent = grandparent.children[path[i]];
-      }
-      const parentIdx = path[path.length - 2];
-      const parent = grandparent.children[parentIdx];
-      const siblingIdx = path[path.length - 1] === 0 ? 1 : 0;
-      grandparent.children[parentIdx] = parent.children[siblingIdx];
-
+      let gp = clone;
+      for (let i = 0; i < path.length - 2; i++) gp = gp.children[path[i]];
+      const pi = path[path.length - 2];
+      const si = path[path.length - 1] === 0 ? 1 : 0;
+      gp.children[pi] = gp.children[pi].children[si];
       return clone;
     });
-  }, [setLayout]);
+  }, []);
 
-  /* Resize handler */
-  const handleDividerDrag = useCallback((path, direction, e) => {
-    if (!containerRef.current) return;
+  /* ─── Build tabId → path map ─── */
+  const buildPathMap = (node, path = []) => {
+    if (node.type === 'terminal') return { [node.tabId]: path };
+    return {
+      ...buildPathMap(node.children[0], [...path, 0]),
+      ...buildPathMap(node.children[1], [...path, 1]),
+    };
+  };
+  const pathMap = buildPathMap(layout);
 
-    setLayout(prev => {
-      const clone = JSON.parse(JSON.stringify(prev));
-      let node = clone;
-      for (const idx of path) {
-        node = node.children ? node.children[idx] : node;
-      }
-      /* Actually we need the split node, not the child */
-      let splitNode = clone;
-      for (let i = 0; i < path.length; i++) {
-        splitNode = splitNode;
-        break;
-      }
-      return clone;
-    });
-  }, [setLayout]);
-
-  /* Render layout recursively */
-  const renderLayout = (node, path = []) => {
+  /* ─── Render skeleton (empty slots, NO toolbars) ─── */
+  const renderSkeleton = (node, path = []) => {
     if (node.type === 'terminal') {
-      const paneTab = getTabForPane(node.tabId);
-      if (!paneTab) return <div className="pane-empty">Terminal not found</div>;
-
-      const isRoot = path.length === 0;
-
       return (
         <div className="pane-leaf">
-          <PaneToolbar
-            onSplitH={() => splitPane(path, 'horizontal')}
-            onSplitV={() => splitPane(path, 'vertical')}
-            onClose={() => closePane(path)}
-            canClose={!isRoot}
+          <div
+            className="pane-terminal-slot"
+            ref={el => { slotRefs.current[node.tabId] = el; }}
           />
-          <div className="pane-terminal-container">
-            <TerminalView tab={paneTab} />
-          </div>
         </div>
       );
     }
 
     if (node.type === 'split') {
-      const { direction, ratio, children } = node;
-      const isHorizontal = direction === 'horizontal';
-
       return (
         <SplitContainer
-          direction={direction}
-          initialRatio={ratio}
-          onRatioChange={(newRatio) => {
-            setLayout(prev => {
-              const clone = JSON.parse(JSON.stringify(prev));
-              let target = clone;
-              for (const idx of path) {
-                target = target.children[idx];
-              }
-              /* If path is empty, target is clone itself */
-              if (path.length === 0) {
-                clone.ratio = newRatio;
-              } else {
-                target.ratio = newRatio;
-              }
-              return clone;
-            });
+          direction={node.direction}
+          initialRatio={node.ratio}
+          onRatioChange={() => {
+            if (rafRef.current) cancelAnimationFrame(rafRef.current);
+            rafRef.current = requestAnimationFrame(measureSlots);
           }}
         >
-          {renderLayout(children[0], [...path, 0])}
-          {renderLayout(children[1], [...path, 1])}
+          {renderSkeleton(node.children[0], [...path, 0])}
+          {renderSkeleton(node.children[1], [...path, 1])}
         </SplitContainer>
       );
     }
-
     return null;
   };
 
-  return (
-    <div className="split-pane-root" ref={containerRef}>
-      {renderLayout(layout)}
-    </div>
-  );
-}
-
-/* ─── SplitContainer handles the actual split rendering and resize ─── */
-function SplitContainer({ direction, initialRatio, onRatioChange, children }) {
-  const [ratio, setRatio] = useState(initialRatio || 0.5);
-  const containerRef = useRef(null);
-  const isHorizontal = direction === 'horizontal';
-
-  const handleDrag = useCallback((e) => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-
-    let newRatio;
-    if (isHorizontal) {
-      newRatio = (e.clientX - rect.left) / rect.width;
-    } else {
-      newRatio = (e.clientY - rect.top) / rect.height;
-    }
-
-    newRatio = Math.max(0.15, Math.min(0.85, newRatio));
-    setRatio(newRatio);
-    onRatioChange?.(newRatio);
-  }, [isHorizontal, onRatioChange]);
-
-  const firstStyle = isHorizontal
-    ? { width: `${ratio * 100}%`, height: '100%' }
-    : { height: `${ratio * 100}%`, width: '100%' };
-
-  const secondStyle = isHorizontal
-    ? { width: `${(1 - ratio) * 100}%`, height: '100%' }
-    : { height: `${(1 - ratio) * 100}%`, width: '100%' };
+  const isMultiPane = allTabIds.length > 1;
 
   return (
-    <div
-      ref={containerRef}
-      className={`split-container ${direction}`}
-    >
-      <div className="split-child" style={firstStyle}>
-        {children[0]}
+    <div className="split-pane-root" ref={rootRef}>
+      {/* Skeleton: layout structure with empty slots */}
+      <div className="split-skeleton">
+        {renderSkeleton(layout)}
       </div>
-      <Divider direction={direction} onDrag={handleDrag} />
-      <div className="split-child" style={secondStyle}>
-        {children[1]}
-      </div>
+
+      {/* Terminal overlay layer: flat list, always mounted */}
+      {allTabIds.map(tabId => {
+        const paneTab = getTabForPane(tabId);
+        const rect = slotRects[tabId];
+        const panePath = pathMap[tabId] || [];
+        if (!paneTab) return null;
+
+        return (
+          <div
+            key={tabId}
+            className="split-terminal-overlay"
+            style={rect ? {
+              position: 'absolute',
+              top: rect.top,
+              left: rect.left,
+              width: rect.width,
+              height: rect.height,
+            } : { position: 'absolute', top: 0, left: 0, width: 0, height: 0, overflow: 'hidden' }}
+          >
+            <PaneToolbar
+              onSplitH={() => splitPane(panePath, 'horizontal')}
+              onSplitV={() => splitPane(panePath, 'vertical')}
+              onClose={() => closePane(panePath)}
+              canClose={isMultiPane}
+            />
+            <TerminalView tab={paneTab} />
+          </div>
+        );
+      })}
     </div>
   );
 }
