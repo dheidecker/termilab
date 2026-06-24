@@ -101,7 +101,7 @@ export default function TabBar() {
   return (
     <div className="tab-bar">
       <div className="tab-bar-tabs">
-        {tabs.map(tab => (
+        {tabs.filter(t => !t.hidden).map(tab => (
           <div
             key={tab.id}
             className={`tab ${tab.id === activeTabId ? 'active' : ''}`}

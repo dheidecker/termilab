@@ -128,8 +128,11 @@ function appReducer(state, action) {
     /* ── Tabs ── */
     case 'SET_TABS':
       return { ...state, tabs: action.payload };
-    case 'ADD_TAB':
-      return { ...state, tabs: [...state.tabs, action.payload], activeTabId: action.payload.id };
+    case 'ADD_TAB': {
+      const newTabs = [...state.tabs, action.payload];
+      const newActiveId = action.payload.noSwitch ? state.activeTabId : action.payload.id;
+      return { ...state, tabs: newTabs, activeTabId: newActiveId };
+    }
     case 'REMOVE_TAB': {
       const remaining = state.tabs.filter(t => t.id !== action.payload);
       let newActiveTabId = state.activeTabId;

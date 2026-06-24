@@ -6,6 +6,7 @@ import HostList from './components/HostList/HostList';
 import HostForm from './components/HostForm/HostForm';
 import TabBar from './components/TabBar/TabBar';
 import TerminalView from './components/Terminal/TerminalView';
+import SplitPane from './components/SplitPane/SplitPane';
 import SFTPExplorer from './components/SFTP/SFTPExplorer';
 import Snippets from './components/Snippets/Snippets';
 import KeyManager from './components/KeyManager/KeyManager';
@@ -64,13 +65,13 @@ function AppContent() {
   /* Render all terminal tabs (keep mounted for persistence) */
   const renderAllTerminals = () => {
     return tabs
-      .filter(t => t.type === 'terminal' || t.type === 'local-terminal')
+      .filter(t => (t.type === 'terminal' || t.type === 'local-terminal') && !t.hidden)
       .map(tab => (
         <div
           key={tab.id}
           style={{ display: tab.id === activeTabId ? 'flex' : 'none', flex: 1, minHeight: 0 }}
         >
-          <TerminalView tab={tab} />
+          <SplitPane tab={tab} />
         </div>
       ));
   };

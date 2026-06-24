@@ -1,0 +1,169 @@
+/* SplitPane.css — Tilix-style split terminal layout */
+
+.split-pane-root {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  width: 100%;
+  position: relative;
+}
+
+/* ─── Split Container ─── */
+.split-container {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  width: 100%;
+}
+
+.split-container.horizontal {
+  flex-direction: row;
+}
+
+.split-container.vertical {
+  flex-direction: column;
+}
+
+.split-child {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ─── Divider ─── */
+.split-divider {
+  flex-shrink: 0;
+  background: var(--border-primary);
+  transition: background 0.15s ease;
+  position: relative;
+  z-index: 5;
+}
+
+.split-divider:hover,
+.split-divider:active {
+  background: var(--accent);
+}
+
+.split-divider.horizontal {
+  width: 3px;
+  cursor: col-resize;
+}
+
+.split-divider.vertical {
+  height: 3px;
+  cursor: row-resize;
+}
+
+.split-divider::after {
+  content: '';
+  position: absolute;
+}
+
+.split-divider.horizontal::after {
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+
+.split-divider.vertical::after {
+  left: 0;
+  right: 0;
+  top: -3px;
+  bottom: -3px;
+}
+
+/* ─── Pane Leaf (terminal wrapper) ─── */
+.pane-leaf {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  position: relative;
+}
+
+.pane-terminal-container {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.pane-terminal-container .terminal-view {
+  flex: 1;
+}
+
+/* ─── Pane Toolbar (hover) ─── */
+.pane-toolbar {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  gap: 2px;
+  z-index: 10;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  background: rgba(13, 17, 23, 0.85);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  padding: 2px;
+  backdrop-filter: blur(8px);
+}
+
+.pane-leaf:hover > .pane-toolbar {
+  opacity: 1;
+}
+
+.pane-toolbar-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  transition: all 0.1s ease;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.pane-toolbar-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.pane-toolbar-btn.close:hover {
+  background: rgba(248, 81, 73, 0.2);
+  color: var(--color-danger);
+}
+
+.pane-toolbar-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ─── Active pane indicator ─── */
+.pane-leaf:focus-within {
+  outline: 1px solid rgba(88, 166, 255, 0.3);
+  outline-offset: -1px;
+}
+
+/* ─── Empty pane ─── */
+.pane-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+}
