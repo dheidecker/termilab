@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../contexts/AppContext';
+import { getThemeList } from '../../themes/terminal-themes';
 import './Settings.css';
 
 const ACCENT_COLORS = [
@@ -151,6 +152,38 @@ export default function Settings({ fullPage = false }) {
 
         {/* ═══ Terminal Tab ═══ */}
         {activeTab === 'terminal' && (
+          <>
+          <div className="settings-section">
+            <div className="settings-section-title">Color Theme</div>
+            <div className="theme-grid">
+              {getThemeList().map(theme => (
+                <button
+                  key={theme.id}
+                  className={`theme-card ${(settings.terminal?.theme || 'github-dark') === theme.id ? 'active' : ''}`}
+                  onClick={() => update('terminal.theme', theme.id)}
+                  title={theme.description}
+                >
+                  <div className="theme-preview" style={{ background: theme.colors.background }}>
+                    <span style={{ color: theme.colors.green }}>$</span>
+                    <span style={{ color: theme.colors.foreground }}> echo </span>
+                    <span style={{ color: theme.colors.yellow }}>"hello"</span>
+                    <br/>
+                    <span style={{ color: theme.colors.blue }}>user</span>
+                    <span style={{ color: theme.colors.foreground }}>@</span>
+                    <span style={{ color: theme.colors.magenta }}>host</span>
+                    <span style={{ color: theme.colors.cursor }}>█</span>
+                  </div>
+                  <div className="theme-colors">
+                    {[theme.colors.red, theme.colors.green, theme.colors.yellow, theme.colors.blue, theme.colors.magenta, theme.colors.cyan].map((c, i) => (
+                      <span key={i} className="theme-dot" style={{ background: c }} />
+                    ))}
+                  </div>
+                  <span className="theme-name">{theme.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="settings-section">
             <div className="settings-section-title">Terminal Preferences</div>
 
@@ -224,6 +257,7 @@ export default function Settings({ fullPage = false }) {
               />
             </div>
           </div>
+          </>
         )}
 
         {/* ═══ Appearance Tab ═══ */}
