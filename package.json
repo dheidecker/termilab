@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.4.0",
   "description": "Termilab — A modern SSH client for managing your servers",
+  "license": "MIT",
   "homepage": "https://github.com/dheidecker/termilab",
   "main": "electron/main.js",
   "author": {
