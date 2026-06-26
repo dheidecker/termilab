@@ -321,6 +321,14 @@ export function AppProvider({ children }) {
       }
     }, []),
 
+    pasteKey: useCallback(async ({ name, privateKeyContent }) => {
+      if (hasApi()) {
+        const result = await api().store.pasteKey({ name, privateKeyContent });
+        if (result?.key) dispatch({ type: 'ADD_KEY', payload: result.key });
+        return result?.key;
+      }
+    }, []),
+
     deleteKey: useCallback(async (id) => {
       if (hasApi()) await api().store.deleteKey(id);
       dispatch({ type: 'DELETE_KEY', payload: id });

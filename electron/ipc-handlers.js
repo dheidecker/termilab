@@ -1,5 +1,6 @@
 const { ipcMain, dialog, BrowserWindow } = require('electron');
 const path = require('path');
+const os = require('os');
 
 const sshService = require('./services/ssh-service');
 const sftpService = require('./services/sftp-service');
@@ -7,6 +8,7 @@ const storeService = require('./services/store-service');
 const keyService = require('./services/key-service');
 const portForwardService = require('./services/port-forward-service');
 const localShellService = require('./services/local-shell-service');
+const aiService = require('./services/ai-service');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -199,6 +201,12 @@ function registerIpcHandlers(mainWindow) {
     return { key };
   }));
 
+  ipcMain.handle('store:paste-key', wrapHandler(async (event, { name, privateKeyContent }) => {
+    if (!privateKeyContent || !privateKeyContent.trim()) throw new Error('No key content provided');
+    const key = await keyService.importFromContent(name, privateKeyContent);
+    return { key };
+  }));
+
   // ─── Store: Port Forwards ─────────────────────────────
 
   ipcMain.handle('store:get-port-forwards', wrapHandler(async () => {
@@ -323,6 +331,40 @@ function registerIpcHandlers(mainWindow) {
   mainWindow.on('unmaximize', () => {
     mainWindow.webContents.send('window:maximize-change', false);
   });
+
+  // ─── AI Assistant ─────────────────────────────────────────
+
+  ipcMain.handle('ai:chat', wrapHandler(async (event, { messages, terminalContext, apiKey, model, provider }) => {
+    const result = await aiService.chat({ apiKey, messages, terminalContext, model, provider });
+    return result;
+  }));
+
+  ipcMain.handle('ai:chat-stream', wrapHandler(async (event, { messages, terminalContext, apiKey, model, provider }) => {
+    const result = await aiService.chatStream({
+      apiKey, messages, terminalContext, model, provider,
+      onChunk: (text) => {
+        event.sender.send('ai:stream-chunk', text);
+      },
+    });
+    return result;
+  }));
+
+  ipcMain.handle('ai:clear', wrapHandler(async (event, conversationId) => {
+    aiService.clearConversation(conversationId);
+    return { cleared: true };
+  }));
+
+  // ─── System Info ──────────────────────────────────────────
+
+  ipcMain.handle('system:info', wrapHandler(async () => {
+    return {
+      platform: process.platform,
+      arch: process.arch,
+      hostname: os.hostname(),
+      username: os.userInfo().username,
+      shell: process.env.SHELL || 'unknown',
+    };
+  }));
 }
 
 /**
@@ -337,13 +379,15 @@ function removeIpcHandlers() {
     'store:get-groups', 'store:save-group', 'store:delete-group',
     'store:get-snippets', 'store:save-snippet', 'store:delete-snippet',
     'store:get-keys', 'store:save-key', 'store:delete-key',
-    'store:import-key', 'store:generate-key',
+    'store:import-key', 'store:generate-key', 'store:paste-key',
     'store:get-port-forwards', 'store:save-port-forward', 'store:delete-port-forward',
     'app:get-settings', 'app:save-settings',
     'port-forward:start', 'port-forward:stop',
     'local:spawn', 'local:kill',
     'dialog:open-file', 'dialog:save-file',
     'window:is-maximized',
+    'ai:chat', 'ai:chat-stream', 'ai:clear',
+    'system:info',
   ];
 
   for (const channel of channels) {

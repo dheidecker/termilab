@@ -9,7 +9,7 @@ import './TerminalView.css';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 
-export default function TerminalView({ tab }) {
+export default function TerminalView({ tab, onRegister }) {
   const { state } = useApp();
   const termRef = useRef(null);
   const containerRef = useRef(null);
@@ -81,6 +81,9 @@ export default function TerminalView({ tab }) {
     termRef.current = term;
 
     term.open(containerRef.current);
+
+    /* Register terminal for AI access */
+    if (onRegister) onRegister(tab.id, termRef, sessionIdRef);
 
     /* Fit after a small delay */
     requestAnimationFrame(() => {
@@ -313,6 +316,173 @@ export default function TerminalView({ tab }) {
     termRef.current?.focus();
   };
 
+  /* ─── AI inline state ─── */
+  const [aiMode, setAiMode] = useState(false);
+  const [aiInput, setAiInput] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiMessages, setAiMessages] = useState([]);
+  const [aiExpanded, setAiExpanded] = useState(false);
+  const aiInputRef = useRef(null);
+  const [aiAutoAnalyze, setAiAutoAnalyze] = useState(true);
+  const [chatHeight, setChatHeight] = useState(220);
+  const chatHeightRef = useRef(220);
+
+  const handleResizeStart = useCallback((e) => {
+    e.preventDefault();
+    let lastY = e.clientY;
+
+    const onMove = (ev) => {
+      const delta = lastY - ev.clientY; // positive = mouse moved up = chat bigger
+      lastY = ev.clientY;
+      const newH = Math.max(80, Math.min(600, chatHeightRef.current + delta));
+      chatHeightRef.current = newH;
+      setChatHeight(newH);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      fitAddonRef.current?.fit();
+    };
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, []);
+
+  const aiSettings = state.settings?.ai || {};
+  const aiProvider = aiSettings.provider || 'claude-api';
+  const aiApiKey = aiProvider === 'claude-api' ? (aiSettings.claudeApiKey || '')
+    : aiProvider === 'deepseek' ? (aiSettings.deepseekApiKey || '')
+    : aiProvider === 'openai' ? (aiSettings.openaiApiKey || '') : '';
+  const aiModel = aiProvider === 'claude-api' ? (aiSettings.claudeModel || 'claude-sonnet-4-20250514')
+    : aiProvider === 'deepseek' ? (aiSettings.deepseekModel || 'deepseek-chat')
+    : aiProvider === 'openai' ? (aiSettings.openaiModel || 'gpt-4o') : '';
+
+  const getTermContext = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return '';
+    const buffer = term.buffer?.active;
+    if (!buffer) return '';
+    const lines = [];
+    const start = Math.max(0, buffer.length - (aiSettings.contextLines || 100));
+    for (let i = start; i < buffer.length; i++) {
+      const line = buffer.getLine(i);
+      if (line) lines.push(line.translateToString(true));
+    }
+    return lines.join('\n');
+  }, [aiSettings.contextLines]);
+
+  const sendAiMessage = useCallback(async (msg) => {
+    if (!msg.trim()) return;
+    if (!aiApiKey) { setAiMessages(prev => [{ role: 'error', text: 'No API key configured. Go to Settings → AI Assistant.' }]); return; }
+
+    const newMsgs = [...aiMessages, { role: 'user', text: msg }];
+    setAiMessages(newMsgs);
+    setAiInput('');
+    setAiLoading(true);
+    setAiExpanded(true);
+
+    try {
+      const termContext = getTermContext();
+      const apiMsgs = newMsgs.filter(m => m.role === 'user' || m.role === 'assistant').map(m => ({ role: m.role, content: m.text }));
+
+      const hasStreamApi = window.electronAPI?.ai?.chatStream;
+      if (hasStreamApi) {
+        let streamText = '';
+        setAiMessages(prev => [...prev, { role: 'streaming', text: '' }]);
+
+        window.electronAPI.ai.onStreamChunk((chunk) => {
+          streamText += chunk;
+          setAiMessages(prev => {
+            const updated = [...prev];
+            const si = updated.findIndex(m => m.role === 'streaming');
+            if (si !== -1) updated[si] = { role: 'streaming', text: streamText };
+            return updated;
+          });
+        });
+
+        const result = await window.electronAPI.ai.chatStream({
+          messages: apiMsgs, terminalContext: termContext, apiKey: aiApiKey, model: aiModel, provider: aiProvider,
+        });
+
+        window.electronAPI.ai.removeStreamListeners();
+        setAiMessages(prev => {
+          const updated = prev.filter(m => m.role !== 'streaming');
+          return [...updated, { role: 'assistant', text: result.content, commands: result.commands || [] }];
+        });
+      } else {
+        const hasApi = window.electronAPI?.ai;
+        let response;
+        if (hasApi) {
+          response = await window.electronAPI.ai.chat({ messages: apiMsgs, terminalContext: termContext, apiKey: aiApiKey, model: aiModel, provider: aiProvider });
+        } else {
+          response = { content: 'Mock: try `uname -a`', commands: [] };
+        }
+        setAiMessages(prev => [...prev, { role: 'assistant', text: response.content, commands: response.commands || [] }]);
+      }
+    } catch (err) {
+      window.electronAPI?.ai?.removeStreamListeners?.();
+      setAiMessages(prev => [...prev.filter(m => m.role !== 'streaming'), { role: 'error', text: err.message }]);
+    } finally {
+      setAiLoading(false);
+    }
+  }, [aiMessages, aiApiKey, aiModel, aiProvider, getTermContext]);
+
+  const runCommand = (cmd) => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    if (isLocal) {
+      window.electronAPI?.localShell?.write(sid, cmd + '\n');
+    } else {
+      window.electronAPI?.ssh?.sendData(sid, cmd + '\n');
+    }
+    setAiMessages(prev => [...prev, { role: 'ran', text: cmd }]);
+    setTimeout(() => {
+      const output = getTermContext();
+      if (output) {
+        const lastLines = output.split('\n').slice(-20).join('\n');
+        setAiMessages(prev => [...prev, { role: 'output', text: lastLines }]);
+        if (aiAutoAnalyze) {
+          sendAiMessage(`I ran \`${cmd}\`. Output:\n\`\`\`\n${lastLines}\n\`\`\`\nAnalyze briefly. If errors, suggest fix. If ok, confirm.`);
+        }
+      }
+    }, 2000);
+  };
+
+  const aiScrollRef = useRef(null);
+  useEffect(() => {
+    aiScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [aiMessages, aiLoading]);
+
+  const toggleAi = () => {
+    setAiMode(!aiMode);
+    if (!aiMode) {
+      setTimeout(() => aiInputRef.current?.focus(), 50);
+    } else {
+      termRef.current?.focus();
+    }
+  };
+
+  const handleAiKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAiMessage(aiInput); }
+    if (e.key === 'Escape') { setAiMode(false); termRef.current?.focus(); }
+  };
+
+  const parseCommands = (text) => {
+    const blocks = [];
+    const regex = /```(?:bash:run|bash)\n([\s\S]*?)```/g;
+    let last = 0, m;
+    while ((m = regex.exec(text)) !== null) {
+      if (m.index > last) blocks.push({ type: 'text', content: text.slice(last, m.index) });
+      blocks.push({ type: 'cmd', content: m[1].trim() });
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) blocks.push({ type: 'text', content: text.slice(last) });
+    return blocks;
+  };
+
   /* Show loading overlay for SSH connecting state */
   if (!isLocal && (tab.connecting || (!tab.sessionId && !tab.error))) {
     return (
@@ -392,12 +562,118 @@ export default function TerminalView({ tab }) {
 
       <div className="terminal-wrapper" ref={containerRef} />
 
-      <div className="terminal-status">
-        <span className={`terminal-status-dot ${connected ? '' : 'disconnected'}`} />
-        <span>
-          {isLocal ? 'Local Shell' : (tab.label || 'SSH')}
-          {connected ? '' : ' — Disconnected'}
-        </span>
+      {/* ─── AI Response Panel ─── */}
+      {aiExpanded && aiMessages.length > 0 && (
+        <>
+        <div className="tai-resize-handle" onMouseDown={handleResizeStart}>
+          <div className="tai-resize-grip" />
+        </div>
+        <div className="tai-responses" style={{ height: chatHeight }}>
+          <div className="tai-responses-header">
+            <span>AI Chat</span>
+            <div className="tai-responses-actions">
+              <button onClick={() => { setAiMessages([]); setAiExpanded(false); }} title="Clear">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+              </button>
+              <button onClick={() => setAiExpanded(false)} title="Collapse">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+            </div>
+          </div>
+          <div className="tai-responses-body">
+            {aiMessages.map((msg, i) => (
+              <div key={i} className={`tai-msg tai-msg-${msg.role}`}>
+                {msg.role === 'user' && <div className="tai-user">{msg.text}</div>}
+                {msg.role === 'assistant' && (
+                  <div className="tai-assistant">
+                    {parseCommands(msg.text).map((b, j) =>
+                      b.type === 'cmd' ? (
+                        <div key={j} className="tai-cmd">
+                          <code>{b.content}</code>
+                          <button onClick={() => runCommand(b.content)}>
+                            <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            Run
+                          </button>
+                        </div>
+                      ) : (
+                        <span key={j} className="tai-text" dangerouslySetInnerHTML={{ __html: b.content.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br/>') }} />
+                      )
+                    )}
+                  </div>
+                )}
+                {msg.role === 'streaming' && (
+                  <div className="tai-assistant tai-streaming">
+                    <span className="tai-text" dangerouslySetInnerHTML={{ __html: msg.text.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br/>') }} />
+                    <span className="tai-cursor">▊</span>
+                  </div>
+                )}
+                {msg.role === 'ran' && <div className="tai-ran"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{width:12,height:12}}><polyline points="20 6 9 17 4 12"/></svg> Executed: <code>{msg.text}</code></div>}
+                {msg.role === 'output' && (
+                  <div className="tai-output">
+                    <div className="tai-output-label">Terminal Output</div>
+                    <pre>{msg.text}</pre>
+                  </div>
+                )}
+                {msg.role === 'error' && <div className="tai-error">{msg.text}</div>}
+              </div>
+            ))}
+            {aiLoading && <div className="tai-loading"><span/><span/><span/></div>}
+            <div ref={aiScrollRef} />
+          </div>
+        </div>
+        </>
+      )}
+
+      {/* ─── Bottom Bar: Status + AI ─── */}
+      <div className="terminal-bottom-bar">
+        <div className="terminal-status">
+          <span className={`terminal-status-dot ${connected ? '' : 'disconnected'}`} />
+          <span>
+            {isLocal ? 'Local Shell' : (tab.label || 'SSH')}
+            {connected ? '' : ' — Disconnected'}
+          </span>
+        </div>
+
+        {/* AI Input Bar */}
+        <div className={`tai-bar ${aiMode ? 'active' : ''}`}>
+          {aiMode ? (
+            <>
+              <div className="tai-label">AI</div>
+              <input
+                ref={aiInputRef}
+                className="tai-input"
+                placeholder="Ask AI anything... (Esc to go back)"
+                value={aiInput}
+                onChange={e => setAiInput(e.target.value)}
+                onKeyDown={handleAiKeyDown}
+              />
+              {aiMessages.length > 0 && !aiExpanded && (
+                <button className="tai-history-btn" onClick={() => setAiExpanded(true)} title="Show chat">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="18 15 12 9 6 15"/></svg>
+                </button>
+              )}
+              <button
+                className={`tai-auto-btn ${aiAutoAnalyze ? 'active' : ''}`}
+                onClick={() => setAiAutoAnalyze(!aiAutoAnalyze)}
+                title={aiAutoAnalyze ? 'Auto-analyze: ON — AI will analyze command output' : 'Auto-analyze: OFF'}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+                </svg>
+              </button>
+              <button className="tai-send" onClick={() => sendAiMessage(aiInput)} disabled={aiLoading || !aiInput.trim()}>
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+              </button>
+            </>
+          ) : (
+            <button className="tai-toggle" onClick={toggleAi} title="Ask AI (integrated)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+              </svg>
+              <span>AI</span>
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -45,6 +45,56 @@
   margin-top: 4px;
 }
 
+/* ─── Tab Navigation ─── */
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--border-primary);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.settings-tabs::-webkit-scrollbar { height: 0; }
+
+.settings-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+  margin-bottom: -1px;
+}
+
+.settings-tab:hover {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.settings-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.settings-tab svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.settings-save-btn.saved {
+  background: #3fb950;
+  border-color: #3fb950;
+}
+
 .settings-content {
   flex: 1;
   overflow-y: auto;
@@ -332,4 +382,64 @@
   background: var(--accent);
   border-radius: 2px;
   transition: width 0.3s ease;
+}
+
+/* ─── AI Settings ─── */
+.settings-api-key-row {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+}
+
+.settings-api-key-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-test-btn {
+  padding: 6px 14px;
+  background: var(--accent-muted);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.settings-test-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ─── Info Box ─── */
+.settings-info-box {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+  background: var(--accent-muted);
+  border: 1px solid rgba(88, 166, 255, 0.2);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.settings-info-box svg {
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.settings-info-box strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.settings-info-box p {
+  margin: 4px 0 0;
+  color: var(--text-tertiary);
 }

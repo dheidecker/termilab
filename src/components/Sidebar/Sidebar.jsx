@@ -71,6 +71,7 @@ const settingsItem = {
 
 export default function Sidebar() {
   const { state, actions } = useApp();
+  const { tabs, activeTabId } = state;
 
   return (
     <nav className="sidebar">
@@ -89,8 +90,15 @@ export default function Sidebar() {
       </div>
       <div className="sidebar-bottom">
         <button
-          className={`sidebar-btn ${state.activeSection === 'settings' ? 'active' : ''}`}
-          onClick={() => actions.setActiveSection('settings')}
+          className={`sidebar-btn ${tabs.some(t => t.type === 'settings') && activeTabId === tabs.find(t => t.type === 'settings')?.id ? 'active' : ''}`}
+          onClick={() => {
+            const existing = state.tabs.find(t => t.type === 'settings');
+            if (existing) {
+              actions.setActiveTab(existing.id);
+            } else {
+              actions.addTab({ id: 'settings-tab', type: 'settings', label: 'Settings' });
+            }
+          }}
           aria-label="Settings"
         >
           {settingsItem.icon}

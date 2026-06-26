@@ -7,8 +7,11 @@ export default function KeyManager() {
   const { keys } = state;
   const [activeId, setActiveId] = useState(null);
   const [showGenerate, setShowGenerate] = useState(false);
+  const [showPaste, setShowPaste] = useState(false);
   const [genForm, setGenForm] = useState({ label: '', type: 'ED25519', bits: '4096' });
+  const [pasteForm, setPasteForm] = useState({ name: '', content: '' });
   const [copied, setCopied] = useState(false);
+  const [pasteError, setPasteError] = useState('');
 
   const handleImport = async () => {
     try {
@@ -30,6 +33,21 @@ export default function KeyManager() {
       setGenForm({ label: '', type: 'ED25519', bits: '4096' });
     } catch (e) {
       console.error('Generate key failed:', e);
+    }
+  };
+
+  const handlePaste = async () => {
+    if (!pasteForm.content.trim()) return;
+    setPasteError('');
+    try {
+      await actions.pasteKey({
+        name: pasteForm.name.trim() || 'Pasted Key',
+        privateKeyContent: pasteForm.content,
+      });
+      setShowPaste(false);
+      setPasteForm({ name: '', content: '' });
+    } catch (e) {
+      setPasteError(e.message || 'Invalid key');
     }
   };
 
@@ -73,6 +91,13 @@ export default function KeyManager() {
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
             Generate
+          </button>
+          <button className="key-generate-btn" onClick={() => setShowPaste(true)}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/>
+              <rect x="8" y="2" width="8" height="4" rx="1"/>
+            </svg>
+            Paste
           </button>
         </div>
       </div>
@@ -181,6 +206,51 @@ export default function KeyManager() {
             <div className="key-generate-modal-footer">
               <button className="snippet-form-cancel" onClick={() => setShowGenerate(false)}>Cancel</button>
               <button className="snippet-form-save" onClick={handleGenerate} disabled={!genForm.label.trim()}>Generate</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Paste Key Modal */}
+      {showPaste && (
+        <div className="key-generate-overlay" onClick={(e) => e.target === e.currentTarget && setShowPaste(false)}>
+          <div className="key-generate-modal">
+            <div className="key-generate-modal-header">
+              <h3>Paste SSH Private Key</h3>
+              <button className="key-generate-modal-close" onClick={() => { setShowPaste(false); setPasteError(''); }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                  <line x1="6" y1="18" x2="18" y2="6" />
+                </svg>
+              </button>
+            </div>
+            <div className="key-generate-modal-body">
+              <div className="key-generate-group">
+                <label>Name</label>
+                <input
+                  type="text"
+                  placeholder="My Server Key"
+                  value={pasteForm.name}
+                  onChange={e => setPasteForm(f => ({ ...f, name: e.target.value }))}
+                  autoFocus
+                />
+              </div>
+              <div className="key-generate-group">
+                <label>Private Key Content</label>
+                <textarea
+                  className="key-paste-textarea"
+                  placeholder={"-----BEGIN OPENSSH PRIVATE KEY-----\n...paste your key here...\n-----END OPENSSH PRIVATE KEY-----"}
+                  value={pasteForm.content}
+                  onChange={e => { setPasteForm(f => ({ ...f, content: e.target.value })); setPasteError(''); }}
+                  rows={10}
+                  spellCheck={false}
+                />
+              </div>
+              {pasteError && <div className="key-paste-error">{pasteError}</div>}
+            </div>
+            <div className="key-generate-modal-footer">
+              <button className="snippet-form-cancel" onClick={() => { setShowPaste(false); setPasteError(''); }}>Cancel</button>
+              <button className="snippet-form-save" onClick={handlePaste} disabled={!pasteForm.content.trim()}>Save Key</button>
             </div>
           </div>
         </div>

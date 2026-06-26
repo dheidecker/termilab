@@ -84,6 +84,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     deleteKey: (id) => invoke('store:delete-key', id),
     importKey: () => invoke('store:import-key'),
     generateKey: (options) => invoke('store:generate-key', options),
+    pasteKey: (data) => invoke('store:paste-key', data),
 
     // Port Forwards (stored configs)
     getPortForwards: () => invoke('store:get-port-forwards'),
@@ -177,5 +178,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeStatusListener: () => {
       ipcRenderer.removeAllListeners('updater:status');
     },
+  },
+
+  // ─── AI Assistant ───────────────────────────────────────
+  ai: {
+    chat: (params) => invoke('ai:chat', params),
+    chatStream: (config) => invoke('ai:chat-stream', config),
+    onStreamChunk: (callback) => ipcRenderer.on('ai:stream-chunk', (_, text) => callback(text)),
+    removeStreamListeners: () => ipcRenderer.removeAllListeners('ai:stream-chunk'),
+    clear: (conversationId) => invoke('ai:clear', conversationId),
+  },
+
+  // ─── System Info ──────────────────────────────────────────
+  system: {
+    getInfo: () => invoke('system:info'),
   },
 });

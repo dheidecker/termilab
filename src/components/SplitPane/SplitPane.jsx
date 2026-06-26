@@ -103,7 +103,7 @@ function SplitContainer({ direction, initialRatio, onRatioChange, children }) {
 }
 
 /* ─── Main SplitPane Component ─── */
-export default function SplitPane({ tab }) {
+export default function SplitPane({ tab, registerTerminal }) {
   const { actions } = useApp();
 
   const [layout, setLayout] = useState({ type: 'terminal', tabId: tab.id });
@@ -297,7 +297,7 @@ export default function SplitPane({ tab }) {
               onClose={() => closePane(panePath)}
               canClose={isMultiPane}
             />
-            <TerminalView tab={paneTab} />
+            <TerminalView tab={paneTab} onRegister={registerTerminal} />
           </div>
         );
       })}

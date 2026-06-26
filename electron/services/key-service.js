@@ -147,6 +147,33 @@ class KeyService {
   }
 
   /**
+   * Import a key from pasted content (no file).
+   */
+  async importFromContent(name, privateKeyContent) {
+    const trimmed = privateKeyContent.trim();
+    if (!this._isValidPrivateKey(trimmed)) {
+      throw new Error('The pasted content does not appear to be a valid SSH private key. It should start with -----BEGIN ... PRIVATE KEY-----');
+    }
+
+    const keyType = this._detectKeyType(trimmed);
+    let fingerprint = null;
+    try {
+      fingerprint = this._computeFingerprint(trimmed);
+    } catch (_) {}
+
+    const key = {
+      name: name || 'Pasted Key',
+      type: keyType,
+      privateKey: trimmed,
+      publicKey: null,
+      fingerprint,
+      source: 'pasted',
+    };
+
+    return await storeService.saveKey(key);
+  }
+
+  /**
    * Get the full private key content for a key by ID.
    * Used internally when establishing SSH connections with a stored key.
    */

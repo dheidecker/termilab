@@ -30,6 +30,7 @@ function createWindow() {
       sandbox: false,
       webSecurity: true,
       spellcheck: false,
+      webviewTag: true,
     },
   });
 
@@ -67,8 +68,17 @@ function createWindow() {
 // ─── Auto-Updater ───────────────────────────────────────
 
 function setupAutoUpdater() {
-  // Only run auto-updater in packaged builds
-  if (process.env.VITE_DEV_SERVER_URL) return;
+  // Always register IPC handlers so Settings UI doesn't crash
+  const isDev = !!process.env.VITE_DEV_SERVER_URL;
+
+  if (isDev) {
+    // Dev mode: register stub handlers
+    ipcMain.handle('updater:version', () => app.getVersion());
+    ipcMain.handle('updater:check', async () => ({ success: false, error: 'Updates not available in dev mode' }));
+    ipcMain.handle('updater:download', async () => ({ success: false, error: 'Updates not available in dev mode' }));
+    ipcMain.handle('updater:install', () => {});
+    return;
+  }
 
   try {
     const { autoUpdater } = require('electron-updater');
