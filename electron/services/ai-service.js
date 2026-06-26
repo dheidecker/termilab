@@ -60,7 +60,7 @@ class AIService {
   /**
    * Send a message and get a response (supports Claude, DeepSeek, OpenAI)
    */
-  async chat({ apiKey, messages, terminalContext, model = 'claude-sonnet-4-20250514', provider = 'claude-api' }) {
+  async chat({ apiKey, messages, terminalContext, model = 'claude-opus-4.8', provider = 'claude-api' }) {
     if (!apiKey) throw new Error('API key not configured. Go to Settings → AI Assistant to add your API key.');
 
     const systemPrompt = this._buildSystemPrompt(terminalContext);
@@ -119,7 +119,7 @@ class AIService {
    * Calls onChunk(textFragment) for each piece of text received.
    * Returns a Promise that resolves with the full accumulated text + extracted commands.
    */
-  async chatStream({ apiKey, messages, terminalContext, model = 'claude-sonnet-4-20250514', provider = 'claude-api', onChunk }) {
+  async chatStream({ apiKey, messages, terminalContext, model = 'claude-opus-4.8', provider = 'claude-api', onChunk }) {
     if (!apiKey) throw new Error('API key not configured. Go to Settings → AI Assistant to add your API key.');
 
     const systemPrompt = this._buildSystemPrompt(terminalContext);

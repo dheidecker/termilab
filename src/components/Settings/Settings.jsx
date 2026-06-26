@@ -299,7 +299,8 @@ export default function Settings({ fullPage = false }) {
                             messages: [{ role: 'user', content: 'Say "Connected!" in one word' }],
                             terminalContext: '',
                             apiKey: key,
-                            model: settings.ai?.claudeModel || 'claude-sonnet-4-20250514',
+                            model: settings.ai?.claudeModel || 'claude-opus-4.8',
+                            provider: 'claude-api',
                           });
                           alert(res ? '✅ Connection successful!' : '❌ Failed');
                         } catch (err) {
@@ -315,12 +316,12 @@ export default function Settings({ fullPage = false }) {
                     <small>Claude model for assistance</small>
                   </div>
                   <select
-                    value={settings.ai?.claudeModel || 'claude-sonnet-4-20250514'}
+                    value={settings.ai?.claudeModel || 'claude-opus-4.8'}
                     onChange={e => update('ai.claudeModel', e.target.value)}
                   >
-                    <option value="claude-sonnet-4-20250514">Claude Sonnet 4 (Recommended)</option>
-                    <option value="claude-opus-4-20250514">Claude Opus 4</option>
-                    <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku (Fast)</option>
+                    <option value="claude-opus-4.8">Claude Opus 4.8 (Recommended)</option>
+                    <option value="claude-sonnet-4.6">Claude Sonnet 4.6</option>
+                    <option value="claude-haiku-4.5">Claude Haiku 4.5 (Fast)</option>
                   </select>
                 </div>
               </div>
@@ -349,7 +350,7 @@ export default function Settings({ fullPage = false }) {
                           await window.electronAPI?.ai?.chat({
                             messages: [{ role: 'user', content: 'Say "Connected!" in one word' }],
                             terminalContext: '', apiKey: key,
-                            model: settings.ai?.deepseekModel || 'deepseek-chat',
+                            model: settings.ai?.deepseekModel || 'deepseek-v4-pro',
                             provider: 'deepseek',
                           });
                           alert('✅ Connection successful!');
@@ -363,11 +364,11 @@ export default function Settings({ fullPage = false }) {
                     <small>DeepSeek model to use</small>
                   </div>
                   <select
-                    value={settings.ai?.deepseekModel || 'deepseek-chat'}
+                    value={settings.ai?.deepseekModel || 'deepseek-v4-pro'}
                     onChange={e => update('ai.deepseekModel', e.target.value)}
                   >
-                    <option value="deepseek-chat">DeepSeek Chat (V3)</option>
-                    <option value="deepseek-reasoner">DeepSeek Reasoner (R1)</option>
+                    <option value="deepseek-v4-pro">DeepSeek V4 Pro (Recommended)</option>
+                    <option value="deepseek-v4-flash">DeepSeek V4 Flash (Fast)</option>
                   </select>
                 </div>
               </div>
@@ -396,7 +397,7 @@ export default function Settings({ fullPage = false }) {
                           await window.electronAPI?.ai?.chat({
                             messages: [{ role: 'user', content: 'Say "Connected!" in one word' }],
                             terminalContext: '', apiKey: key,
-                            model: settings.ai?.openaiModel || 'gpt-4o',
+                            model: settings.ai?.openaiModel || 'gpt-5.5',
                             provider: 'openai',
                           });
                           alert('✅ Connection successful!');
@@ -410,12 +411,12 @@ export default function Settings({ fullPage = false }) {
                     <small>OpenAI model to use</small>
                   </div>
                   <select
-                    value={settings.ai?.openaiModel || 'gpt-4o'}
+                    value={settings.ai?.openaiModel || 'gpt-5.5'}
                     onChange={e => update('ai.openaiModel', e.target.value)}
                   >
-                    <option value="gpt-4o">GPT-4o (Recommended)</option>
-                    <option value="gpt-4o-mini">GPT-4o Mini (Fast)</option>
-                    <option value="o3">o3 (Reasoning)</option>
+                    <option value="gpt-5.5">GPT-5.5 (Recommended)</option>
+                    <option value="gpt-5.4">GPT-5.4</option>
+                    <option value="gpt-5.4-mini">GPT-5.4 Mini (Fast)</option>
                   </select>
                 </div>
               </div>

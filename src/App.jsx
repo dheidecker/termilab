@@ -12,6 +12,7 @@ import KeyManager from './components/KeyManager/KeyManager';
 import PortForwarding from './components/PortForwarding/PortForwarding';
 import Settings from './components/Settings/Settings';
 import WelcomeScreen from './components/WelcomeScreen/WelcomeScreen';
+import UpdateNotification from './components/UpdateNotification/UpdateNotification';
 import './App.css';
 
 function AppContent() {
@@ -110,6 +111,7 @@ export default function App() {
   return (
     <AppProvider>
       <AppContent />
+      <UpdateNotification />
     </AppProvider>
   );
 }

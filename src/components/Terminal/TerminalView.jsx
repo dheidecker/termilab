@@ -324,6 +324,14 @@ export default function TerminalView({ tab, onRegister }) {
   const [aiExpanded, setAiExpanded] = useState(false);
   const aiInputRef = useRef(null);
   const [aiAutoAnalyze, setAiAutoAnalyze] = useState(true);
+  const autoAnalyzeRef = useRef(true);
+  const toggleAutoAnalyze = useCallback(() => {
+    setAiAutoAnalyze(prev => {
+      const next = !prev;
+      autoAnalyzeRef.current = next;
+      return next;
+    });
+  }, []);
   const [chatHeight, setChatHeight] = useState(220);
   const chatHeightRef = useRef(220);
 
@@ -356,9 +364,28 @@ export default function TerminalView({ tab, onRegister }) {
   const aiApiKey = aiProvider === 'claude-api' ? (aiSettings.claudeApiKey || '')
     : aiProvider === 'deepseek' ? (aiSettings.deepseekApiKey || '')
     : aiProvider === 'openai' ? (aiSettings.openaiApiKey || '') : '';
-  const aiModel = aiProvider === 'claude-api' ? (aiSettings.claudeModel || 'claude-sonnet-4-20250514')
-    : aiProvider === 'deepseek' ? (aiSettings.deepseekModel || 'deepseek-chat')
-    : aiProvider === 'openai' ? (aiSettings.openaiModel || 'gpt-4o') : '';
+  const defaultModel = aiProvider === 'claude-api' ? (aiSettings.claudeModel || 'claude-opus-4.8')
+    : aiProvider === 'deepseek' ? (aiSettings.deepseekModel || 'deepseek-v4-pro')
+    : aiProvider === 'openai' ? (aiSettings.openaiModel || 'gpt-5.5') : '';
+  const [modelOverride, setModelOverride] = useState(null);
+  const aiModel = modelOverride || defaultModel;
+
+  const PROVIDER_MODELS = {
+    'claude-api': [
+      { value: 'claude-opus-4.8', label: 'Opus 4.8' },
+      { value: 'claude-sonnet-4.6', label: 'Sonnet 4.6' },
+      { value: 'claude-haiku-4.5', label: 'Haiku 4.5' },
+    ],
+    'deepseek': [
+      { value: 'deepseek-v4-pro', label: 'V4 Pro' },
+      { value: 'deepseek-v4-flash', label: 'V4 Flash' },
+    ],
+    'openai': [
+      { value: 'gpt-5.5', label: 'GPT-5.5' },
+      { value: 'gpt-5.4', label: 'GPT-5.4' },
+      { value: 'gpt-5.4-mini', label: '5.4 Mini' },
+    ],
+  };
 
   const getTermContext = useCallback(() => {
     const term = termRef.current;
@@ -412,6 +439,13 @@ export default function TerminalView({ tab, onRegister }) {
           const updated = prev.filter(m => m.role !== 'streaming');
           return [...updated, { role: 'assistant', text: result.content, commands: result.commands || [] }];
         });
+        // Auto mode: execute safe commands automatically
+        if (autoAnalyzeRef.current && result.commands?.length > 0) {
+          const safeCmds = result.commands.filter(c => !c.dangerous);
+          if (safeCmds.length > 0) {
+            setTimeout(() => safeCmds.forEach(c => runCommandRef.current(c.command)), 500);
+          }
+        }
       } else {
         const hasApi = window.electronAPI?.ai;
         let response;
@@ -430,7 +464,8 @@ export default function TerminalView({ tab, onRegister }) {
     }
   }, [aiMessages, aiApiKey, aiModel, aiProvider, getTermContext]);
 
-  const runCommand = (cmd) => {
+  const runCommandRef = useRef(null);
+  const runCommand = useCallback((cmd) => {
     const sid = sessionIdRef.current;
     if (!sid) return;
     if (isLocal) {
@@ -444,12 +479,13 @@ export default function TerminalView({ tab, onRegister }) {
       if (output) {
         const lastLines = output.split('\n').slice(-20).join('\n');
         setAiMessages(prev => [...prev, { role: 'output', text: lastLines }]);
-        if (aiAutoAnalyze) {
+        if (autoAnalyzeRef.current) {
           sendAiMessage(`I ran \`${cmd}\`. Output:\n\`\`\`\n${lastLines}\n\`\`\`\nAnalyze briefly. If errors, suggest fix. If ok, confirm.`);
         }
       }
     }, 2000);
-  };
+  }, [isLocal, getTermContext, sendAiMessage]);
+  runCommandRef.current = runCommand;
 
   const aiScrollRef = useRef(null);
   useEffect(() => {
@@ -590,10 +626,12 @@ export default function TerminalView({ tab, onRegister }) {
                       b.type === 'cmd' ? (
                         <div key={j} className="tai-cmd">
                           <code>{b.content}</code>
-                          <button onClick={() => runCommand(b.content)}>
-                            <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                            Run
-                          </button>
+                          {!aiAutoAnalyze && (
+                            <button onClick={() => runCommand(b.content)}>
+                              <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                              Run
+                            </button>
+                          )}
                         </div>
                       ) : (
                         <span key={j} className="tai-text" dangerouslySetInnerHTML={{ __html: b.content.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br/>') }} />
@@ -638,7 +676,16 @@ export default function TerminalView({ tab, onRegister }) {
         <div className={`tai-bar ${aiMode ? 'active' : ''}`}>
           {aiMode ? (
             <>
-              <div className="tai-label">AI</div>
+              <select
+                className="tai-model-select"
+                value={aiModel}
+                onChange={e => setModelOverride(e.target.value)}
+                title="Select AI model"
+              >
+                {(PROVIDER_MODELS[aiProvider] || []).map(m => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
               <input
                 ref={aiInputRef}
                 className="tai-input"
@@ -652,15 +699,19 @@ export default function TerminalView({ tab, onRegister }) {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="18 15 12 9 6 15"/></svg>
                 </button>
               )}
-              <button
-                className={`tai-auto-btn ${aiAutoAnalyze ? 'active' : ''}`}
-                onClick={() => setAiAutoAnalyze(!aiAutoAnalyze)}
-                title={aiAutoAnalyze ? 'Auto-analyze: ON — AI will analyze command output' : 'Auto-analyze: OFF'}
+              <select
+                className="tai-mode-select"
+                value={aiAutoAnalyze ? 'auto' : 'manual'}
+                onChange={e => {
+                  const isAuto = e.target.value === 'auto';
+                  setAiAutoAnalyze(isAuto);
+                  autoAnalyzeRef.current = isAuto;
+                }}
+                title="AI behavior mode"
               >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
-                </svg>
-              </button>
+                <option value="auto">Auto</option>
+                <option value="manual">Manual</option>
+              </select>
               <button className="tai-send" onClick={() => sendAiMessage(aiInput)} disabled={aiLoading || !aiInput.trim()}>
                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
               </button>
