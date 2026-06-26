@@ -60,6 +60,46 @@ export default function TerminalView({ tab, onRegister }) {
 
     term.open(containerRef.current);
 
+    /* ─── Copy / Paste support ─── */
+    term.attachCustomKeyEventHandler((ev) => {
+      // Ctrl+Shift+C → Copy selection
+      if (ev.ctrlKey && ev.shiftKey && ev.key === 'C' && ev.type === 'keydown') {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard.writeText(sel);
+        return false;
+      }
+      // Ctrl+Shift+V → Paste from clipboard
+      if (ev.ctrlKey && ev.shiftKey && ev.key === 'V' && ev.type === 'keydown') {
+        navigator.clipboard.readText().then(text => {
+          if (text) {
+            const sid = sessionIdRef.current;
+            if (isLocal) {
+              window.electronAPI?.localShell?.write(sid, text);
+            } else {
+              window.electronAPI?.ssh?.sendData(sid, text);
+            }
+          }
+        });
+        return false;
+      }
+      return true;
+    });
+
+    /* Right-click → paste */
+    containerRef.current.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      navigator.clipboard.readText().then(text => {
+        if (text) {
+          const sid = sessionIdRef.current;
+          if (isLocal) {
+            window.electronAPI?.localShell?.write(sid, text);
+          } else {
+            window.electronAPI?.ssh?.sendData(sid, text);
+          }
+        }
+      });
+    });
+
     /* Register terminal for AI access */
     if (onRegister) onRegister(tab.id, termRef, sessionIdRef);
 

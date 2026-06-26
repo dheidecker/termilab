@@ -66,6 +66,11 @@ export default function TabBar() {
 
   const handleCloseTab = useCallback(async (tabId) => {
     const tab = tabs.find(t => t.id === tabId);
+    // Confirm before closing active terminal/SSH sessions
+    if (tab?.sessionId && (tab.type === 'local-terminal' || tab.type === 'ssh')) {
+      const confirmed = window.confirm(`Close "${tab.label}"? Any running process will be terminated.`);
+      if (!confirmed) return;
+    }
     if (tab?.sessionId) {
       if (tab.type === 'local-terminal') {
         try {
