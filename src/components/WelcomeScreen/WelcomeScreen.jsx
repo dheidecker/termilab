@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import './WelcomeScreen.css';
 
@@ -10,6 +10,57 @@ export default function WelcomeScreen() {
   const recentHosts = hosts.slice(0, 5);
 
   const handleNewHost = () => actions.openHostForm();
+
+  /* Quick Connect */
+  const [quickConnect, setQuickConnect] = useState('');
+
+  const handleQuickConnect = () => {
+    const raw = quickConnect.trim();
+    if (!raw) return;
+
+    let username = '';
+    let hostname = '';
+    let port = 22;
+
+    // user@host:port
+    const colonMatch = raw.match(/^([^@]+)@([^:]+):(\d+)$/);
+    // user@host -p port
+    const flagMatch = raw.match(/^([^@]+)@(\S+)\s+-p\s+(\d+)$/);
+    // user@host
+    const simpleMatch = raw.match(/^([^@]+)@(\S+)$/);
+
+    if (colonMatch) {
+      username = colonMatch[1];
+      hostname = colonMatch[2];
+      port = parseInt(colonMatch[3], 10);
+    } else if (flagMatch) {
+      username = flagMatch[1];
+      hostname = flagMatch[2];
+      port = parseInt(flagMatch[3], 10);
+    } else if (simpleMatch) {
+      username = simpleMatch[1];
+      hostname = simpleMatch[2];
+    } else {
+      hostname = raw;
+      username = 'root';
+    }
+
+    const tempHost = {
+      id: crypto.randomUUID(),
+      label: `${username}@${hostname}`,
+      hostname,
+      username,
+      port,
+      authMethod: 'password',
+    };
+
+    actions.connectToHost(tempHost);
+    setQuickConnect('');
+  };
+
+  const handleQuickConnectKeyDown = (e) => {
+    if (e.key === 'Enter') handleQuickConnect();
+  };
 
   const handleLocalTerminal = () => {
     const tabId = crypto.randomUUID();
@@ -48,6 +99,31 @@ export default function WelcomeScreen() {
         A modern SSH client for managing your servers.
         Connect, explore, and automate — all in one place.
       </p>
+
+      {/* Quick Connect bar */}
+      <div className="quick-connect-bar">
+        <div className="quick-connect-input-wrapper">
+          <svg className="quick-connect-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="4 17 10 11 4 5" />
+            <line x1="12" y1="19" x2="20" y2="19" />
+          </svg>
+          <input
+            className="quick-connect-input"
+            type="text"
+            placeholder="user@hostname -p 22"
+            value={quickConnect}
+            onChange={(e) => setQuickConnect(e.target.value)}
+            onKeyDown={handleQuickConnectKeyDown}
+          />
+        </div>
+        <button className="quick-connect-btn" onClick={handleQuickConnect}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M5 12h14" />
+            <path d="M12 5l7 7-7 7" />
+          </svg>
+          Connect
+        </button>
+      </div>
 
       <div className="welcome-actions">
         <button className="welcome-action" onClick={handleLocalTerminal}>
@@ -120,19 +196,18 @@ export default function WelcomeScreen() {
         <div className="welcome-shortcuts-title">Keyboard Shortcuts</div>
 
         <div className="welcome-shortcut">
-          <span className="welcome-shortcut-label">Search in terminal</span>
+          <span className="welcome-shortcut-label">Search</span>
           <div className="welcome-shortcut-keys">
             <span className="welcome-shortcut-key">Ctrl</span>
-            <span className="welcome-shortcut-key">Shift</span>
             <span className="welcome-shortcut-key">F</span>
           </div>
         </div>
 
         <div className="welcome-shortcut">
-          <span className="welcome-shortcut-label">New local terminal</span>
+          <span className="welcome-shortcut-label">New terminal</span>
           <div className="welcome-shortcut-keys">
             <span className="welcome-shortcut-key">Ctrl</span>
-            <span className="welcome-shortcut-key">`</span>
+            <span className="welcome-shortcut-key">T</span>
           </div>
         </div>
 
@@ -149,14 +224,6 @@ export default function WelcomeScreen() {
           <div className="welcome-shortcut-keys">
             <span className="welcome-shortcut-key">Ctrl</span>
             <span className="welcome-shortcut-key">Tab</span>
-          </div>
-        </div>
-
-        <div className="welcome-shortcut">
-          <span className="welcome-shortcut-label">Settings</span>
-          <div className="welcome-shortcut-keys">
-            <span className="welcome-shortcut-key">Ctrl</span>
-            <span className="welcome-shortcut-key">,</span>
           </div>
         </div>
       </div>

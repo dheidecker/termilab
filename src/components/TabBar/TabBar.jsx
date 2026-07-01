@@ -39,7 +39,7 @@ function getTabIcon(tab) {
 
 export default function TabBar() {
   const { state, actions } = useApp();
-  const { tabs, activeTabId } = state;
+  const { tabs, activeTabId, broadcast } = state;
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
   const addRef = useRef(null);
@@ -111,15 +111,31 @@ export default function TabBar() {
 
   return (
     <div className="tab-bar">
+      {/* Broadcast active indicator */}
+      {broadcast && (
+        <div className="broadcast-indicator">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9" />
+            <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4" />
+            <circle cx="12" cy="12" r="2" />
+            <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4" />
+            <path d="M19.1 4.9C23 8.8 23 15.2 19.1 19.1" />
+          </svg>
+          <span>BROADCAST</span>
+        </div>
+      )}
       <div className="tab-bar-tabs">
         {tabs.filter(t => !t.hidden).map(tab => (
           <div
             key={tab.id}
-            className={`tab ${tab.id === activeTabId ? 'active' : ''}`}
+            className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.notify ? 'notify' : ''}`}
             onClick={() => actions.setActiveTab(tab.id)}
             onMouseDown={(e) => handleMouseDown(e, tab.id)}
             onContextMenu={(e) => handleContextMenu(e, tab)}
           >
+            {(tab.type === 'local-terminal' || tab.type === 'ssh') && (
+              <span className={`tab-status ${tab.sessionId ? 'connected' : 'disconnected'}`} />
+            )}
             {getTabIcon(tab)}
             <span className="tab-label">{tab.label}</span>
             <button
@@ -139,6 +155,22 @@ export default function TabBar() {
       </div>
 
       <div className="tab-bar-add" ref={addRef}>
+        <button
+          className={`broadcast-toggle-btn ${broadcast ? 'active' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            actions.toggleBroadcast();
+          }}
+          title={broadcast ? 'Disable Broadcast Input' : 'Enable Broadcast Input — type in all tabs at once'}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9" />
+            <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4" />
+            <circle cx="12" cy="12" r="2" />
+            <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4" />
+            <path d="M19.1 4.9C23 8.8 23 15.2 19.1 19.1" />
+          </svg>
+        </button>
         <button
           className="tab-add-btn"
           onClick={(e) => {

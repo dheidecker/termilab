@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { AppProvider, useApp } from './contexts/AppContext';
 import Titlebar from './components/Titlebar/Titlebar';
 import Sidebar from './components/Sidebar/Sidebar';
@@ -16,8 +16,65 @@ import UpdateNotification from './components/UpdateNotification/UpdateNotificati
 import './App.css';
 
 function AppContent() {
-  const { state } = useApp();
+  const { state, actions } = useApp();
   const { activeSection, tabs, activeTabId, loading, hostFormOpen } = state;
+
+  /* ─── Global Keyboard Shortcuts ─── */
+  useEffect(() => {
+    const handler = (e) => {
+      // Ctrl+T → New local terminal
+      if (e.ctrlKey && !e.shiftKey && e.key === 't') {
+        e.preventDefault();
+        const tabId = crypto.randomUUID();
+        actions.addTab({
+          id: tabId,
+          type: 'local-terminal',
+          label: 'Local Terminal',
+          sessionId: `local-${tabId}`,
+        });
+      }
+      // Ctrl+W → Close active tab
+      if (e.ctrlKey && !e.shiftKey && e.key === 'w') {
+        e.preventDefault();
+        if (activeTabId) {
+          const tab = tabs.find(t => t.id === activeTabId);
+          if (tab?.sessionId && (tab.type === 'local-terminal' || tab.type === 'ssh')) {
+            if (!window.confirm(`Close "${tab.label}"? Any running process will be terminated.`)) return;
+          }
+          if (tab?.sessionId) {
+            if (tab.type === 'local-terminal') {
+              window.electronAPI?.localShell?.kill(tab.sessionId).catch(() => {});
+            } else {
+              actions.disconnectSession(tab.sessionId);
+            }
+          }
+          actions.removeTab(activeTabId);
+        }
+      }
+      // Ctrl+Tab → Next tab
+      if (e.ctrlKey && !e.shiftKey && e.key === 'Tab') {
+        e.preventDefault();
+        const visible = tabs.filter(t => !t.hidden);
+        const idx = visible.findIndex(t => t.id === activeTabId);
+        if (visible.length > 0) {
+          const next = visible[(idx + 1) % visible.length];
+          actions.setActiveTab(next.id);
+        }
+      }
+      // Ctrl+Shift+Tab → Previous tab
+      if (e.ctrlKey && e.shiftKey && e.key === 'Tab') {
+        e.preventDefault();
+        const visible = tabs.filter(t => !t.hidden);
+        const idx = visible.findIndex(t => t.id === activeTabId);
+        if (visible.length > 0) {
+          const prev = visible[(idx - 1 + visible.length) % visible.length];
+          actions.setActiveTab(prev.id);
+        }
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [tabs, activeTabId, actions]);
 
   if (loading) {
     return (

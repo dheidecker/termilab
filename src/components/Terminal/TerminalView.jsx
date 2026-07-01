@@ -11,7 +11,7 @@ import './TerminalView.css';
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 
 export default function TerminalView({ tab, onRegister }) {
-  const { state } = useApp();
+  const { state, dispatch } = useApp();
   const termRef = useRef(null);
   const containerRef = useRef(null);
   const fitAddonRef = useRef(null);
@@ -22,6 +22,16 @@ export default function TerminalView({ tab, onRegister }) {
   const initializedRef = useRef(false);
   const sessionIdRef = useRef(null);
   const mountedRef = useRef(true);
+  const [isLogging, setIsLogging] = useState(false);
+  const logBufferRef = useRef([]);
+  const isLoggingRef = useRef(false);
+  const activeTabIdRef = useRef(state.activeTabId);
+  const broadcastRef = useRef(state.broadcast);
+  const tabsRef = useRef(state.tabs);
+
+  /* Keep broadcast & tabs refs in sync with state */
+  useEffect(() => { broadcastRef.current = state.broadcast; }, [state.broadcast]);
+  useEffect(() => { tabsRef.current = state.tabs; }, [state.tabs]);
 
   const isLocal = tab.type === 'local-terminal';
 
@@ -60,6 +70,13 @@ export default function TerminalView({ tab, onRegister }) {
 
     term.open(containerRef.current);
 
+    /* ─── Bell notification for inactive tabs ─── */
+    term.onBell(() => {
+      if (tab.id !== activeTabIdRef.current) {
+        dispatch({ type: 'TAB_NOTIFY', payload: tab.id });
+      }
+    });
+
     /* ─── Copy / Paste support ─── */
     term.attachCustomKeyEventHandler((ev) => {
       // Ctrl+Shift+C → Copy selection
@@ -80,6 +97,11 @@ export default function TerminalView({ tab, onRegister }) {
             }
           }
         });
+        return false;
+      }
+      // Ctrl+F → Search
+      if (ev.ctrlKey && !ev.shiftKey && ev.key === 'f' && ev.type === 'keydown') {
+        setShowSearch(true);
         return false;
       }
       return true;
@@ -127,6 +149,9 @@ export default function TerminalView({ tab, onRegister }) {
           }
           if (sid === sessionIdRef.current) {
             term.write(data);
+            if (isLoggingRef.current) {
+              logBufferRef.current.push(data);
+            }
           }
         });
 
@@ -174,6 +199,18 @@ export default function TerminalView({ tab, onRegister }) {
               if (sessionIdRef.current) {
                 window.electronAPI.localShell.write(sessionIdRef.current, data);
               }
+              /* Broadcast: forward input to all other terminal sessions */
+              if (broadcastRef.current) {
+                const currentSid = sessionIdRef.current;
+                tabsRef.current.forEach(otherTab => {
+                  if (!otherTab.sessionId || otherTab.sessionId === currentSid) return;
+                  if (otherTab.type === 'local-terminal') {
+                    window.electronAPI.localShell.write(otherTab.sessionId, data);
+                  } else if (otherTab.type === 'terminal' || otherTab.type === 'ssh') {
+                    window.electronAPI.ssh.sendData(otherTab.sessionId, data);
+                  }
+                });
+              }
             });
 
             /* Resize */
@@ -204,6 +241,9 @@ export default function TerminalView({ tab, onRegister }) {
         window.electronAPI.ssh.onData((sid, data) => {
           if (mountedRef.current && sid === sessionIdRef.current) {
             term.write(data);
+            if (isLoggingRef.current) {
+              logBufferRef.current.push(data);
+            }
           }
         });
 
@@ -224,6 +264,18 @@ export default function TerminalView({ tab, onRegister }) {
         term.onData((data) => {
           if (sessionIdRef.current) {
             window.electronAPI.ssh.sendData(sessionIdRef.current, data);
+          }
+          /* Broadcast: forward input to all other terminal sessions */
+          if (broadcastRef.current) {
+            const currentSid = sessionIdRef.current;
+            tabsRef.current.forEach(otherTab => {
+              if (!otherTab.sessionId || otherTab.sessionId === currentSid) return;
+              if (otherTab.type === 'local-terminal') {
+                window.electronAPI.localShell.write(otherTab.sessionId, data);
+              } else if (otherTab.type === 'terminal' || otherTab.type === 'ssh') {
+                window.electronAPI.ssh.sendData(otherTab.sessionId, data);
+              }
+            });
           }
         });
 
@@ -291,6 +343,11 @@ export default function TerminalView({ tab, onRegister }) {
     };
 
   }, [tab.sessionId, tab.connecting]); // Re-run when sessionId arrives
+
+  /* Keep activeTabIdRef in sync for the onBell closure */
+  useEffect(() => {
+    activeTabIdRef.current = state.activeTabId;
+  }, [state.activeTabId]);
 
   /* Apply terminal settings reactively (font size, cursor, etc.) */
   useEffect(() => {
@@ -688,6 +745,54 @@ export default function TerminalView({ tab, onRegister }) {
             {isLocal ? 'Local Shell' : (tab.label || 'SSH')}
             {connected ? '' : ' — Disconnected'}
           </span>
+        </div>
+
+        {/* ─── Session Log Controls ─── */}
+        <div className="session-log-controls">
+          <button
+            className={`session-log-toggle ${isLogging ? 'active' : ''}`}
+            onClick={() => {
+              const next = !isLogging;
+              setIsLogging(next);
+              isLoggingRef.current = next;
+              if (next) logBufferRef.current = [];
+            }}
+            title={isLogging ? 'Stop logging' : 'Start session logging'}
+          >
+            {isLogging && <span className="session-log-rec-dot" />}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/>
+              <line x1="16" y1="17" x2="8" y2="17"/>
+              <polyline points="10 9 9 9 8 9"/>
+            </svg>
+            <span>Log</span>
+          </button>
+          {isLogging && (
+            <button
+              className="session-log-save"
+              onClick={() => {
+                const text = logBufferRef.current.join('');
+                const blob = new Blob([text], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                const ts = new Date().toISOString().replace(/[:.]/g, '-');
+                a.href = url;
+                a.download = `session-${ts}.log`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              title="Save session log"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Save
+            </button>
+          )}
         </div>
 
         {/* AI Input Bar */}

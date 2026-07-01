@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { getThemeList } from '../../themes/terminal-themes';
 import './Settings.css';
@@ -18,12 +18,13 @@ const TABS = [
 ];
 
 export default function Settings({ fullPage = false }) {
-  const { state, actions } = useApp();
+  const { state, dispatch, actions } = useApp();
   const [settings, setSettings] = useState(state.settings);
   const [activeTab, setActiveTab] = useState('general');
   const [appVersion, setAppVersion] = useState('1.0.0');
   const [updateStatus, setUpdateStatus] = useState(null);
   const [saved, setSaved] = useState(false);
+  const importFileRef = useRef(null);
 
   useEffect(() => { setSettings(state.settings); }, [state.settings]);
 
@@ -59,6 +60,80 @@ export default function Settings({ fullPage = false }) {
     actions.saveSettings(settings);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleExportData = () => {
+    const data = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      hosts: state.hosts,
+      groups: state.groups,
+      snippets: state.snippets,
+      keys: state.keys,
+      portForwards: state.portForwards,
+      settings: state.settings,
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `termilab-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportData = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const data = JSON.parse(evt.target.result);
+        if (!data.hosts && !data.groups && !data.snippets && !data.settings) {
+          alert('Invalid backup file: no recognizable data found.');
+          return;
+        }
+        const counts = [
+          data.hosts?.length && `${data.hosts.length} hosts`,
+          data.groups?.length && `${data.groups.length} groups`,
+          data.snippets?.length && `${data.snippets.length} snippets`,
+          data.keys?.length && `${data.keys.length} keys`,
+          data.portForwards?.length && `${data.portForwards.length} port forwards`,
+          data.settings && 'settings',
+        ].filter(Boolean).join(', ');
+        const ok = window.confirm(
+          `Import will replace your current data with:\n${counts}\n\nThis cannot be undone. Continue?`
+        );
+        if (!ok) return;
+        if (data.hosts) dispatch({ type: 'SET_HOSTS', payload: data.hosts });
+        if (data.groups) dispatch({ type: 'SET_GROUPS', payload: data.groups });
+        if (data.snippets) dispatch({ type: 'SET_SNIPPETS', payload: data.snippets });
+        if (data.keys) dispatch({ type: 'SET_KEYS', payload: data.keys });
+        if (data.portForwards) dispatch({ type: 'SET_PORT_FORWARDS', payload: data.portForwards });
+        if (data.settings) {
+          dispatch({ type: 'SET_SETTINGS', payload: data.settings });
+          setSettings(data.settings);
+        }
+        /* Persist to Electron store if available */
+        if (window.electronAPI?.store) {
+          const store = window.electronAPI.store;
+          if (data.hosts) await store.saveHosts?.(data.hosts).catch(() => {});
+          if (data.groups) await store.saveGroups?.(data.groups).catch(() => {});
+          if (data.snippets) await store.saveSnippets?.(data.snippets).catch(() => {});
+          if (data.keys) await store.saveKeys?.(data.keys).catch(() => {});
+          if (data.portForwards) await store.savePortForwards?.(data.portForwards).catch(() => {});
+          if (data.settings) await store.saveSettings?.(data.settings).catch(() => {});
+        }
+        alert('✅ Data imported successfully!');
+      } catch (err) {
+        alert('❌ Failed to import: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+    // Reset so the same file can be re-selected
+    e.target.value = '';
   };
 
   return (
@@ -145,6 +220,47 @@ export default function Settings({ fullPage = false }) {
                   <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
                 </svg>
                 <p>Cloud sync is coming soon.<br />Your settings and hosts will sync across devices.</p>
+              </div>
+            </div>
+
+            <div className="settings-section">
+              <div className="settings-section-title">Data Management</div>
+
+              <div className="settings-field">
+                <div className="settings-field-label">
+                  <span>Export Data</span>
+                  <small>Download all hosts, groups, snippets, keys, port forwards and settings as a JSON backup file</small>
+                </div>
+                <button className="settings-test-btn" onClick={handleExportData}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14, marginRight: 6 }}>
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" y1="15" x2="12" y2="3" />
+                  </svg>
+                  Export
+                </button>
+              </div>
+
+              <div className="settings-field">
+                <div className="settings-field-label">
+                  <span>Import Data</span>
+                  <small>Restore from a previously exported JSON backup file</small>
+                </div>
+                <input
+                  ref={importFileRef}
+                  type="file"
+                  accept=".json"
+                  style={{ display: 'none' }}
+                  onChange={handleImportData}
+                />
+                <button className="settings-test-btn" onClick={() => importFileRef.current?.click()}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14, marginRight: 6 }}>
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                  Import
+                </button>
               </div>
             </div>
           </>

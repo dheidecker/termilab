@@ -53,6 +53,7 @@ const initialState = {
   loading: true,
   hostFormOpen: false,
   editingHost: null,
+  broadcast: false,
 };
 
 /* ── Reducer ── */
@@ -145,7 +146,16 @@ function appReducer(state, action) {
       return { ...state, tabs: remaining, activeTabId: newActiveTabId };
     }
     case 'SET_ACTIVE_TAB':
-      return { ...state, activeTabId: action.payload };
+      return {
+        ...state,
+        activeTabId: action.payload,
+        tabs: state.tabs.map(t => t.id === action.payload ? { ...t, notify: false } : t),
+      };
+    case 'TAB_NOTIFY':
+      return {
+        ...state,
+        tabs: state.tabs.map(t => t.id === action.payload ? { ...t, notify: true } : t),
+      };
     case 'UPDATE_TAB':
       return { ...state, tabs: state.tabs.map(t => t.id === action.payload.id ? { ...t, ...action.payload } : t) };
 
@@ -158,6 +168,10 @@ function appReducer(state, action) {
       return { ...state, hostFormOpen: true, editingHost: action.payload || null };
     case 'CLOSE_HOST_FORM':
       return { ...state, hostFormOpen: false, editingHost: null };
+
+    /* ── Broadcast ── */
+    case 'TOGGLE_BROADCAST':
+      return { ...state, broadcast: !state.broadcast };
 
     default:
       return state;
@@ -437,6 +451,9 @@ export function AppProvider({ children }) {
     /* Host form */
     openHostForm: useCallback((host) => dispatch({ type: 'OPEN_HOST_FORM', payload: host }), []),
     closeHostForm: useCallback(() => dispatch({ type: 'CLOSE_HOST_FORM' }), []),
+
+    /* Broadcast */
+    toggleBroadcast: useCallback(() => dispatch({ type: 'TOGGLE_BROADCAST' }), []),
 
     /* Open SFTP tab */
     openSFTPTab: useCallback(async (host) => {

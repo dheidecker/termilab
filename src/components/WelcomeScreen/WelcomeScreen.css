@@ -37,6 +37,97 @@
   line-height: 1.6;
 }
 
+/* Quick Connect bar — glassmorphism */
+.quick-connect-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 480px;
+  width: 100%;
+  margin-bottom: 36px;
+  padding: 6px 6px 6px 0;
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
+  transition: border-color var(--transition-base), box-shadow var(--transition-base);
+}
+
+.quick-connect-bar:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15), 0 4px 24px rgba(0, 0, 0, 0.25);
+}
+
+.quick-connect-input-wrapper {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 14px;
+}
+
+.quick-connect-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  transition: color var(--transition-base);
+}
+
+.quick-connect-bar:focus-within .quick-connect-icon {
+  color: var(--accent);
+}
+
+.quick-connect-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-mono);
+  padding: 8px 0;
+}
+
+.quick-connect-input::placeholder {
+  color: var(--text-tertiary);
+  opacity: 0.6;
+}
+
+.quick-connect-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: calc(var(--radius-xl) - 4px);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-base), transform var(--transition-base),
+    box-shadow var(--transition-base);
+}
+
+.quick-connect-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.quick-connect-btn:hover {
+  background: var(--accent-hover, var(--accent));
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
+}
+
+.quick-connect-btn:active {
+  transform: translateY(0);
+}
+
 /* Quick actions */
 .welcome-actions {
   display: flex;

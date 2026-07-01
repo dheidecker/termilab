@@ -559,3 +559,79 @@
   color: var(--text-primary);
   font-size: 12px;
 }
+
+/* ═══ Session Log Controls ═══ */
+.session-log-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.session-log-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  background: none;
+  border: 1px solid var(--border-primary);
+  border-radius: 12px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.session-log-toggle svg { width: 12px; height: 12px; }
+
+.session-log-toggle:hover {
+  border-color: var(--text-secondary);
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.session-log-toggle.active {
+  border-color: #f85149;
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.1);
+}
+
+.session-log-toggle.active:hover {
+  background: rgba(248, 81, 73, 0.18);
+}
+
+.session-log-rec-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f85149;
+  animation: session-log-pulse 1.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes session-log-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.session-log-save {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  background: rgba(63, 185, 80, 0.1);
+  border: 1px solid rgba(63, 185, 80, 0.3);
+  border-radius: 12px;
+  color: #3fb950;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.session-log-save svg { width: 12px; height: 12px; }
+
+.session-log-save:hover {
+  background: rgba(63, 185, 80, 0.2);
+  border-color: rgba(63, 185, 80, 0.5);
+}

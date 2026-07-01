@@ -335,6 +335,19 @@ export default function HostList({ sftpMode = false }) {
             </svg>
             Connect
           </button>
+          <button className="host-context-menu-item" onClick={() => {
+            if (contextMenu) {
+              // Open a second session to the same host
+              actions.connectToHost(contextMenu.host);
+            }
+          }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="3" width="20" height="7" rx="1.5" />
+              <rect x="2" y="14" width="20" height="7" rx="1.5" />
+              <line x1="12" y1="10" x2="12" y2="14" />
+            </svg>
+            New Session
+          </button>
           <button className="host-context-menu-item" onClick={ctxSftp}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2v11z" />

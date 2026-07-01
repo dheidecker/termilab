@@ -207,3 +207,135 @@
   background: var(--color-danger-muted);
   color: var(--color-danger);
 }
+
+/* Tab status indicator */
+.tab-status {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+
+.tab-status.connected {
+  background: #3fb950;
+  box-shadow: 0 0 4px rgba(63, 185, 80, 0.6);
+}
+
+.tab-status.disconnected {
+  background: #f85149;
+}
+
+/* ── Broadcast Toggle Button ── */
+.broadcast-toggle-btn {
+  width: 34px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  transition: all var(--transition-base);
+  position: relative;
+}
+
+.broadcast-toggle-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.broadcast-toggle-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.broadcast-toggle-btn.active {
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.broadcast-toggle-btn.active:hover {
+  background: var(--accent-muted);
+}
+
+.broadcast-toggle-btn.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+}
+
+/* ── Broadcast Indicator Bar ── */
+.broadcast-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 22px;
+  background: var(--accent-muted);
+  border-bottom: 1px solid var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  z-index: 100;
+  animation: broadcastSlideIn 0.2s ease;
+}
+
+.broadcast-indicator svg {
+  width: 12px;
+  height: 12px;
+  color: var(--accent);
+}
+
+.broadcast-indicator span {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+@keyframes broadcastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+
+/* Bell notification indicator */
+.tab.notify::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 6px;
+  transform: translateY(-50%);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f0883e;
+  box-shadow: 0 0 6px rgba(240, 136, 62, 0.7);
+  animation: bell-pulse 1.5s ease-in-out infinite;
+  z-index: 1;
+}
+
+.tab.notify {
+  padding-left: 20px;
+}
+
+.tab.notify .tab-label {
+  color: #f0883e;
+}
+
+@keyframes bell-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 4px rgba(240, 136, 62, 0.5); }
+  50% { opacity: 0.5; box-shadow: 0 0 10px rgba(240, 136, 62, 0.9); }
+}
