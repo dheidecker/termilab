@@ -235,22 +235,60 @@ export function AppProvider({ children }) {
     loadData();
   }, []);
 
-  /* Apply accent color to CSS variables when settings change */
+  const appTheme = state.settings?.appearance?.theme === 'light' ? 'light' : 'dark';
+  const accentColor = state.settings?.appearance?.accentColor;
+
+  /**
+   * Apply the app theme and accent color as CSS variables on <html>.
+   *
+   * Both are handled in one effect because both change the same custom
+   * properties, and Chromium will not repaint an element whose `transition`
+   * covers a property that changed only via a custom-property update — it
+   * keeps painting the old color until some unrelated reflow happens. So
+   * transitions are suppressed for the duration of the swap (see the
+   * .theme-switching rule in index.css), which also avoids the whole UI
+   * cross-fading between palettes.
+   */
   useEffect(() => {
-    const accent = state.settings?.appearance?.accentColor;
-    if (accent) {
-      const root = document.documentElement;
-      root.style.setProperty('--accent', accent);
-      /* Generate lighter variant for hover */
-      const r = parseInt(accent.slice(1, 3), 16);
-      const g = parseInt(accent.slice(3, 5), 16);
-      const b = parseInt(accent.slice(5, 7), 16);
-      const lighter = `rgb(${Math.min(r + 30, 255)}, ${Math.min(g + 30, 255)}, ${Math.min(b + 30, 255)})`;
-      root.style.setProperty('--accent-hover', lighter);
+    const root = document.documentElement;
+    root.classList.add('theme-switching');
+    root.dataset.theme = appTheme;
+
+    const props = ['--accent', '--accent-hover', '--accent-muted', '--accent-subtle'];
+    if (!accentColor) {
+      /* Fall back to whatever the active theme defines */
+      props.forEach(p => root.style.removeProperty(p));
+    } else {
+      const r = parseInt(accentColor.slice(1, 3), 16);
+      const g = parseInt(accentColor.slice(3, 5), 16);
+      const b = parseInt(accentColor.slice(5, 7), 16);
+
+      /* amount > 0 lightens toward white, < 0 darkens toward black */
+      const shade = (amount) => {
+        const mix = (c) => Math.max(0, Math.min(255, Math.round(
+          amount >= 0 ? c + (255 - c) * amount : c * (1 + amount)
+        )));
+        return `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`;
+      };
+
+      /* The accent swatches are picked for a dark background, so on light we
+         shade them down — otherwise text on a solid accent fill is unreadable. */
+      if (appTheme === 'light') {
+        root.style.setProperty('--accent', shade(-0.3));
+        root.style.setProperty('--accent-hover', shade(-0.5));
+      } else {
+        root.style.setProperty('--accent', accentColor);
+        root.style.setProperty('--accent-hover', shade(0.2));
+      }
       root.style.setProperty('--accent-muted', `rgba(${r}, ${g}, ${b}, 0.15)`);
       root.style.setProperty('--accent-subtle', `rgba(${r}, ${g}, ${b}, 0.08)`);
     }
-  }, [state.settings?.appearance?.accentColor]);
+
+    /* Commit the new colors while transitions are still off */
+    void root.offsetHeight;
+    const raf = requestAnimationFrame(() => root.classList.remove('theme-switching'));
+    return () => cancelAnimationFrame(raf);
+  }, [appTheme, accentColor]);
 
   /* ── Action creators ── */
   const actions = {

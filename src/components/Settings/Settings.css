@@ -76,7 +76,7 @@
 
 .settings-tab:hover {
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--overlay-subtle);
 }
 
 .settings-tab.active {
@@ -91,8 +91,8 @@
 }
 
 .settings-save-btn.saved {
-  background: #3fb950;
-  border-color: #3fb950;
+  background: var(--color-success);
+  border-color: var(--color-success);
 }
 
 .settings-content {
@@ -192,7 +192,7 @@
 
 .settings-toggle.active::after {
   left: 20px;
-  background: #fff;
+  background: var(--accent-contrast);
 }
 
 /* Color picker */
@@ -216,8 +216,55 @@
 }
 
 .settings-color-swatch.active {
-  border-color: #fff;
+  border-color: var(--text-primary);
   box-shadow: 0 0 0 2px var(--bg-primary);
+}
+
+/* App theme toggle (Dark / Light) */
+.settings-theme-toggle {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-theme-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: var(--font-size-md);
+  transition: all var(--transition-base);
+}
+
+.settings-theme-option:hover {
+  background: var(--hover-overlay);
+  color: var(--text-primary);
+}
+
+.settings-theme-option.active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+  color: var(--text-primary);
+}
+
+.settings-theme-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--border-primary);
+}
+
+/* Fixed previews — these show what each theme looks like, so they
+   deliberately do not follow the active theme's variables. */
+.settings-theme-swatch.dark {
+  background: #0d1117;
+}
+
+.settings-theme-swatch.light {
+  background: #ffffff;
 }
 
 /* Save bar */
@@ -356,7 +403,7 @@
 .settings-update-spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid rgba(255, 255, 255, 0.1);
+  border: 2px solid var(--border-primary);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -372,7 +419,7 @@
 .settings-update-progress {
   width: 100%;
   height: 4px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-strong);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -411,7 +458,7 @@
 
 .settings-test-btn:hover {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 
 /* ─── Info Box ─── */

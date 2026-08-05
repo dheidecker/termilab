@@ -62,13 +62,13 @@
 }
 
 .titlebar-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--hover-overlay);
   color: var(--text-primary);
 }
 
 .titlebar-btn.close:hover {
   background: var(--color-danger);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 
 .titlebar-btn svg {

@@ -130,7 +130,7 @@
 }
 
 .host-group-header:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--overlay-subtle);
 }
 
 .host-group-header.drag-over {
@@ -178,7 +178,7 @@
 .host-group-count {
   font-size: var(--font-size-xs);
   color: var(--text-tertiary);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--hover-overlay);
   padding: 1px 6px;
   border-radius: 10px;
 }
@@ -201,11 +201,11 @@
 }
 
 .host-card:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--hover-overlay);
 }
 
 .host-card:active {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-strong);
   transform: scale(0.99);
 }
 
@@ -289,7 +289,7 @@
 }
 
 .host-card-action-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--overlay-strong);
   color: var(--text-primary);
 }
 

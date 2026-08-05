@@ -31,7 +31,7 @@
 - **🔀 Port Forwarding** — Local and remote port forwarding with one click
 - **🖥️ Local Terminal** — Open multiple local shell tabs alongside SSH sessions
 - **🔄 Auto-Updates** — Get notified when a new version is available and update in-app
-- **🎨 Customizable** — Accent colors, font sizes, cursor styles, and more
+- **🎨 Customizable** — Light and dark app themes, 12 terminal color schemes, accent colors, font sizes, cursor styles
 
 ## 📸 Screenshots
 

@@ -39,7 +39,7 @@
 }
 
 .sftp-breadcrumb-item:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--overlay-subtle);
   color: var(--text-primary);
 }
 
@@ -78,7 +78,7 @@
 }
 
 .sftp-toolbar-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--hover-overlay);
   color: var(--text-primary);
 }
 
@@ -136,7 +136,7 @@
 }
 
 .sftp-file-row:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--overlay-subtle);
 }
 
 .sftp-file-row.selected {

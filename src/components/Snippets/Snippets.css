@@ -88,7 +88,7 @@
 }
 
 .snippet-item:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--overlay-subtle);
 }
 
 .snippet-item.active {
@@ -110,7 +110,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--overlay-subtle);
   padding: 3px 6px;
   border-radius: var(--radius-sm);
   margin-bottom: 4px;
@@ -145,7 +145,7 @@
 }
 
 .snippet-action-btn.copy:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-strong);
   color: var(--text-primary);
 }
 
@@ -219,7 +219,7 @@
 }
 
 .snippet-form-close:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--hover-overlay);
   color: var(--text-primary);
 }
 

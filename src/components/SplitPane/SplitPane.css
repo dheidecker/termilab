@@ -168,7 +168,7 @@
 }
 
 .pane-toolbar-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--overlay-strong);
   color: var(--text-primary);
 }
 

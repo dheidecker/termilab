@@ -38,7 +38,7 @@
 }
 
 .tab:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--overlay-subtle);
 }
 
 .tab.active {
@@ -99,7 +99,7 @@
 }
 
 .tab-close:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--overlay-strong);
   color: var(--text-primary);
 }
 
@@ -127,7 +127,7 @@
 
 .tab-add-btn:hover {
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--overlay-subtle);
 }
 
 .tab-add-btn svg {
@@ -218,12 +218,12 @@
 }
 
 .tab-status.connected {
-  background: #3fb950;
+  background: var(--color-success);
   box-shadow: 0 0 4px rgba(63, 185, 80, 0.6);
 }
 
 .tab-status.disconnected {
-  background: #f85149;
+  background: var(--color-danger);
 }
 
 /* ── Broadcast Toggle Button ── */
@@ -240,7 +240,7 @@
 
 .broadcast-toggle-btn:hover {
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--overlay-subtle);
 }
 
 .broadcast-toggle-btn svg {
@@ -321,7 +321,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #f0883e;
+  background: var(--color-warning);
   box-shadow: 0 0 6px rgba(240, 136, 62, 0.7);
   animation: bell-pulse 1.5s ease-in-out infinite;
   z-index: 1;
@@ -332,7 +332,7 @@
 }
 
 .tab.notify .tab-label {
-  color: #f0883e;
+  color: var(--color-warning);
 }
 
 @keyframes bell-pulse {

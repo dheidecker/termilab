@@ -61,7 +61,7 @@
 }
 
 .ai-btn-icon:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--overlay-strong);
   color: var(--text-primary);
 }
 
@@ -91,7 +91,7 @@
 
 .ai-key-input button {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
   border: none;
   border-radius: var(--radius-sm);
   padding: 6px 12px;
@@ -163,7 +163,7 @@
 }
 
 .ai-mode-option:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--hover-overlay);
 }
 
 .ai-mode-option.active {
@@ -247,7 +247,7 @@
 
 .ai-msg-bubble.user {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
   border-radius: 16px 16px 4px 16px;
 }
 
@@ -303,7 +303,7 @@
 .ai-warning {
   padding: 6px 10px;
   background: rgba(248, 81, 73, 0.1);
-  color: #ffa198;
+  color: var(--color-danger);
   font-size: 11px;
   font-weight: 600;
 }
@@ -313,13 +313,13 @@
   margin: 0;
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
-  color: #3fb950;
+  color: var(--color-success);
   white-space: pre-wrap;
   word-break: break-all;
 }
 
 .ai-command-block.dangerous .ai-command-code {
-  color: #ffa198;
+  color: var(--color-danger);
 }
 
 .ai-run-btn {
@@ -329,7 +329,7 @@
   background: rgba(63, 185, 80, 0.15);
   border: none;
   border-top: 1px solid rgba(63, 185, 80, 0.2);
-  color: #3fb950;
+  color: var(--color-success);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -343,7 +343,7 @@
 .ai-command-block.dangerous .ai-run-btn {
   background: rgba(248, 81, 73, 0.1);
   border-color: rgba(248, 81, 73, 0.2);
-  color: #ffa198;
+  color: var(--color-danger);
 }
 
 .ai-command-block.dangerous .ai-run-btn:hover {
@@ -453,7 +453,7 @@
   background: var(--accent);
   border: none;
   border-radius: var(--radius-md);
-  color: #fff;
+  color: var(--accent-contrast);
   cursor: pointer;
   flex-shrink: 0;
   transition: all 0.15s;
@@ -480,7 +480,7 @@
   background: rgba(248, 81, 73, 0.15);
   border: 1px solid rgba(248, 81, 73, 0.3);
   border-radius: var(--radius-md);
-  color: #ffa198;
+  color: var(--color-danger);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -528,7 +528,7 @@
   flex: 1;
   width: 100%;
   border: none;
-  background: #fff;
+  background: #ffffff; /* external page */
 }
 
 /* ─── Command block icon alignment ─── */
