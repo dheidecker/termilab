@@ -6,6 +6,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import { useApp } from '../../contexts/AppContext';
 import { getTheme } from '../../themes/terminal-themes';
+import { DEFAULT_EFFORT, MODELS, resolveApiKey, resolveModel } from '../../config/aiModels';
 import './TerminalView.css';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
@@ -434,33 +435,19 @@ export default function TerminalView({ tab, onRegister }) {
     document.addEventListener('mouseup', onUp);
   }, []);
 
+  /* The chrome around xterm should match the terminal theme's own background,
+     not the app theme — otherwise a light terminal sits in a dark frame. */
+  const containerStyle = {
+    '--terminal-bg': getTheme(termSettings.theme || 'github-dark').background,
+  };
+
   const aiSettings = state.settings?.ai || {};
   const aiProvider = aiSettings.provider || 'claude-api';
-  const aiApiKey = aiProvider === 'claude-api' ? (aiSettings.claudeApiKey || '')
-    : aiProvider === 'deepseek' ? (aiSettings.deepseekApiKey || '')
-    : aiProvider === 'openai' ? (aiSettings.openaiApiKey || '') : '';
-  const defaultModel = aiProvider === 'claude-api' ? (aiSettings.claudeModel || 'claude-opus-4.8')
-    : aiProvider === 'deepseek' ? (aiSettings.deepseekModel || 'deepseek-v4-pro')
-    : aiProvider === 'openai' ? (aiSettings.openaiModel || 'gpt-5.5') : '';
+  const aiApiKey = resolveApiKey(aiSettings, aiProvider);
+  const defaultModel = resolveModel(aiSettings, aiProvider);
   const [modelOverride, setModelOverride] = useState(null);
   const aiModel = modelOverride || defaultModel;
-
-  const PROVIDER_MODELS = {
-    'claude-api': [
-      { value: 'claude-opus-4.8', label: 'Opus 4.8' },
-      { value: 'claude-sonnet-4.6', label: 'Sonnet 4.6' },
-      { value: 'claude-haiku-4.5', label: 'Haiku 4.5' },
-    ],
-    'deepseek': [
-      { value: 'deepseek-v4-pro', label: 'V4 Pro' },
-      { value: 'deepseek-v4-flash', label: 'V4 Flash' },
-    ],
-    'openai': [
-      { value: 'gpt-5.5', label: 'GPT-5.5' },
-      { value: 'gpt-5.4', label: 'GPT-5.4' },
-      { value: 'gpt-5.4-mini', label: '5.4 Mini' },
-    ],
-  };
+  const aiEffort = aiSettings.claudeEffort || DEFAULT_EFFORT;
 
   const getTermContext = useCallback(() => {
     const term = termRef.current;
@@ -507,6 +494,7 @@ export default function TerminalView({ tab, onRegister }) {
 
         const result = await window.electronAPI.ai.chatStream({
           messages: apiMsgs, terminalContext: termContext, apiKey: aiApiKey, model: aiModel, provider: aiProvider,
+          effort: aiEffort,
         });
 
         window.electronAPI.ai.removeStreamListeners();
@@ -525,7 +513,7 @@ export default function TerminalView({ tab, onRegister }) {
         const hasApi = window.electronAPI?.ai;
         let response;
         if (hasApi) {
-          response = await window.electronAPI.ai.chat({ messages: apiMsgs, terminalContext: termContext, apiKey: aiApiKey, model: aiModel, provider: aiProvider });
+          response = await window.electronAPI.ai.chat({ messages: apiMsgs, terminalContext: termContext, apiKey: aiApiKey, model: aiModel, provider: aiProvider, effort: aiEffort });
         } else {
           response = { content: 'Mock: try `uname -a`', commands: [] };
         }
@@ -537,7 +525,7 @@ export default function TerminalView({ tab, onRegister }) {
     } finally {
       setAiLoading(false);
     }
-  }, [aiMessages, aiApiKey, aiModel, aiProvider, getTermContext]);
+  }, [aiMessages, aiApiKey, aiModel, aiProvider, aiEffort, getTermContext]);
 
   const runCommandRef = useRef(null);
   const runCommand = useCallback((cmd) => {
@@ -597,7 +585,7 @@ export default function TerminalView({ tab, onRegister }) {
   /* Show loading overlay for SSH connecting state */
   if (!isLocal && (tab.connecting || (!tab.sessionId && !tab.error))) {
     return (
-      <div className="terminal-container">
+      <div className="terminal-container" style={containerStyle}>
         <div className="terminal-connecting">
           <div className="terminal-connecting-spinner" />
           <div className="terminal-connecting-text">Connecting to {tab.label || 'host'}...</div>
@@ -616,7 +604,7 @@ export default function TerminalView({ tab, onRegister }) {
   /* Show error state */
   if (tab.error) {
     return (
-      <div className="terminal-container">
+      <div className="terminal-container" style={containerStyle}>
         <div className="terminal-connecting">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--color-danger)" strokeWidth="2">
             <circle cx="12" cy="12" r="10"/>
@@ -635,7 +623,7 @@ export default function TerminalView({ tab, onRegister }) {
   }
 
   return (
-    <div className="terminal-container">
+    <div className="terminal-container" style={containerStyle}>
       {showSearch && (
         <div className="terminal-search">
           <input
@@ -805,8 +793,8 @@ export default function TerminalView({ tab, onRegister }) {
                 onChange={e => setModelOverride(e.target.value)}
                 title="Select AI model"
               >
-                {(PROVIDER_MODELS[aiProvider] || []).map(m => (
-                  <option key={m.value} value={m.value}>{m.label}</option>
+                {(MODELS[aiProvider] || []).map(m => (
+                  <option key={m.id} value={m.id}>{m.short}</option>
                 ))}
               </select>
               <input

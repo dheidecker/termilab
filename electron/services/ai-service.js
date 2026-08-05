@@ -6,6 +6,10 @@
 const https = require('https');
 const os = require('os');
 
+const { DEFAULT_MODELS, DEFAULT_EFFORT } = require('./ai-models');
+
+const MAX_TOKENS = 8192;
+
 class AIService {
   constructor() {
     this.API_URL = 'https://api.anthropic.com/v1/messages';
@@ -20,13 +24,18 @@ class AIService {
           'x-api-key': apiKey,
           'anthropic-version': this.API_VERSION,
         }),
-        buildBody: (model, system, messages) => ({
+        // The Claude 5 family thinks by default and rejects temperature/top_p,
+        // so effort is the knob for depth-vs-latency. Low keeps replies snappy.
+        buildBody: (model, system, messages, { effort = DEFAULT_EFFORT } = {}) => ({
           model,
-          max_tokens: 4096,
+          max_tokens: MAX_TOKENS,
+          output_config: { effort },
           system,
           messages,
         }),
-        parseResponse: (data) => data.content?.[0]?.text || '',
+        // Thinking blocks come before the answer, so content[0] is not the text.
+        parseResponse: (data) =>
+          (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('') || '',
       },
       'deepseek': {
         url: 'https://api.deepseek.com/chat/completions',
@@ -36,7 +45,7 @@ class AIService {
         }),
         buildBody: (model, system, messages) => ({
           model,
-          max_tokens: 4096,
+          max_tokens: MAX_TOKENS,
           messages: [{ role: 'system', content: system }, ...messages],
         }),
         parseResponse: (data) => data.choices?.[0]?.message?.content || '',
@@ -49,7 +58,7 @@ class AIService {
         }),
         buildBody: (model, system, messages) => ({
           model,
-          max_tokens: 4096,
+          max_tokens: MAX_TOKENS,
           messages: [{ role: 'system', content: system }, ...messages],
         }),
         parseResponse: (data) => data.choices?.[0]?.message?.content || '',
@@ -60,14 +69,17 @@ class AIService {
   /**
    * Send a message and get a response (supports Claude, DeepSeek, OpenAI)
    */
-  async chat({ apiKey, messages, terminalContext, model = 'claude-opus-4.8', provider = 'claude-api' }) {
+  async chat({ apiKey, messages, terminalContext, model, provider = 'claude-api', effort }) {
     if (!apiKey) throw new Error('API key not configured. Go to Settings → AI Assistant to add your API key.');
 
     const systemPrompt = this._buildSystemPrompt(terminalContext);
     const providerConfig = this.PROVIDERS[provider] || this.PROVIDERS['claude-api'];
+    const resolvedModel = model || DEFAULT_MODELS[provider] || DEFAULT_MODELS['claude-api'];
 
     const apiMessages = messages.map(m => ({ role: m.role, content: m.content }));
-    const body = JSON.stringify(providerConfig.buildBody(model, systemPrompt, apiMessages));
+    const body = JSON.stringify(
+      providerConfig.buildBody(resolvedModel, systemPrompt, apiMessages, { effort })
+    );
 
     return new Promise((resolve, reject) => {
       const url = new URL(providerConfig.url);
@@ -90,6 +102,15 @@ class AIService {
             if (res.statusCode !== 200) {
               const errMsg = parsed.error?.message || parsed.message || parsed.detail || JSON.stringify(parsed);
               reject(new Error(errMsg));
+              return;
+            }
+            // Claude returns HTTP 200 with empty content when safety
+            // classifiers decline — surface it instead of an empty reply.
+            if (parsed.stop_reason === 'refusal') {
+              reject(new Error(
+                'The model declined this request' +
+                (parsed.stop_details?.explanation ? `: ${parsed.stop_details.explanation}` : '.')
+              ));
               return;
             }
             const text = providerConfig.parseResponse(parsed);
@@ -119,15 +140,19 @@ class AIService {
    * Calls onChunk(textFragment) for each piece of text received.
    * Returns a Promise that resolves with the full accumulated text + extracted commands.
    */
-  async chatStream({ apiKey, messages, terminalContext, model = 'claude-opus-4.8', provider = 'claude-api', onChunk }) {
+  async chatStream({ apiKey, messages, terminalContext, model, provider = 'claude-api', effort, onChunk }) {
     if (!apiKey) throw new Error('API key not configured. Go to Settings → AI Assistant to add your API key.');
 
     const systemPrompt = this._buildSystemPrompt(terminalContext);
     const providerConfig = this.PROVIDERS[provider] || this.PROVIDERS['claude-api'];
     const isClaude = provider === 'claude-api';
+    const resolvedModel = model || DEFAULT_MODELS[provider] || DEFAULT_MODELS['claude-api'];
 
     const apiMessages = messages.map(m => ({ role: m.role, content: m.content }));
-    const bodyObj = { ...providerConfig.buildBody(model, systemPrompt, apiMessages), stream: true };
+    const bodyObj = {
+      ...providerConfig.buildBody(resolvedModel, systemPrompt, apiMessages, { effort }),
+      stream: true,
+    };
     const body = JSON.stringify(bodyObj);
 
     return new Promise((resolve, reject) => {
@@ -161,6 +186,7 @@ class AIService {
 
         let accumulated = '';
         let buffer = '';
+        let refused = false;
 
         res.on('data', (chunk) => {
           buffer += chunk.toString();
@@ -180,9 +206,13 @@ class AIService {
                 const jsonStr = trimmed.slice(6);
                 try {
                   const parsed = JSON.parse(jsonStr);
+                  // Only text deltas — thinking deltas carry `delta.thinking`.
                   if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
                     accumulated += parsed.delta.text;
                     if (onChunk) onChunk(parsed.delta.text);
+                  }
+                  if (parsed.type === 'message_delta' && parsed.delta?.stop_reason === 'refusal') {
+                    refused = true;
                   }
                 } catch {
                   // Skip non-JSON lines
@@ -211,6 +241,10 @@ class AIService {
         });
 
         res.on('end', () => {
+          if (refused) {
+            reject(new Error('The model declined this request.'));
+            return;
+          }
           resolve({
             content: accumulated,
             commands: this._extractCommands(accumulated),

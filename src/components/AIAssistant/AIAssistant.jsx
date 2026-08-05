@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useApp } from '../../contexts/AppContext';
+import { DEFAULT_EFFORT, resolveApiKey, resolveModel } from '../../config/aiModels';
 import './AIAssistant.css';
 
 /* ─── SVG Icon Components ─── */
@@ -86,12 +87,9 @@ export default function AIAssistant({ visible, onClose, getTerminalContent, send
   const aiSettings = state.settings?.ai || {};
   const provider = aiSettings.provider || 'claude-api';
   const isWebProvider = provider === 'claude-web';
-  const apiKey = provider === 'claude-api' ? (aiSettings.claudeApiKey || '')
-    : provider === 'deepseek' ? (aiSettings.deepseekApiKey || '')
-    : provider === 'openai' ? (aiSettings.openaiApiKey || '') : '';
-  const model = provider === 'claude-api' ? (aiSettings.claudeModel || 'claude-sonnet-4-20250514')
-    : provider === 'deepseek' ? (aiSettings.deepseekModel || 'deepseek-chat')
-    : provider === 'openai' ? (aiSettings.openaiModel || 'gpt-4o') : '';
+  const apiKey = resolveApiKey(aiSettings, provider);
+  const model = resolveModel(aiSettings, provider);
+  const effort = aiSettings.claudeEffort || DEFAULT_EFFORT;
 
   useEffect(() => {
     if (aiSettings.defaultMode) setMode(aiSettings.defaultMode);
@@ -147,7 +145,7 @@ export default function AIAssistant({ visible, onClose, getTerminalContent, send
       let response;
 
       if (hasApi) {
-        response = await window.electronAPI.ai.chat({ messages: apiMessages, terminalContext: termContext, apiKey, model, provider });
+        response = await window.electronAPI.ai.chat({ messages: apiMessages, terminalContext: termContext, apiKey, model, provider, effort });
       } else {
         response = {
           content: "I can see your terminal. Here's a command:\n\n```bash:run\nuname -a\n```\n\nThis will show your system information.",
@@ -197,7 +195,7 @@ export default function AIAssistant({ visible, onClose, getTerminalContent, send
     } finally {
       setLoading(false);
     }
-  }, [apiKey, messages, mode, getContext, executeCommand, isWebProvider, model, provider]);
+  }, [apiKey, messages, mode, getContext, executeCommand, isWebProvider, model, provider, effort]);
 
   const handleRunCommand = async (cmd) => {
     executeCommand(cmd);

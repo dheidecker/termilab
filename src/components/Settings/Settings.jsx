@@ -1,12 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { getThemeList } from '../../themes/terminal-themes';
+import {
+  DEFAULT_EFFORT,
+  EFFORT_LEVELS,
+  MODELS,
+  PROVIDERS,
+  resolveModel,
+} from '../../config/aiModels';
 import './Settings.css';
 
 const ACCENT_COLORS = [
   '#58a6ff', '#79c0ff', '#3fb950', '#56d364',
   '#d29922', '#e3b341', '#bc8cff', '#d2a8ff',
   '#ff7b72', '#ffa198', '#f778ba', '#ff9bce',
+];
+
+const APP_THEMES = [
+  { id: 'dark', label: 'Dark' },
+  { id: 'light', label: 'Light' },
 ];
 
 const TABS = [
@@ -54,6 +66,28 @@ export default function Settings({ fullPage = false }) {
       obj[keys[keys.length - 1]] = value;
       return copy;
     });
+  };
+
+  const activeProvider =
+    PROVIDERS.find(p => p.id === (settings.ai?.provider || 'claude-api')) || PROVIDERS[0];
+  const activeModel = resolveModel(settings.ai, activeProvider.id);
+
+  const testConnection = async () => {
+    const key = settings.ai?.[activeProvider.keyField];
+    if (!key) return alert('Enter an API key first');
+    try {
+      const res = await window.electronAPI?.ai?.chat({
+        messages: [{ role: 'user', content: 'Say "Connected!" in one word' }],
+        terminalContext: '',
+        apiKey: key,
+        model: activeModel,
+        provider: activeProvider.id,
+        effort: settings.ai?.claudeEffort || DEFAULT_EFFORT,
+      });
+      alert(res ? '✅ Connection successful!' : '❌ Failed');
+    } catch (err) {
+      alert('❌ ' + err.message);
+    }
   };
 
   const handleSave = () => {
@@ -383,6 +417,25 @@ export default function Settings({ fullPage = false }) {
 
             <div className="settings-field">
               <div className="settings-field-label">
+                <span>App Theme</span>
+                <small>Colors of the interface around the terminal</small>
+              </div>
+              <div className="settings-theme-toggle">
+                {APP_THEMES.map(t => (
+                  <button
+                    key={t.id}
+                    className={`settings-theme-option ${(settings.appearance?.theme || 'dark') === t.id ? 'active' : ''}`}
+                    onClick={() => update('appearance.theme', t.id)}
+                  >
+                    <span className={`settings-theme-swatch ${t.id}`} aria-hidden="true" />
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-field">
+              <div className="settings-field-label">
                 <span>Accent Color</span>
                 <small>Primary accent color across the app</small>
               </div>
@@ -413,164 +466,70 @@ export default function Settings({ fullPage = false }) {
                   <small>Select your preferred AI provider</small>
                 </div>
                 <select
-                  value={settings.ai?.provider || 'claude-api'}
+                  value={activeProvider.id}
                   onChange={e => update('ai.provider', e.target.value)}
                 >
-                  <option value="claude-api">Claude (Anthropic)</option>
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="openai">OpenAI</option>
+                  {PROVIDERS.map(p => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
                 </select>
               </div>
             </div>
 
-            {/* Claude API */}
-            {(settings.ai?.provider || 'claude-api') === 'claude-api' && (
-              <div className="settings-section">
-                <div className="settings-section-title">Claude Configuration</div>
-                <div className="settings-field">
-                  <div className="settings-field-label">
-                    <span>API Key</span>
-                    <small>Get your key at console.anthropic.com</small>
-                  </div>
-                  <div className="settings-api-key-row">
-                    <input
-                      type="password"
-                      value={settings.ai?.claudeApiKey || ''}
-                      onChange={e => update('ai.claudeApiKey', e.target.value)}
-                      placeholder="sk-ant-api03-..."
-                    />
-                    <button
-                      className="settings-test-btn"
-                      onClick={async () => {
-                        try {
-                          const key = settings.ai?.claudeApiKey;
-                          if (!key) return alert('Enter an API key first');
-                          const res = await window.electronAPI?.ai?.chat({
-                            messages: [{ role: 'user', content: 'Say "Connected!" in one word' }],
-                            terminalContext: '',
-                            apiKey: key,
-                            model: settings.ai?.claudeModel || 'claude-opus-4.8',
-                            provider: 'claude-api',
-                          });
-                          alert(res ? '✅ Connection successful!' : '❌ Failed');
-                        } catch (err) {
-                          alert('❌ ' + err.message);
-                        }
-                      }}
-                    >Test</button>
-                  </div>
-                </div>
-                <div className="settings-field">
-                  <div className="settings-field-label">
-                    <span>Model</span>
-                    <small>Claude model for assistance</small>
-                  </div>
-                  <select
-                    value={settings.ai?.claudeModel || 'claude-opus-4.8'}
-                    onChange={e => update('ai.claudeModel', e.target.value)}
-                  >
-                    <option value="claude-opus-4.8">Claude Opus 4.8 (Recommended)</option>
-                    <option value="claude-sonnet-4.6">Claude Sonnet 4.6</option>
-                    <option value="claude-haiku-4.5">Claude Haiku 4.5 (Fast)</option>
-                  </select>
-                </div>
-              </div>
-            )}
+            {/* Active provider — key, model, and provider-specific options */}
+            <div className="settings-section">
+              <div className="settings-section-title">{activeProvider.label} Configuration</div>
 
-            {/* DeepSeek */}
-            {settings.ai?.provider === 'deepseek' && (
-              <div className="settings-section">
-                <div className="settings-section-title">DeepSeek Configuration</div>
-                <div className="settings-field">
-                  <div className="settings-field-label">
-                    <span>API Key</span>
-                    <small>Get your key at platform.deepseek.com</small>
-                  </div>
-                  <div className="settings-api-key-row">
-                    <input
-                      type="password"
-                      value={settings.ai?.deepseekApiKey || ''}
-                      onChange={e => update('ai.deepseekApiKey', e.target.value)}
-                      placeholder="sk-..."
-                    />
-                    <button className="settings-test-btn" onClick={async () => {
-                        try {
-                          const key = settings.ai?.deepseekApiKey;
-                          if (!key) return alert('Enter an API key first');
-                          await window.electronAPI?.ai?.chat({
-                            messages: [{ role: 'user', content: 'Say "Connected!" in one word' }],
-                            terminalContext: '', apiKey: key,
-                            model: settings.ai?.deepseekModel || 'deepseek-v4-pro',
-                            provider: 'deepseek',
-                          });
-                          alert('✅ Connection successful!');
-                        } catch (err) { alert('❌ ' + err.message); }
-                      }}>Test</button>
-                  </div>
+              <div className="settings-field">
+                <div className="settings-field-label">
+                  <span>API Key</span>
+                  <small>Get your key at {activeProvider.console}</small>
                 </div>
-                <div className="settings-field">
-                  <div className="settings-field-label">
-                    <span>Model</span>
-                    <small>DeepSeek model to use</small>
-                  </div>
-                  <select
-                    value={settings.ai?.deepseekModel || 'deepseek-v4-pro'}
-                    onChange={e => update('ai.deepseekModel', e.target.value)}
-                  >
-                    <option value="deepseek-v4-pro">DeepSeek V4 Pro (Recommended)</option>
-                    <option value="deepseek-v4-flash">DeepSeek V4 Flash (Fast)</option>
-                  </select>
+                <div className="settings-api-key-row">
+                  <input
+                    type="password"
+                    value={settings.ai?.[activeProvider.keyField] || ''}
+                    onChange={e => update(`ai.${activeProvider.keyField}`, e.target.value)}
+                    placeholder={activeProvider.keyPlaceholder}
+                  />
+                  <button className="settings-test-btn" onClick={testConnection}>Test</button>
                 </div>
               </div>
-            )}
 
-            {/* OpenAI */}
-            {settings.ai?.provider === 'openai' && (
-              <div className="settings-section">
-                <div className="settings-section-title">OpenAI Configuration</div>
-                <div className="settings-field">
-                  <div className="settings-field-label">
-                    <span>API Key</span>
-                    <small>Get your key at platform.openai.com</small>
-                  </div>
-                  <div className="settings-api-key-row">
-                    <input
-                      type="password"
-                      value={settings.ai?.openaiApiKey || ''}
-                      onChange={e => update('ai.openaiApiKey', e.target.value)}
-                      placeholder="sk-..."
-                    />
-                    <button className="settings-test-btn" onClick={async () => {
-                        try {
-                          const key = settings.ai?.openaiApiKey;
-                          if (!key) return alert('Enter an API key first');
-                          await window.electronAPI?.ai?.chat({
-                            messages: [{ role: 'user', content: 'Say "Connected!" in one word' }],
-                            terminalContext: '', apiKey: key,
-                            model: settings.ai?.openaiModel || 'gpt-5.5',
-                            provider: 'openai',
-                          });
-                          alert('✅ Connection successful!');
-                        } catch (err) { alert('❌ ' + err.message); }
-                      }}>Test</button>
-                  </div>
+              <div className="settings-field">
+                <div className="settings-field-label">
+                  <span>Model</span>
+                  <small>{activeProvider.label} model for assistance</small>
                 </div>
+                <select
+                  value={activeModel}
+                  onChange={e => update(`ai.${activeProvider.modelField}`, e.target.value)}
+                >
+                  {MODELS[activeProvider.id].map(m => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}{m.note ? ` — ${m.note}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {activeProvider.id === 'claude-api' && (
                 <div className="settings-field">
                   <div className="settings-field-label">
-                    <span>Model</span>
-                    <small>OpenAI model to use</small>
+                    <span>Reasoning Effort</span>
+                    <small>How deeply Claude thinks before answering</small>
                   </div>
                   <select
-                    value={settings.ai?.openaiModel || 'gpt-5.5'}
-                    onChange={e => update('ai.openaiModel', e.target.value)}
+                    value={settings.ai?.claudeEffort || DEFAULT_EFFORT}
+                    onChange={e => update('ai.claudeEffort', e.target.value)}
                   >
-                    <option value="gpt-5.5">GPT-5.5 (Recommended)</option>
-                    <option value="gpt-5.4">GPT-5.4</option>
-                    <option value="gpt-5.4-mini">GPT-5.4 Mini (Fast)</option>
+                    {EFFORT_LEVELS.map(l => (
+                      <option key={l.id} value={l.id}>{l.label}</option>
+                    ))}
                   </select>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
             <div className="settings-section">
               <div className="settings-section-title">Behavior</div>

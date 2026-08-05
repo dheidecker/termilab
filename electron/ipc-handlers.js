@@ -334,14 +334,14 @@ function registerIpcHandlers(mainWindow) {
 
   // ─── AI Assistant ─────────────────────────────────────────
 
-  ipcMain.handle('ai:chat', wrapHandler(async (event, { messages, terminalContext, apiKey, model, provider }) => {
-    const result = await aiService.chat({ apiKey, messages, terminalContext, model, provider });
+  ipcMain.handle('ai:chat', wrapHandler(async (event, { messages, terminalContext, apiKey, model, provider, effort }) => {
+    const result = await aiService.chat({ apiKey, messages, terminalContext, model, provider, effort });
     return result;
   }));
 
-  ipcMain.handle('ai:chat-stream', wrapHandler(async (event, { messages, terminalContext, apiKey, model, provider }) => {
+  ipcMain.handle('ai:chat-stream', wrapHandler(async (event, { messages, terminalContext, apiKey, model, provider, effort }) => {
     const result = await aiService.chatStream({
-      apiKey, messages, terminalContext, model, provider,
+      apiKey, messages, terminalContext, model, provider, effort,
       onChunk: (text) => {
         event.sender.send('ai:stream-chunk', text);
       },
