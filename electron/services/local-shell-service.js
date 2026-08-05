@@ -69,7 +69,19 @@ class LocalShellService {
     };
 
     // Remove Electron-specific env vars that can confuse child processes
+    // Electron pollutes the env with paths pointing to its own bundled libs,
+    // which breaks snap-confine and other system tools
     delete env.ELECTRON_RUN_AS_NODE;
+    delete env.ELECTRON_NO_ASAR;
+    delete env.NODE_OPTIONS;
+    // Electron's LD_LIBRARY_PATH points to its own libs and breaks snap-confine
+    delete env.LD_LIBRARY_PATH;
+    delete env.LD_PRELOAD;
+    // GTK/GDK vars from Electron can also cause issues
+    delete env.GDK_BACKEND;
+    delete env.GTK_IM_MODULE;
+    delete env.CHROME_DESKTOP;
+    delete env.ORIGINAL_XDG_CURRENT_DESKTOP;
 
     try {
       const shellArgs = process.platform === 'win32' ? [] : ['--login'];

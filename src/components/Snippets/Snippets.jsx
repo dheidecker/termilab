@@ -59,17 +59,37 @@ export default function Snippets() {
   };
 
   const handleRun = (command) => {
-    /* Find the active terminal tab and send data to it */
+    /* Find a terminal tab to send the command to */
     const activeTab = state.tabs.find(t => t.id === state.activeTabId);
-    if (activeTab?.sessionId && (activeTab.type === 'terminal' || activeTab.type === 'local-terminal')) {
-      const hasElectron = typeof window !== 'undefined' && !!window.electronAPI;
-      if (hasElectron) {
-        if (activeTab.type === 'local-terminal') {
-          window.electronAPI.localShell.write(activeTab.sessionId, command + '\n');
-        } else {
-          window.electronAPI.ssh.sendData(activeTab.sessionId, command + '\n');
-        }
+    /* Prefer the active tab if it's a terminal, otherwise find any open terminal */
+    let target = null;
+    if (activeTab?.sessionId && (activeTab.type === 'terminal' || activeTab.type === 'local-terminal' || activeTab.type === 'ssh')) {
+      target = activeTab;
+    } else {
+      target = state.tabs.find(t => t.sessionId && (t.type === 'terminal' || t.type === 'local-terminal' || t.type === 'ssh'));
+    }
+    if (!target) {
+      /* No terminal open — open one and queue the command */
+      const tabId = crypto.randomUUID();
+      const sessionId = `local-${tabId}`;
+      actions.addTab({ id: tabId, type: 'local-terminal', label: 'Local Terminal', sessionId });
+      /* Give the terminal time to spawn, then send */
+      setTimeout(() => {
+        try {
+          window.electronAPI?.localShell?.write(sessionId, command + '\n');
+        } catch (e) { /* ignore */ }
+      }, 1500);
+      return;
+    }
+    const hasElectron = typeof window !== 'undefined' && !!window.electronAPI;
+    if (hasElectron) {
+      if (target.type === 'local-terminal') {
+        window.electronAPI.localShell.write(target.sessionId, command + '\n');
+      } else {
+        window.electronAPI.ssh.sendData(target.sessionId, command + '\n');
       }
+      /* Switch to the terminal tab so user sees the output */
+      actions.setActiveTab(target.id);
     }
   };
 
