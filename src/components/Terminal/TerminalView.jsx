@@ -7,9 +7,13 @@ import '@xterm/xterm/css/xterm.css';
 import { useApp } from '../../contexts/AppContext';
 import { getTheme } from '../../themes/terminal-themes';
 import { DEFAULT_EFFORT, MODELS, resolveApiKey, resolveModel } from '../../config/aiModels';
+import { classifyCommand } from '../../config/commandSafety';
 import './TerminalView.css';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
+
+/* Runaway protection for the inline AI bar's auto mode */
+const MAX_AI_ROUNDS = 12;
 
 export default function TerminalView({ tab, onRegister }) {
   const { state, dispatch } = useApp();
@@ -401,6 +405,7 @@ export default function TerminalView({ tab, onRegister }) {
   const aiInputRef = useRef(null);
   const [aiAutoAnalyze, setAiAutoAnalyze] = useState(true);
   const autoAnalyzeRef = useRef(true);
+  const aiRoundsRef = useRef(0);
   const toggleAutoAnalyze = useCallback(() => {
     setAiAutoAnalyze(prev => {
       const next = !prev;
@@ -463,7 +468,7 @@ export default function TerminalView({ tab, onRegister }) {
     return lines.join('\n');
   }, [aiSettings.contextLines]);
 
-  const sendAiMessage = useCallback(async (msg) => {
+  const sendAiMessage = useCallback(async (msg, isFollowUp = false) => {
     if (!msg.trim()) return;
     if (!aiApiKey) { setAiMessages(prev => [{ role: 'error', text: 'No API key configured. Go to Settings → AI Assistant.' }]); return; }
 
@@ -494,7 +499,7 @@ export default function TerminalView({ tab, onRegister }) {
 
         const result = await window.electronAPI.ai.chatStream({
           messages: apiMsgs, terminalContext: termContext, apiKey: aiApiKey, model: aiModel, provider: aiProvider,
-          effort: aiEffort,
+          effort: aiEffort, mode: autoAnalyzeRef.current ? 'auto-approve' : 'ask',
         });
 
         window.electronAPI.ai.removeStreamListeners();
@@ -502,18 +507,28 @@ export default function TerminalView({ tab, onRegister }) {
           const updated = prev.filter(m => m.role !== 'streaming');
           return [...updated, { role: 'assistant', text: result.content, commands: result.commands || [] }];
         });
-        // Auto mode: execute safe commands automatically
+        /* Auto mode: run only non-destructive commands, and only one per round
+           so each result is verified before the next step. Destructive ones are
+           never auto-run — they wait for the Run button. */
         if (autoAnalyzeRef.current && result.commands?.length > 0) {
           const safeCmds = result.commands.filter(c => !c.dangerous);
-          if (safeCmds.length > 0) {
-            setTimeout(() => safeCmds.forEach(c => runCommandRef.current(c.command)), 500);
+          const held = result.commands.filter(c => c.dangerous);
+          if (held.length > 0) {
+            setAiMessages(prev => [...prev, {
+              role: 'held',
+              text: held.length === 1
+                ? `Paused: destructive command needs approval (${held[0].reason || 'destructive operation'}). Press Run above to execute it.`
+                : `Paused: ${held.length} destructive commands need your approval. Press Run on each one you want to execute.`,
+            }]);
+          } else if (safeCmds.length > 0) {
+            setTimeout(() => runCommandRef.current(safeCmds[0].command), 500);
           }
         }
       } else {
         const hasApi = window.electronAPI?.ai;
         let response;
         if (hasApi) {
-          response = await window.electronAPI.ai.chat({ messages: apiMsgs, terminalContext: termContext, apiKey: aiApiKey, model: aiModel, provider: aiProvider, effort: aiEffort });
+          response = await window.electronAPI.ai.chat({ messages: apiMsgs, terminalContext: termContext, apiKey: aiApiKey, model: aiModel, provider: aiProvider, effort: aiEffort, mode: autoAnalyzeRef.current ? 'auto-approve' : 'ask' });
         } else {
           response = { content: 'Mock: try `uname -a`', commands: [] };
         }
@@ -542,8 +557,16 @@ export default function TerminalView({ tab, onRegister }) {
       if (output) {
         const lastLines = output.split('\n').slice(-20).join('\n');
         setAiMessages(prev => [...prev, { role: 'output', text: lastLines }]);
+        /* Auto mode feeds the result back for the next step, capped so a
+           misbehaving loop can't run forever. */
         if (autoAnalyzeRef.current) {
-          sendAiMessage(`I ran \`${cmd}\`. Output:\n\`\`\`\n${lastLines}\n\`\`\`\nAnalyze briefly. If errors, suggest fix. If ok, confirm.`);
+          if (aiRoundsRef.current >= MAX_AI_ROUNDS) {
+            aiRoundsRef.current = 0;
+            setAiMessages(prev => [...prev, { role: 'held', text: `Stopped after ${MAX_AI_ROUNDS} automatic rounds. Send a message to continue.` }]);
+            return;
+          }
+          aiRoundsRef.current += 1;
+          sendAiMessage(`I ran \`${cmd}\`. Output:\n\`\`\`\n${lastLines}\n\`\`\`\nVerify it succeeded, then continue with the next step. If it failed, say so and diagnose.`);
         }
       }
     }, 2000);
@@ -575,7 +598,9 @@ export default function TerminalView({ tab, onRegister }) {
     let last = 0, m;
     while ((m = regex.exec(text)) !== null) {
       if (m.index > last) blocks.push({ type: 'text', content: text.slice(last, m.index) });
-      blocks.push({ type: 'cmd', content: m[1].trim() });
+      const content = m[1].trim();
+      const { destructive, reason } = classifyCommand(content);
+      blocks.push({ type: 'cmd', content, dangerous: destructive, reason });
       last = m.index + m[0].length;
     }
     if (last < text.length) blocks.push({ type: 'text', content: text.slice(last) });
@@ -687,12 +712,20 @@ export default function TerminalView({ tab, onRegister }) {
                   <div className="tai-assistant">
                     {parseCommands(msg.text).map((b, j) =>
                       b.type === 'cmd' ? (
-                        <div key={j} className="tai-cmd">
+                        <div key={j} className={`tai-cmd ${b.dangerous ? 'tai-cmd-danger' : ''}`}>
+                          {b.dangerous && (
+                            <div className="tai-cmd-warn">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                              Destructive{b.reason ? ` — ${b.reason}` : ''}. Requires your approval.
+                            </div>
+                          )}
                           <code>{b.content}</code>
-                          {!aiAutoAnalyze && (
+                          {/* Destructive commands always keep a Run button, even in
+                              Auto mode — otherwise a held command could never be approved. */}
+                          {(!aiAutoAnalyze || b.dangerous) && (
                             <button onClick={() => runCommand(b.content)}>
                               <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                              Run
+                              {b.dangerous ? 'Approve & Run' : 'Run'}
                             </button>
                           )}
                         </div>
@@ -715,6 +748,7 @@ export default function TerminalView({ tab, onRegister }) {
                     <pre>{msg.text}</pre>
                   </div>
                 )}
+                {msg.role === 'held' && <div className="tai-held">{msg.text}</div>}
                 {msg.role === 'error' && <div className="tai-error">{msg.text}</div>}
               </div>
             ))}

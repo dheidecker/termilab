@@ -635,3 +635,38 @@
   background: rgba(63, 185, 80, 0.2);
   border-color: rgba(63, 185, 80, 0.5);
 }
+
+/* ─── AI destructive-command gate ─── */
+.tai-cmd-danger {
+  border-left: 2px solid var(--color-danger);
+  background: var(--color-danger-muted);
+}
+
+.tai-cmd-warn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  color: var(--color-danger);
+  margin-bottom: 6px;
+}
+
+.tai-cmd-warn svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+.tai-held {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 10px;
+  margin: 4px 0;
+  border-left: 2px solid var(--color-warning);
+  background: var(--color-warning-muted);
+  color: var(--text-primary);
+  font-size: var(--font-size-xs);
+  border-radius: var(--radius-sm);
+}

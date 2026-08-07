@@ -556,3 +556,24 @@
 .ai-mode-option.active .ai-icon-sm {
   color: var(--accent);
 }
+
+/* ─── Agent notices (paused for approval, round cap reached) ─── */
+.ai-msg-bubble.note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--color-warning);
+  background: var(--color-warning-muted);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+}
+
+.ai-msg-bubble.note svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--color-warning);
+  margin-top: 2px;
+}

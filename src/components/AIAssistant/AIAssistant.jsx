@@ -1,7 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { DEFAULT_EFFORT, resolveApiKey, resolveModel } from '../../config/aiModels';
+import { classifyCommand } from '../../config/commandSafety';
 import './AIAssistant.css';
+
+/* Runaway protection: max automatic rounds per user request in agent modes */
+const MAX_AGENT_ITERATIONS = 12;
 
 /* ─── SVG Icon Components ─── */
 const Icons = {
@@ -24,11 +28,13 @@ const Icons = {
 
 const MODES = [
   { id: 'ask', label: 'Ask', icon: Icons.chat, desc: 'Suggests commands, you approve each one' },
-  { id: 'auto-approve', label: 'Auto-Approve', icon: Icons.bolt, desc: 'Runs commands automatically, shows progress' },
-  { id: 'autonomous', label: 'Autonomous', icon: Icons.cpu, desc: 'Full auto — executes everything without asking' },
+  { id: 'auto-approve', label: 'Auto-Approve', icon: Icons.bolt, desc: 'Runs safe commands, one round per message — destructive always ask' },
+  { id: 'autonomous', label: 'Autonomous', icon: Icons.cpu, desc: 'Loops until done — destructive commands still require your approval' },
 ];
 
-/* Parse response into text blocks and command blocks */
+/* Parse response into text blocks and command blocks. Safety classification
+ * comes from the shared classifier — same one the main process uses to gate
+ * auto-execution, so what the UI warns about and what gets held always match. */
 function parseResponse(text) {
   const blocks = [];
   const regex = /```(bash:run|bash)\n([\s\S]*?)```/g;
@@ -39,10 +45,13 @@ function parseResponse(text) {
     if (match.index > lastIndex) {
       blocks.push({ type: 'text', content: text.slice(lastIndex, match.index) });
     }
+    const content = match[2].trim();
+    const { destructive, reason } = classifyCommand(content);
     blocks.push({
       type: match[1] === 'bash:run' ? 'command' : 'code',
-      content: match[2].trim(),
-      dangerous: isDangerous(match[2].trim()),
+      content,
+      dangerous: destructive,
+      reason,
     });
     lastIndex = match.index + match[0].length;
   }
@@ -50,11 +59,6 @@ function parseResponse(text) {
     blocks.push({ type: 'text', content: text.slice(lastIndex) });
   }
   return blocks;
-}
-
-function isDangerous(cmd) {
-  const patterns = [/rm\s+(-rf?|--recursive)/i, /mkfs/i, /dd\s+if=/i, /drop\s+(database|table)/i, /shutdown/i, /reboot/i];
-  return patterns.some(r => r.test(cmd));
 }
 
 function renderMarkdown(text) {
@@ -77,11 +81,16 @@ export default function AIAssistant({ visible, onClose, getTerminalContent, send
   const [mode, setMode] = useState(state.settings?.ai?.defaultMode || 'ask');
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showKeyInput, setShowKeyInput] = useState(false);
-  const [pendingCommands, setPendingCommands] = useState([]);
   const [webviewMode, setWebviewMode] = useState(false);
+  const [agentActive, setAgentActive] = useState(false);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const agentLoopRef = useRef(false);
+  const agentIterRef = useRef(0);
+  /* Follow-up rounds fire from timeouts holding a stale `messages` closure;
+     the ref always has the latest history. */
+  const messagesRef = useRef(messages);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   /* Get AI config from settings */
   const aiSettings = state.settings?.ai || {};
@@ -123,6 +132,22 @@ export default function AIAssistant({ visible, onClose, getTerminalContent, send
     if (sendToTerminal) sendToTerminal(cmd + '\n');
   }, [sendToTerminal]);
 
+  /* Wait for the terminal output to settle instead of a fixed sleep: poll the
+     buffer until it stops changing for `quietMs` (or `timeoutMs` for long
+     commands). Returns the final snapshot. */
+  const waitForOutput = useCallback(async ({ quietMs = 800, timeoutMs = 15000, pollMs = 250 } = {}) => {
+    const start = Date.now();
+    let last = getContext();
+    let lastChange = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      await new Promise(r => setTimeout(r, pollMs));
+      const now = getContext();
+      if (now !== last) { last = now; lastChange = Date.now(); }
+      else if (Date.now() - lastChange >= quietMs) break;
+    }
+    return last;
+  }, [getContext]);
+
   const sendMessage = useCallback(async (userMessage, isFollowUp = false) => {
     if (!apiKey && !isWebProvider) {
       setShowKeyInput(true);
@@ -130,22 +155,33 @@ export default function AIAssistant({ visible, onClose, getTerminalContent, send
     }
     if (!userMessage.trim() && !isFollowUp) return;
 
-    const newMessages = isFollowUp ? [...messages] : [...messages, { role: 'user', content: userMessage }];
+    /* Fresh user request resets the agent-round budget */
+    if (!isFollowUp) agentIterRef.current = 0;
+
+    const newMessages = isFollowUp
+      ? [...messagesRef.current]
+      : [...messagesRef.current, { role: 'user', content: userMessage }];
     if (!isFollowUp) { setMessages(newMessages); setInput(''); }
     setLoading(true);
 
     try {
       const termContext = getContext();
-      const apiMessages = newMessages.map(m => ({
-        role: m.role === 'command-output' ? 'user' : m.role,
-        content: m.role === 'command-output' ? `Terminal output after running command:\n\`\`\`\n${m.content}\n\`\`\`` : m.content,
-      }));
+      /* Only real conversation roles go to the API — error and note bubbles
+         are UI-local (an 'error' role in the payload is a 400). */
+      const apiMessages = newMessages
+        .filter(m => ['user', 'assistant', 'command-output'].includes(m.role))
+        .map(m => ({
+          role: m.role === 'command-output' ? 'user' : m.role,
+          content: m.role === 'command-output' ? `Terminal output after running command:\n\`\`\`\n${m.content}\n\`\`\`` : m.content,
+        }));
+      /* Agent-loop instructions steer the model but stay out of the visible chat */
+      if (isFollowUp) apiMessages.push({ role: 'user', content: userMessage });
 
       const hasApi = window.electronAPI?.ai;
       let response;
 
       if (hasApi) {
-        response = await window.electronAPI.ai.chat({ messages: apiMessages, terminalContext: termContext, apiKey, model, provider, effort });
+        response = await window.electronAPI.ai.chat({ messages: apiMessages, terminalContext: termContext, apiKey, model, provider, effort, mode });
       } else {
         response = {
           content: "I can see your terminal. Here's a command:\n\n```bash:run\nuname -a\n```\n\nThis will show your system information.",
@@ -157,61 +193,82 @@ export default function AIAssistant({ visible, onClose, getTerminalContent, send
       const updatedMessages = [...newMessages, assistantMsg];
       setMessages(updatedMessages);
 
-      if (response.commands && response.commands.length > 0) {
-        if (mode === 'autonomous') {
-          agentLoopRef.current = true;
-          for (const cmd of response.commands) {
-            if (!agentLoopRef.current) break;
-            executeCommand(cmd.command);
-            await new Promise(r => setTimeout(r, 2000));
-            const output = getContext();
-            updatedMessages.push({ role: 'command-output', content: output });
-          }
+      const commands = response.commands || [];
+      const isAgentMode = mode === 'autonomous' || mode === 'auto-approve';
+
+      if (commands.length > 0 && isAgentMode) {
+        /* HARD SAFETY GATE — destructive commands are never auto-executed,
+           regardless of mode. They render with an Approve & Run button and
+           the user decides. This is enforced here, not just in the prompt. */
+        const runnable = commands.filter(c => !c.dangerous);
+        const held = commands.filter(c => c.dangerous);
+
+        if (mode === 'autonomous') { agentLoopRef.current = true; setAgentActive(true); }
+
+        for (const cmd of runnable) {
+          if (mode === 'autonomous' && !agentLoopRef.current) break;
+          executeCommand(cmd.command);
+          const output = await waitForOutput();
+          updatedMessages.push({ role: 'command-output', content: output });
           setMessages([...updatedMessages]);
-          if (agentLoopRef.current && response.commands.length > 0) {
-            setTimeout(() => sendMessage('Continue with the task. Here is the terminal output.', true), 500);
-          }
-        } else if (mode === 'auto-approve') {
-          for (const cmd of response.commands) {
-            if (cmd.dangerous) {
-              setPendingCommands(prev => [...prev, cmd]);
-            } else {
-              executeCommand(cmd.command);
-              await new Promise(r => setTimeout(r, 1500));
-            }
-          }
-          const hasDangerous = response.commands.some(c => c.dangerous);
-          if (!hasDangerous) {
-            await new Promise(r => setTimeout(r, 2000));
-            const output = getContext();
-            updatedMessages.push({ role: 'command-output', content: output });
-            setMessages([...updatedMessages]);
-            setTimeout(() => sendMessage('Continue with the task. Here is the terminal output.', true), 500);
-          }
         }
+
+        if (held.length > 0) {
+          updatedMessages.push({
+            role: 'note',
+            content: held.length === 1
+              ? `Execution paused — 1 destructive command needs your approval (${held[0].reason || 'destructive operation'}). Review it above and press "Approve & Run" to continue.`
+              : `Execution paused — ${held.length} destructive commands need your approval. Review them above; the agent resumes after you approve.`,
+          });
+          setMessages([...updatedMessages]);
+          /* Loop intentionally stops here. handleRunCommand resumes it. */
+        } else if (mode === 'autonomous' && runnable.length > 0 && agentLoopRef.current) {
+          if (++agentIterRef.current >= MAX_AGENT_ITERATIONS) {
+            agentLoopRef.current = false;
+            setAgentActive(false);
+            updatedMessages.push({ role: 'note', content: `Agent stopped after ${MAX_AGENT_ITERATIONS} automatic rounds. Send a message to continue.` });
+            setMessages([...updatedMessages]);
+          } else {
+            setTimeout(() => sendMessage('Continue with the task. The terminal output above shows the result of the last command — verify it before proceeding.', true), 300);
+          }
+        } else if (mode === 'autonomous' && runnable.length === 0) {
+          /* Model replied without runnable commands — task likely done */
+          agentLoopRef.current = false;
+          setAgentActive(false);
+        }
+      }
+      if (commands.length === 0 && mode === 'autonomous') {
+        agentLoopRef.current = false;
+        setAgentActive(false);
       }
     } catch (err) {
       setMessages(prev => [...prev, { role: 'error', content: err.message }]);
+      agentLoopRef.current = false;
+      setAgentActive(false);
     } finally {
       setLoading(false);
     }
-  }, [apiKey, messages, mode, getContext, executeCommand, isWebProvider, model, provider, effort]);
+  }, [apiKey, mode, getContext, waitForOutput, executeCommand, isWebProvider, model, provider, effort]);
 
+  /* Manual run — the Run / Approve & Run buttons. In autonomous mode an
+     approval resumes the agent loop so it doesn't dead-end after the gate. */
   const handleRunCommand = async (cmd) => {
     executeCommand(cmd);
-    await new Promise(r => setTimeout(r, 2000));
-    const output = getContext();
+    const output = await waitForOutput();
     setMessages(prev => [...prev, { role: 'command-output', content: output }]);
+    if (mode === 'autonomous' && agentLoopRef.current) {
+      setTimeout(() => sendMessage('The user approved and ran the pending command. The terminal output above shows the result — verify it and continue with the task.', true), 300);
+    }
   };
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(input); }
   };
 
-  const stopAgent = () => { agentLoopRef.current = false; setLoading(false); };
+  const stopAgent = () => { agentLoopRef.current = false; setAgentActive(false); setLoading(false); };
 
   const clearChat = () => {
-    setMessages([]); setPendingCommands([]); agentLoopRef.current = false;
+    setMessages([]); agentLoopRef.current = false; setAgentActive(false); agentIterRef.current = 0;
     window.electronAPI?.ai?.clear?.('main');
   };
 
@@ -331,7 +388,8 @@ export default function AIAssistant({ visible, onClose, getTerminalContent, send
                       <div key={j} className={`ai-command-block ${block.dangerous ? 'dangerous' : ''}`}>
                         {block.dangerous && (
                           <div className="ai-warning">
-                            <span className="ai-icon-xs">{Icons.warn}</span> Potentially dangerous command
+                            <span className="ai-icon-xs">{Icons.warn}</span>
+                            Destructive command{block.reason ? ` — ${block.reason}` : ''}. Never runs without your approval.
                           </div>
                         )}
                         <pre className="ai-command-code">{block.content}</pre>
@@ -340,7 +398,7 @@ export default function AIAssistant({ visible, onClose, getTerminalContent, send
                             <span className="ai-icon-xs">{Icons.play}</span> Run
                           </button>
                         )}
-                        {mode === 'auto-approve' && block.dangerous && (
+                        {mode !== 'ask' && block.dangerous && (
                           <button className="ai-run-btn" onClick={() => handleRunCommand(block.content)}>
                             <span className="ai-icon-xs">{Icons.warn}</span> Approve & Run
                           </button>
@@ -364,6 +422,12 @@ export default function AIAssistant({ visible, onClose, getTerminalContent, send
             {msg.role === 'error' && (
               <div className="ai-msg-bubble error"><p>{msg.content}</p></div>
             )}
+            {msg.role === 'note' && (
+              <div className="ai-msg-bubble note">
+                <span className="ai-icon-xs">{Icons.warn}</span>
+                <p>{msg.content}</p>
+              </div>
+            )}
           </div>
         ))}
 
@@ -379,7 +443,7 @@ export default function AIAssistant({ visible, onClose, getTerminalContent, send
 
       {/* Input */}
       <div className="ai-input-area">
-        {agentLoopRef.current && (
+        {agentActive && (
           <button className="ai-stop-btn" onClick={stopAgent}>
             <span className="ai-icon-xs">{Icons.stop}</span> Stop Agent
           </button>

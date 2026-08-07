@@ -7,6 +7,7 @@ const https = require('https');
 const os = require('os');
 
 const { DEFAULT_MODELS, DEFAULT_EFFORT } = require('./ai-models');
+const { classifyCommand } = require('./command-safety');
 
 const MAX_TOKENS = 8192;
 
@@ -69,10 +70,10 @@ class AIService {
   /**
    * Send a message and get a response (supports Claude, DeepSeek, OpenAI)
    */
-  async chat({ apiKey, messages, terminalContext, model, provider = 'claude-api', effort }) {
+  async chat({ apiKey, messages, terminalContext, model, provider = 'claude-api', effort, mode }) {
     if (!apiKey) throw new Error('API key not configured. Go to Settings → AI Assistant to add your API key.');
 
-    const systemPrompt = this._buildSystemPrompt(terminalContext);
+    const systemPrompt = this._buildSystemPrompt(terminalContext, mode);
     const providerConfig = this.PROVIDERS[provider] || this.PROVIDERS['claude-api'];
     const resolvedModel = model || DEFAULT_MODELS[provider] || DEFAULT_MODELS['claude-api'];
 
@@ -140,10 +141,10 @@ class AIService {
    * Calls onChunk(textFragment) for each piece of text received.
    * Returns a Promise that resolves with the full accumulated text + extracted commands.
    */
-  async chatStream({ apiKey, messages, terminalContext, model, provider = 'claude-api', effort, onChunk }) {
+  async chatStream({ apiKey, messages, terminalContext, model, provider = 'claude-api', effort, mode, onChunk }) {
     if (!apiKey) throw new Error('API key not configured. Go to Settings → AI Assistant to add your API key.');
 
-    const systemPrompt = this._buildSystemPrompt(terminalContext);
+    const systemPrompt = this._buildSystemPrompt(terminalContext, mode);
     const providerConfig = this.PROVIDERS[provider] || this.PROVIDERS['claude-api'];
     const isClaude = provider === 'claude-api';
     const resolvedModel = model || DEFAULT_MODELS[provider] || DEFAULT_MODELS['claude-api'];
@@ -263,48 +264,64 @@ class AIService {
   }
 
   /**
-   * Build system prompt with terminal context and OS info
+   * Build the system prompt: identity, hard safety rules, working style,
+   * command format, execution mode, and terminal context.
    */
-  _buildSystemPrompt(terminalContext) {
+  _buildSystemPrompt(terminalContext, mode) {
     const platform = process.platform;
     const arch = process.arch;
     const hostname = os.hostname();
     const username = os.userInfo().username;
     const shell = process.env.SHELL || 'unknown';
 
-    let prompt = `You are an AI terminal assistant integrated into Termilab. You have access to the user's terminal context below. When suggesting commands, always wrap them in \`\`\`bash code blocks so the user can execute them with one click. After a command is executed, you will receive the terminal output. Analyze it and suggest next steps if needed. Be concise and practical.
+    const MODE_NOTES = {
+      'ask': 'The user manually reviews and runs every command you suggest.',
+      'auto-approve': 'Safe commands from your response run automatically and their output is sent back to you. Destructive commands always pause and wait for the user.',
+      'autonomous': 'You operate in a loop with minimal supervision: safe commands run automatically, their output is sent back to you, and you continue until the task is done. Destructive commands are NEVER auto-executed — they pause the loop until the user approves. Be conservative and verify every step.',
+    };
 
-## System Info:
-- OS: ${platform} (${arch})
-- Hostname: ${hostname}
-- User: ${username}
-- Shell: ${shell}
+    let prompt = `You are the AI assistant built into Termilab, an SSH and terminal client. You help the user operate local shells and remote servers by suggesting shell commands and interpreting their output.
 
-## Rules:
-1. When you want to suggest a command to execute, wrap it in a code block with the language "bash" and add a special marker:
+## Command format
+1. A command meant to be executed goes in its own fenced block with the \`bash:run\` marker, ONE command per block:
    \`\`\`bash:run
    command here
    \`\`\`
-2. For commands that are informational only (don't need execution), use regular code blocks:
-   \`\`\`bash
-   example command
-   \`\`\`
-3. Be concise and practical. Focus on actionable steps.
-4. When performing multi-step tasks, execute one command at a time and wait for the output before proceeding.
-5. Always explain what each command does before suggesting it.
-6. For dangerous commands (rm -rf, format, drop database, etc.), add a warning ⚠️ and explain the risk.
-7. Respond in the same language the user writes in.
-8. When you see terminal output with errors, proactively suggest fixes.`;
+2. Purely illustrative commands (not meant to run now) use plain \`\`\`bash blocks.
+3. Never chain a destructive operation with other commands using &&, ; or pipes — keep it isolated in its own block so it can be approved individually.
+
+## Safety rules (these override everything else)
+1. NEVER delete, overwrite, or destroy data without first telling the user exactly what will be affected and why. This covers rm, find -delete, truncate, dd, mkfs, git reset --hard, git clean, docker rm/prune, package removal, DROP/DELETE in databases, killing processes, stopping services, and anything comparable.
+2. Termilab enforces this in code: commands it classifies as destructive are never auto-executed — they always pause and wait for the user's explicit approval, in every mode. Do NOT attempt to bypass this by hiding destructive actions inside scripts, shell functions, aliases, encoded strings, command substitution, or files that are written and then executed.
+3. Before proposing a destructive step, first show what would be affected using read-only commands (ls, du, git status, --dry-run / -n variants), and prefer reversible alternatives when practical: move to a backup location instead of deleting, copy before overwriting.
+4. Use non-interactive flags (-y, --yes) only for safe operations like package installs — never to skip a confirmation on something destructive.
+5. Inspect before you mutate: start with read-only commands and change as little as possible.
+
+## Working style
+- One step at a time: propose a command, wait for its output, and verify it actually succeeded — error text in the output matters more than optimism. Then decide the next step.
+- If a command failed, say so plainly and diagnose it. Never claim success you have not seen in the terminal output.
+- Be brief: one short sentence on what the next command does and why, then the block. No filler.
+- When the task is complete, state the outcome clearly and stop emitting bash:run blocks. If you are blocked on information only the user has, ask.
+- The terminal may be a local shell or an SSH session on a remote host. Infer the target OS and distro from the terminal context below — the app host info is where Termilab runs, not necessarily where commands execute.
+- Respond in the same language the user writes in.
+
+## App host (where Termilab runs)
+- OS: ${platform} (${arch}) · Host: ${hostname} · User: ${username} · Shell: ${shell}
+
+## Execution mode
+${MODE_NOTES[mode] || MODE_NOTES['ask']}`;
 
     if (terminalContext) {
-      prompt += `\n\n## Current Terminal Context:\n\`\`\`\n${terminalContext}\n\`\`\``;
+      prompt += `\n\n## Current terminal context\n\`\`\`\n${terminalContext}\n\`\`\``;
     }
 
     return prompt;
   }
 
   /**
-   * Extract executable commands from Claude's response
+   * Extract executable commands from Claude's response, classified for safety.
+   * The `dangerous` flag here is what gates auto-execution in the renderer —
+   * it comes from command-safety.js, the single source of truth.
    */
   _extractCommands(text) {
     const commands = [];
@@ -314,35 +331,16 @@ class AIService {
     while ((match = regex.exec(text)) !== null) {
       const cmd = match[1].trim();
       if (cmd) {
+        const { destructive, reason } = classifyCommand(cmd);
         commands.push({
           command: cmd,
           index: match.index,
-          dangerous: this._isDangerous(cmd),
+          dangerous: destructive,
+          reason,
         });
       }
     }
     return commands;
-  }
-
-  /**
-   * Check if a command is potentially dangerous
-   */
-  _isDangerous(cmd) {
-    const dangerous = [
-      /rm\s+(-rf?|--recursive)\s/i,
-      /mkfs/i,
-      /dd\s+if=/i,
-      /:\(\)\s*\{/i, // fork bomb
-      />\s*\/dev\/sd/i,
-      /chmod\s+777/i,
-      /drop\s+(database|table)/i,
-      /truncate\s+table/i,
-      /shutdown/i,
-      /reboot/i,
-      /init\s+0/i,
-      /systemctl\s+(stop|disable)/i,
-    ];
-    return dangerous.some(r => r.test(cmd));
   }
 
   /**
