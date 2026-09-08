@@ -107,6 +107,28 @@ nothing loads them: `package.json` `main` points at `electron/main.js`, `main.js
 Native modules (`ssh2`, `node-pty`) are marked external in the Vite config and rebuilt against
 Electron's ABI by the `postinstall` hook.
 
+## Roles (subagents)
+
+Delegate with Task/Agent. Each role reads this file plus its own
+`.claude/roles/<role>.md` on birth, and must write and commit that memory file
+before delivering.
+
+| Role | Use it for | Not for |
+|---|---|---|
+| `roles:explorador` | "Where is X", "how does Y work" — read-only, keeps search out of the orchestrator's context | Anything that changes a file |
+| `roles:dev-backend` | The main process: services, IPC handlers, ssh2/node-pty/sftp, JSON persistence | The renderer |
+| `roles:dev-frontend` | The renderer: React components, `AppContext`, terminal views | Main-process logic |
+| `roles:disenador` | Design tokens in `index.css`, dark/light parity, terminal color schemes | Features |
+| `empaquetador` | electron-builder config, native module ABI, universal binaries, signing, the update channel | App logic or UI |
+
+`empaquetador` is defined locally in `.claude/agents/`, so it exists only in
+this project; the other four come from the `roles` plugin.
+
+**The two duplicated file pairs documented above cross the backend/frontend
+boundary.**
+Whoever is given a task touching `command-safety` or `ai-models` owns *both*
+copies for that task — do not split them between two roles.
+
 ## Releasing
 
 `electron-updater` checks GitHub Releases on startup (5s delay) and surfaces the result in
