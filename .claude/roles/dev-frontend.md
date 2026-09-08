@@ -24,16 +24,21 @@ found" antes de llegar a grep.
   quitar la IA. Lo dejé ahí a propósito para no meter ruido; no pierdas el rato
   buscando quién lo usa.
 
-## Media res: exportar purga las keys, importar no
+## Las API keys de IA: la fuga esta cerrada, y no solo por el export
 
-`Settings.jsx#handleExportData` ya excluye `ai` de `state.settings` (requisito
-explícito de Derek: un `settings.json` viejo guarda las API keys en claro y el
+`Settings.jsx#handleExportData` excluye `ai` de `state.settings` (requisito
+explicito de Derek: un `settings.json` viejo guarda las API keys en claro y el
 backup las volcaba tal cual).
 
-**`handleImportData` sigue aplicando `data.settings` entero** — `SET_SETTINGS`
-más el guardado en el store. Un backup antiguo que traiga `ai` vuelve a escribir
-esas claves en `settings.json`. Se dejó así porque el encargo era solo el
-export; si alguien retoma la fuga, es ahí, en el mismo archivo.
+`handleImportData` **si** sigue aplicando `data.settings` entero, asi que un
+backup antiguo con `ai` entra en el estado de React. Parece una fuga y no lo es:
+`store-service.saveSettings()` hace `delete merged.ai` sin condiciones antes de
+escribir, asi que **ese bloque no llega nunca al disco**. Verificado leyendo
+`store-service.js:374-382` despues de que ambos lados aterrizaran.
+
+Lo unico que queda es que el bloque vive en memoria hasta recargar la app. No se
+persiste ni se reexporta. Si vas a "arreglar" el import, ten claro que arreglas
+eso y no una fuga en disco.
 
 ## Estado de la IA en el renderer (tras `feat/sync-sin-ia`)
 
