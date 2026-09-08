@@ -8,7 +8,6 @@ const storeService = require('./services/store-service');
 const keyService = require('./services/key-service');
 const portForwardService = require('./services/port-forward-service');
 const localShellService = require('./services/local-shell-service');
-const aiService = require('./services/ai-service');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -332,28 +331,6 @@ function registerIpcHandlers(mainWindow) {
     mainWindow.webContents.send('window:maximize-change', false);
   });
 
-  // ─── AI Assistant ─────────────────────────────────────────
-
-  ipcMain.handle('ai:chat', wrapHandler(async (event, { messages, terminalContext, apiKey, model, provider, effort, mode }) => {
-    const result = await aiService.chat({ apiKey, messages, terminalContext, model, provider, effort, mode });
-    return result;
-  }));
-
-  ipcMain.handle('ai:chat-stream', wrapHandler(async (event, { messages, terminalContext, apiKey, model, provider, effort, mode }) => {
-    const result = await aiService.chatStream({
-      apiKey, messages, terminalContext, model, provider, effort, mode,
-      onChunk: (text) => {
-        event.sender.send('ai:stream-chunk', text);
-      },
-    });
-    return result;
-  }));
-
-  ipcMain.handle('ai:clear', wrapHandler(async (event, conversationId) => {
-    aiService.clearConversation(conversationId);
-    return { cleared: true };
-  }));
-
   // ─── System Info ──────────────────────────────────────────
 
   ipcMain.handle('system:info', wrapHandler(async () => {
@@ -386,7 +363,6 @@ function removeIpcHandlers() {
     'local:spawn', 'local:kill',
     'dialog:open-file', 'dialog:save-file',
     'window:is-maximized',
-    'ai:chat', 'ai:chat-stream', 'ai:clear',
     'system:info',
   ];
 

@@ -3,13 +3,6 @@ const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const { app } = require('electron');
-const {
-  DEFAULT_MODELS,
-  DEFAULT_EFFORT,
-  MODEL_FIELDS,
-  VALID_MODELS,
-  VALID_EFFORTS,
-} = require('./ai-models');
 
 class StoreService {
   constructor() {
@@ -131,36 +124,7 @@ class StoreService {
         checkUpdates: true,
         language: 'en',
       },
-      ai: {
-        provider: 'claude-api',
-        claudeModel: DEFAULT_MODELS['claude-api'],
-        deepseekModel: DEFAULT_MODELS['deepseek'],
-        openaiModel: DEFAULT_MODELS['openai'],
-        claudeEffort: DEFAULT_EFFORT,
-        defaultMode: 'ask',
-        contextLines: 50,
-      },
     };
-  }
-
-  /**
-   * Drop model IDs and effort levels that are no longer valid so the defaults
-   * apply instead. Without this, a user who saved a since-retired model ID keeps
-   * sending it and every request fails with a 404 from the provider.
-   */
-  _migrateAiSettings(settings) {
-    const ai = settings.ai;
-    if (!ai) return settings;
-
-    for (const [provider, field] of Object.entries(MODEL_FIELDS)) {
-      if (ai[field] && !VALID_MODELS[provider].includes(ai[field])) {
-        ai[field] = DEFAULT_MODELS[provider];
-      }
-    }
-    if (ai.claudeEffort && !VALID_EFFORTS.includes(ai.claudeEffort)) {
-      ai.claudeEffort = DEFAULT_EFFORT;
-    }
-    return settings;
   }
 
   // ─── Hosts ──────────────────────────────────────────────
@@ -404,7 +368,7 @@ class StoreService {
     const defaults = this._getDefaultSettings();
     const saved = await this._readSettings();
     // Deep merge saved over defaults so new default keys are picked up
-    return this._migrateAiSettings(this._deepMerge(defaults, saved));
+    return this._deepMerge(defaults, saved);
   }
 
   async saveSettings(settings) {

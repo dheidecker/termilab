@@ -180,15 +180,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
-  // ─── AI Assistant ───────────────────────────────────────
-  ai: {
-    chat: (params) => invoke('ai:chat', params),
-    chatStream: (config) => invoke('ai:chat-stream', config),
-    onStreamChunk: (callback) => ipcRenderer.on('ai:stream-chunk', (_, text) => callback(text)),
-    removeStreamListeners: () => ipcRenderer.removeAllListeners('ai:stream-chunk'),
-    clear: (conversationId) => invoke('ai:clear', conversationId),
-  },
-
   // ─── System Info ──────────────────────────────────────────
   system: {
     getInfo: () => invoke('system:info'),
