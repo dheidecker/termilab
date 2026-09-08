@@ -431,18 +431,7 @@
   transition: width 0.3s ease;
 }
 
-/* ─── AI Settings ─── */
-.settings-api-key-row {
-  display: flex;
-  gap: 6px;
-  flex: 1;
-}
-
-.settings-api-key-row input {
-  flex: 1;
-  min-width: 0;
-}
-
+/* ─── Action buttons (export / import) ─── */
 .settings-test-btn {
   padding: 6px 14px;
   background: var(--accent-muted);

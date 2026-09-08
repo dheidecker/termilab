@@ -1,13 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { getThemeList } from '../../themes/terminal-themes';
-import {
-  DEFAULT_EFFORT,
-  EFFORT_LEVELS,
-  MODELS,
-  PROVIDERS,
-  resolveModel,
-} from '../../config/aiModels';
 import './Settings.css';
 
 const ACCENT_COLORS = [
@@ -25,7 +18,6 @@ const TABS = [
   { id: 'general', label: 'General', icon: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z' },
   { id: 'terminal', label: 'Terminal', icon: 'M4 17l6-6-6-6M12 19h8' },
   { id: 'appearance', label: 'Appearance', icon: 'M12 2.69l5.66 5.66a8 8 0 11-11.31 0z' },
-  { id: 'ai', label: 'AI Assistant', icon: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5' },
   { id: 'about', label: 'About', icon: 'M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM12 16v-4M12 8h.01' },
 ];
 
@@ -68,28 +60,6 @@ export default function Settings({ fullPage = false }) {
     });
   };
 
-  const activeProvider =
-    PROVIDERS.find(p => p.id === (settings.ai?.provider || 'claude-api')) || PROVIDERS[0];
-  const activeModel = resolveModel(settings.ai, activeProvider.id);
-
-  const testConnection = async () => {
-    const key = settings.ai?.[activeProvider.keyField];
-    if (!key) return alert('Enter an API key first');
-    try {
-      const res = await window.electronAPI?.ai?.chat({
-        messages: [{ role: 'user', content: 'Say "Connected!" in one word' }],
-        terminalContext: '',
-        apiKey: key,
-        model: activeModel,
-        provider: activeProvider.id,
-        effort: settings.ai?.claudeEffort || DEFAULT_EFFORT,
-      });
-      alert(res ? '✅ Connection successful!' : '❌ Failed');
-    } catch (err) {
-      alert('❌ ' + err.message);
-    }
-  };
-
   const handleSave = () => {
     actions.saveSettings(settings);
     setSaved(true);
@@ -97,6 +67,12 @@ export default function Settings({ fullPage = false }) {
   };
 
   const handleExportData = () => {
+    /* Never dump settings blindly: a settings.json written before the AI
+       assistant was removed still carries `ai` with API keys in clear text.
+       Whitelisting is not possible here (settings grow), so drop `ai`
+       explicitly and keep the rest. */
+    const { ai: _droppedAiSettings, ...exportableSettings } = state.settings || {};
+
     const data = {
       version: 1,
       exportedAt: new Date().toISOString(),
@@ -105,7 +81,7 @@ export default function Settings({ fullPage = false }) {
       snippets: state.snippets,
       keys: state.keys,
       portForwards: state.portForwards,
-      settings: state.settings,
+      settings: exportableSettings,
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -452,115 +428,6 @@ export default function Settings({ fullPage = false }) {
               </div>
             </div>
           </div>
-        )}
-
-        {/* ═══ AI Assistant Tab ═══ */}
-        {activeTab === 'ai' && (
-          <>
-            <div className="settings-section">
-              <div className="settings-section-title">Provider</div>
-
-              <div className="settings-field">
-                <div className="settings-field-label">
-                  <span>Active Provider</span>
-                  <small>Select your preferred AI provider</small>
-                </div>
-                <select
-                  value={activeProvider.id}
-                  onChange={e => update('ai.provider', e.target.value)}
-                >
-                  {PROVIDERS.map(p => (
-                    <option key={p.id} value={p.id}>{p.label}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* Active provider — key, model, and provider-specific options */}
-            <div className="settings-section">
-              <div className="settings-section-title">{activeProvider.label} Configuration</div>
-
-              <div className="settings-field">
-                <div className="settings-field-label">
-                  <span>API Key</span>
-                  <small>Get your key at {activeProvider.console}</small>
-                </div>
-                <div className="settings-api-key-row">
-                  <input
-                    type="password"
-                    value={settings.ai?.[activeProvider.keyField] || ''}
-                    onChange={e => update(`ai.${activeProvider.keyField}`, e.target.value)}
-                    placeholder={activeProvider.keyPlaceholder}
-                  />
-                  <button className="settings-test-btn" onClick={testConnection}>Test</button>
-                </div>
-              </div>
-
-              <div className="settings-field">
-                <div className="settings-field-label">
-                  <span>Model</span>
-                  <small>{activeProvider.label} model for assistance</small>
-                </div>
-                <select
-                  value={activeModel}
-                  onChange={e => update(`ai.${activeProvider.modelField}`, e.target.value)}
-                >
-                  {MODELS[activeProvider.id].map(m => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}{m.note ? ` — ${m.note}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {activeProvider.id === 'claude-api' && (
-                <div className="settings-field">
-                  <div className="settings-field-label">
-                    <span>Reasoning Effort</span>
-                    <small>How deeply Claude thinks before answering</small>
-                  </div>
-                  <select
-                    value={settings.ai?.claudeEffort || DEFAULT_EFFORT}
-                    onChange={e => update('ai.claudeEffort', e.target.value)}
-                  >
-                    {EFFORT_LEVELS.map(l => (
-                      <option key={l.id} value={l.id}>{l.label}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </div>
-
-            <div className="settings-section">
-              <div className="settings-section-title">Behavior</div>
-              <div className="settings-field">
-                <div className="settings-field-label">
-                  <span>Default Mode</span>
-                  <small>How the AI handles command execution</small>
-                </div>
-                <select
-                  value={settings.ai?.defaultMode || 'ask'}
-                  onChange={e => update('ai.defaultMode', e.target.value)}
-                >
-                  <option value="ask">Ask — Approve each command</option>
-                  <option value="auto-approve">Auto-Approve — Auto-run safe, ask for risky</option>
-                  <option value="autonomous">Autonomous — Run everything</option>
-                </select>
-              </div>
-              <div className="settings-field">
-                <div className="settings-field-label">
-                  <span>Terminal Context Lines</span>
-                  <small>Lines of terminal output sent as context</small>
-                </div>
-                <input
-                  type="number"
-                  value={settings.ai?.contextLines || 50}
-                  onChange={e => update('ai.contextLines', parseInt(e.target.value, 10))}
-                  min="10" max="200" step="10"
-                />
-              </div>
-            </div>
-          </>
         )}
 
         {/* ═══ About Tab ═══ */}
