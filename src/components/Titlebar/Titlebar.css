@@ -22,6 +22,12 @@
   -webkit-app-region: no-drag;
 }
 
+/* macOS draws its close/minimise/zoom buttons over the top-left of the window,
+   so the title has to start after them or they overlap it. */
+.titlebar-mac .titlebar-left {
+  padding-left: 78px;
+}
+
 .titlebar-icon {
   width: 18px;
   height: 18px;

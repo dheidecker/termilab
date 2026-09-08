@@ -4,21 +4,24 @@ import './Titlebar.css';
 const api = () => window.electronAPI;
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 
+/* On macOS the window keeps its native traffic lights (main.js sets
+   titleBarStyle: 'hidden'), so drawing our own controls would show two sets at
+   once. We hide ours and leave room on the left for the system's. */
+const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
+
 export default function Titlebar() {
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
-    if (!hasApi()) return;
+    if (!hasApi() || isMac) return;
 
     api().window.isMaximized().then(setIsMaximized).catch(() => {});
 
-    const cleanup = api().window.onMaximizeChange((_, maximized) => {
-      setIsMaximized(maximized);
-    });
+    /* preload calls this back with the flag as its FIRST argument, not as an
+       Electron (event, value) pair. */
+    api().window.onMaximizeChange(setIsMaximized);
 
-    return () => {
-      if (typeof cleanup === 'function') cleanup();
-    };
+    return () => api().window.removeMaximizeListener();
   }, []);
 
   const handleMinimize = () => hasApi() && api().window.minimize();
@@ -26,7 +29,7 @@ export default function Titlebar() {
   const handleClose = () => hasApi() && api().window.close();
 
   return (
-    <div className="titlebar">
+    <div className={`titlebar${isMac ? ' titlebar-mac' : ''}`}>
       <div className="titlebar-left">
         <svg className="titlebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="4 17 10 11 4 5" />
@@ -37,7 +40,7 @@ export default function Titlebar() {
 
       <div className="titlebar-center" />
 
-      <div className="titlebar-controls">
+      {!isMac && <div className="titlebar-controls">
         <button className="titlebar-btn" onClick={handleMinimize} aria-label="Minimize">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <line x1="5" y1="12" x2="19" y2="12" />
@@ -61,7 +64,7 @@ export default function Titlebar() {
             <line x1="6" y1="18" x2="18" y2="6" />
           </svg>
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

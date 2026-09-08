@@ -14,6 +14,13 @@ async function invoke(channel, ...args) {
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  /**
+   * Exposed synchronously so the renderer can branch on the platform during its
+   * first paint. The `system:info` channel also reports this, but it is async:
+   * using it for layout makes the window controls flash on the wrong side.
+   */
+  platform: process.platform,
+
   // ─── SSH ──────────────────────────────────────────────
   ssh: {
     connect: (config) => invoke('ssh:connect', config),
