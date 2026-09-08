@@ -30,7 +30,7 @@ function createWindow() {
       sandbox: false,
       webSecurity: true,
       spellcheck: false,
-      webviewTag: true,
+      webviewTag: false,
     },
   });
 
