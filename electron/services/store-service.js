@@ -366,7 +366,7 @@ class StoreService {
 
   async getSettings() {
     const defaults = this._getDefaultSettings();
-    const saved = await this._readSettings();
+    const saved = await this._purgeAiCredentials(await this._readSettings());
     // Deep merge saved over defaults so new default keys are picked up
     return this._deepMerge(defaults, saved);
   }
@@ -374,8 +374,31 @@ class StoreService {
   async saveSettings(settings) {
     const current = await this.getSettings();
     const merged = this._deepMerge(current, settings);
+    // Belt and braces: never let an `ai` block back onto disk, whatever the
+    // caller sends. See _purgeAiCredentials.
+    delete merged.ai;
     await this._writeSettings(merged);
     return merged;
+  }
+
+  /**
+   * The AI assistant is gone, but users who ran an earlier build still have its
+   * provider API keys sitting in plaintext in settings.json. Drop the whole `ai`
+   * block and rewrite the file the first time settings are read, so the keys
+   * stop living on disk. Idempotent: once there is no `ai` key, nothing is
+   * written. A failed rewrite is logged, not thrown — settings must still load.
+   */
+  async _purgeAiCredentials(saved) {
+    if (!saved || typeof saved !== 'object') return saved;
+    if (!Object.prototype.hasOwnProperty.call(saved, 'ai')) return saved;
+
+    delete saved.ai;
+    try {
+      await this._writeSettings(saved);
+    } catch (err) {
+      console.error('[StoreService] Could not purge stored AI credentials:', err.message);
+    }
+    return saved;
   }
 
   _deepMerge(target, source) {
