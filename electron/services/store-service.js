@@ -81,16 +81,27 @@ class StoreService {
     }
   }
 
+  /**
+   * Settings are written by more than one caller at once: every getSettings()
+   * may rewrite the file (see _purgeAiCredentials) while saveSettings() runs.
+   * Without the lock both wrote the same `settings.json.tmp` and raced on the
+   * rename — the loser failed with ENOENT and its write was lost. Every other
+   * writer in this class already serializes on _acquireLock; settings did not.
+   */
   async _writeSettings(settings) {
     await this._ensureDataDir();
+    await this._acquireLock('settings');
     const filePath = this._getFilePath('settings');
-    const tempPath = `${filePath}.tmp`;
+    /* Unique temp name so a stray writer can never rename ours away */
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
     try {
       await fsp.writeFile(tempPath, JSON.stringify(settings, null, 2), 'utf-8');
       await fsp.rename(tempPath, filePath);
     } catch (err) {
       try { await fsp.unlink(tempPath); } catch (_) { /* ignore */ }
       throw err;
+    } finally {
+      this._releaseLock('settings');
     }
   }
 
