@@ -43,6 +43,39 @@ const AUTO_SYNC_DELAY_MS = 8000;
 const PUSH_BATCH = 200;
 const HTTP_TIMEOUT_MS = 30000;
 
+/**
+ * ####################################################################
+ * #  ESTADOS DEL EMPAREJAMIENTO — LA INTERFAZ LOS LEE POR NOMBRE     #
+ * ####################################################################
+ *
+ * `status().pairing.state` (el emparejamiento que PIDE este dispositivo).
+ * `src/components/Sync/` esta construido contra estas cadenas: si cambias una,
+ * hay que cambiarla tambien alli, y no lo detecta ningun build.
+ *
+ *   'pendiente'  nadie ha aceptado todavia. No hay digitos que ensenar:
+ *                salen de LAS DOS publicas y aun falta la del otro.
+ *   'verificar'  el otro dispositivo hizo el PASO 1 (`/accept`) y mando su
+ *                publica. Ya hay seis digitos y el usuario tiene que
+ *                compararlos. En el servidor NO hay todavia ninguna clave
+ *                maestra: ese es justo el punto de este estado.
+ *   'listo'      el otro hizo el PASO 2 (`/complete`) tras confirmar el
+ *                usuario: la clave maestra sellada espera y `pairingClaim()`
+ *                puede descifrarla e instalarla.
+ *   'rejected'   el otro dispositivo rechazo la peticion, o su publica cambio
+ *                a mitad del emparejamiento (alguien en medio).
+ *   'expired'    caducado, consumido (410/404) o agotado PAIR_TIMEOUT_MS.
+ *   'done'       clave maestra instalada; la entrada se borra acto seguido y
+ *                deja de aparecer en el estado.
+ *
+ * Y en el lado que APRUEBA, cada entrada de `pairingPending()` lleva `state`:
+ *
+ *   'pendiente'  alguien pide entrar y aun no hemos aceptado.
+ *   'aceptado'   hicimos el PASO 1; falta que el usuario compare los digitos
+ *                y llame a `pairingConfirm()`. Mientras tanto no ha salido de
+ *                aqui ni un byte de la clave maestra.
+ */
+const CLAIM_ACTIVE_STATES = new Set(['pendiente', 'verificar']);
+
 // server collection name -> local store file name
 const COLLECTIONS = {
   hosts: 'hosts',
@@ -148,7 +181,9 @@ class SyncService {
     this._loginAborted = false;
     this._autoTimer = null;
     this._initialTimer = null;
-    // pairing_id -> { kp, digits, peerPub, ciphertext, nonce, state, timer }
+    // pairing_id -> claims: { kp, digits, peerPub, ciphertext, nonce, state, timer }
+    //               approvals: { kp, peerPub, state, acceptedAt, info }
+    // Los estados posibles estan documentados arriba, junto a CLAIM_ACTIVE_STATES.
     this._saveSeq = 0;
     this._claims = new Map();   // this device asked to join
     this._approvals = new Map(); // this device can approve someone else
@@ -893,9 +928,25 @@ class SyncService {
   // ─── Pairing ────────────────────────────────────────────
 
   /**
+   * El emparejamiento va en DOS pasos por seguridad, y el orden es lo unico que
+   * lo hace seguro:
+   *
+   *   1. el que aprueba manda SOLO su publica  -> POST /v1/pair/:id/accept
+   *      (el que pide ya puede derivar los seis digitos y ensenarlos)
+   *   2. el usuario compara los digitos en los dos aparatos y confirma
+   *      -> POST /v1/pair/:id/complete con la clave maestra sellada
+   *
+   * La version anterior mandaba publica y clave maestra en la MISMA peticion:
+   * el que pide solo podia calcular los digitos cuando el secreto ya habia
+   * salido, asi que comparar no protegia de nada. El servidor responde 409 a un
+   * /complete sin /accept previo justamente para que nadie vuelva a juntarlos.
+   */
+
+  /**
    * This device has no master key and asks to join. The six digits are unknown
-   * until the other device answers with its public key, so they arrive later
-   * through the `sync:status` event (field `pairing.digits`).
+   * until the other device ACCEPTS (step 1) with its public key, so they arrive
+   * later through the `sync:status` event (field `pairing.digits`), with state
+   * 'verificar'.
    */
   async pairingRequest() {
     const kp = pairingCrypto.generateEphemeralKeyPair();
@@ -913,7 +964,7 @@ class SyncService {
 
   _pollClaim(pairingId, deadline) {
     const claim = this._claims.get(pairingId);
-    if (!claim || claim.state !== 'pendiente') return;
+    if (!claim || !CLAIM_ACTIVE_STATES.has(claim.state)) return;
     if (Date.now() > deadline) {
       claim.state = 'expired';
       this._emitStatus();
@@ -927,29 +978,60 @@ class SyncService {
     if (claim.timer.unref) claim.timer.unref();
   }
 
+  /**
+   * Un sondeo de GET /v1/pair/:id. Ahora tiene dos saltos, no uno:
+   * 202 'verificar' trae la publica del otro y NADA MAS (los digitos ya se
+   * pueden ensenar y en el servidor no hay ningun secreto todavia), y 200
+   * 'listo' trae la clave maestra sellada.
+   */
   async _fetchClaim(pairingId) {
     const claim = this._claims.get(pairingId);
-    if (!claim || claim.state !== 'pendiente') return claim;
+    if (!claim || !CLAIM_ACTIVE_STATES.has(claim.state)) return claim;
     const res = await this._request('GET', `/v1/pair/${encodeURIComponent(pairingId)}`);
-    if (res.status === 202) return claim;
+
     if (res.status === 403) {
       claim.state = 'rejected';
       this._emitStatus();
       return claim;
     }
-    if (res.status === 410) {
+    if (res.status === 410 || res.status === 404) {
       claim.state = 'expired';
       this._emitStatus();
       return claim;
     }
-    if (!res.ok || !res.data) throw this._httpError(res, 'No se pudo consultar el emparejamiento');
+    if (!res.ok && res.status !== 202) throw this._httpError(res, 'No se pudo consultar el emparejamiento');
 
-    const peerPub = res.data.pub_existing;
-    if (!peerPub) return claim;
-    claim.peerPub = peerPub;
-    claim.ciphertext = res.data.ciphertext;
-    claim.nonce = res.data.nonce;
-    claim.digits = pairingCrypto.deriveDigits(claim.kp.pub, peerPub);
+    const data = res.data || {};
+    const peerPub = data.pub_existing || null;
+
+    if (peerPub && claim.peerPub && peerPub !== claim.peerPub) {
+      // La publica del otro lado cambio DESPUES de que el usuario mirara los
+      // digitos. Eso solo pasa si alguien esta en medio: se corta, y no se
+      // recalculan los digitos (los que se comparan son los primeros).
+      console.error('[SyncService] La clave publica del otro dispositivo cambio a mitad del emparejamiento');
+      claim.state = 'rejected';
+      this._error = 'El emparejamiento se corto: la clave publica del otro dispositivo cambio a mitad';
+      this._emitStatus();
+      return claim;
+    }
+    if (peerPub && !claim.peerPub) {
+      claim.peerPub = peerPub;
+      claim.digits = pairingCrypto.deriveDigits(claim.kp.pub, peerPub);
+    }
+
+    if (res.status === 202) {
+      // 'verificar' = el otro acepto. Sin pub_existing seguimos en 'pendiente'.
+      const wanted = (data.status === 'verificar' || claim.peerPub) ? 'verificar' : 'pendiente';
+      if (claim.state !== wanted) {
+        claim.state = wanted;
+        this._emitStatus();
+      }
+      return claim;
+    }
+
+    if (!data.ciphertext || !data.nonce) return claim;  // 200 sin material: aun no
+    claim.ciphertext = data.ciphertext;
+    claim.nonce = data.nonce;
     claim.state = 'listo';
     this._emitStatus();
     return claim;
@@ -957,21 +1039,21 @@ class SyncService {
 
   /**
    * The user compared the digits and they match: decrypt the master key and
-   * install it. Waits a little if the other side has not answered yet.
+   * install it. Waits a little if the other side has not confirmed yet.
    */
   async pairingClaim(pairingId) {
     let claim = this._claims.get(pairingId);
     if (!claim) throw new Error('Ese emparejamiento no lo pidio este dispositivo');
 
     const deadline = Date.now() + 30000;
-    while (claim.state === 'pendiente' && Date.now() < deadline) {
+    while (CLAIM_ACTIVE_STATES.has(claim.state) && Date.now() < deadline) {
       claim = await this._fetchClaim(pairingId);
-      if (claim.state === 'pendiente') await new Promise(r => setTimeout(r, PAIR_POLL_INTERVAL_MS));
+      if (CLAIM_ACTIVE_STATES.has(claim.state)) await new Promise(r => setTimeout(r, PAIR_POLL_INTERVAL_MS));
     }
     if (claim.state === 'rejected') throw new Error('El otro dispositivo rechazo el emparejamiento');
     if (claim.state === 'expired') throw new Error('El emparejamiento caduco');
     if (claim.state !== 'listo' || !claim.ciphertext) {
-      throw new Error('El otro dispositivo todavia no ha aprobado el emparejamiento');
+      throw new Error('El otro dispositivo todavia no ha confirmado los seis digitos');
     }
 
     const sessionKey = pairingCrypto.deriveSessionKey(claim.kp.privateKey, claim.peerPub, claim.kp.pub);
@@ -992,52 +1074,128 @@ class SyncService {
     return { ok: true };
   }
 
+  _approvalDigits(approval) {
+    return approval.peerPub ? pairingCrypto.deriveDigits(approval.peerPub, approval.kp.pub) : null;
+  }
+
+  _approvalSummary(id, approval) {
+    const info = approval.info || {};
+    return {
+      id,
+      deviceName: info.deviceName || null,
+      platform: info.platform || null,
+      createdAt: info.createdAt || null,
+      expiresAt: info.expiresAt || null,
+      digits: this._approvalDigits(approval),
+      state: approval.state,
+    };
+  }
+
+  /** Una aprobacion aceptada que nadie confirmo se tira al caducar. */
+  _approvalStale(approval) {
+    return approval.state === 'aceptado'
+      && (!approval.acceptedAt || Date.now() - approval.acceptedAt > PAIR_TIMEOUT_MS);
+  }
+
   /**
-   * Devices waiting for this one to approve them. The digits are computed here,
-   * from the requester's public key and the ephemeral key this device will use
-   * to answer — cached per pairing so the digits shown now are the digits the
-   * approval actually uses.
+   * Devices waiting for this one. The digits are computed here, from the
+   * requester's public key and the ephemeral key this device answers with —
+   * cached per pairing so the digits shown now are the digits the approval
+   * actually uses.
    */
   async pairingPending() {
     const res = await this._request('GET', '/v1/pair/pending');
     if (!res.ok) throw this._httpError(res, 'No se pudieron listar los emparejamientos pendientes');
     const pending = (res.data && res.data.pending) || [];
-    const alive = new Set();
+    const serverIds = new Set();
 
     const out = pending.map(entry => {
-      alive.add(entry.id);
+      serverIds.add(entry.id);
       let approval = this._approvals.get(entry.id);
       if (!approval) {
-        approval = { kp: pairingCrypto.generateEphemeralKeyPair(), peerPub: entry.pub_new };
+        approval = {
+          kp: pairingCrypto.generateEphemeralKeyPair(),
+          peerPub: entry.pub_new,
+          state: 'pendiente',
+          acceptedAt: null,
+          info: {},
+        };
         this._approvals.set(entry.id, approval);
       }
       approval.peerPub = entry.pub_new || approval.peerPub;
-      return {
-        id: entry.id,
+      approval.info = {
         deviceName: entry.device_name || null,
         platform: entry.platform || null,
         createdAt: entry.created_at || null,
         expiresAt: entry.expires_at || null,
-        digits: approval.peerPub ? pairingCrypto.deriveDigits(approval.peerPub, approval.kp.pub) : null,
       };
+      return this._approvalSummary(entry.id, approval);
     });
 
-    for (const id of [...this._approvals.keys()]) {
-      if (!alive.has(id)) this._approvals.delete(id);
+    // Lo que ya aceptamos (paso 1) sigue aqui aunque el servidor deje de
+    // listarlo: la efimera privada solo vive en este Map y sin ella no se puede
+    // confirmar. Se conserva hasta que se confirma, se rechaza o caduca.
+    for (const [id, approval] of [...this._approvals]) {
+      if (serverIds.has(id)) continue;
+      if (approval.state === 'aceptado' && !this._approvalStale(approval)) {
+        out.push(this._approvalSummary(id, approval));
+      } else {
+        this._approvals.delete(id);
+      }
     }
+
     this._pendingPairings = out.length;
     this._emitStatus();
     return { pending: out };
   }
 
+  /**
+   * PASO 1 y SOLO el paso 1: manda la publica de este dispositivo, nada mas.
+   * A partir de aqui el que pide ya puede derivar los seis digitos y
+   * compararlos; la clave maestra no ha salido de esta maquina. El paso 2 es
+   * `pairingConfirm()`, cuando el usuario diga que los digitos coinciden.
+   * NO vuelvas a juntarlos por comodidad: el servidor da 409, y juntarlos es
+   * exactamente el fallo que este protocolo arregla.
+   */
   async pairingApprove(pairingId) {
     if (!this._approvals.has(pairingId)) {
-      // Approving without having listed first: refresh so we get pub_new and a
-      // cached ephemeral key for this pairing.
+      // Aprobar sin haber listado antes: refrescamos para tener pub_new y una
+      // efimera cacheada para este emparejamiento.
       await this.pairingPending();
     }
     const approval = this._approvals.get(pairingId);
     if (!approval || !approval.peerPub) throw new Error('Ese emparejamiento ya no esta pendiente');
+    if (approval.state === 'aceptado') {
+      // Idempotente: aceptar dos veces no debe reventar ni cambiar los digitos.
+      return { state: approval.state, digits: this._approvalDigits(approval) };
+    }
+
+    // Se comprueba la clave maestra ANTES de aceptar: aceptar sin poder
+    // completar deja al otro lado mirando unos digitos que no llevan a nada.
+    const masterKey = await cryptoService.getMasterKey();
+    if (!masterKey) throw new Error('Este dispositivo no tiene clave maestra que compartir');
+
+    const res = await this._request('POST', `/v1/pair/${encodeURIComponent(pairingId)}/accept`, {
+      body: { pub: approval.kp.pub },
+    });
+    if (!res.ok) throw this._httpError(res, 'No se pudo aceptar el emparejamiento');
+
+    approval.state = 'aceptado';
+    approval.acceptedAt = Date.now();
+    this._emitStatus();
+    return { state: approval.state, digits: this._approvalDigits(approval) };
+  }
+
+  /**
+   * PASO 2: el usuario comparo los seis digitos en los dos aparatos y
+   * coinciden. Esta es la UNICA llamada que saca la clave maestra de aqui.
+   */
+  async pairingConfirm(pairingId) {
+    const approval = this._approvals.get(pairingId);
+    if (!approval || !approval.peerPub) throw new Error('Ese emparejamiento ya no esta pendiente');
+    if (approval.state !== 'aceptado') {
+      throw new Error('Antes de confirmar hay que aceptar el emparejamiento y comparar los seis digitos');
+    }
 
     const masterKey = await cryptoService.getMasterKey();
     if (!masterKey) throw new Error('Este dispositivo no tiene clave maestra que compartir');
@@ -1045,12 +1203,26 @@ class SyncService {
     const sessionKey = pairingCrypto.deriveSessionKey(approval.kp.privateKey, approval.peerPub, approval.kp.pub);
     const sealed = pairingCrypto.sealMasterKey(sessionKey, masterKey);
     const res = await this._request('POST', `/v1/pair/${encodeURIComponent(pairingId)}/complete`, {
-      body: { pub: approval.kp.pub, ciphertext: sealed.ciphertext, nonce: sealed.nonce },
+      body: { ciphertext: sealed.ciphertext, nonce: sealed.nonce },
     });
-    if (!res.ok) throw this._httpError(res, 'No se pudo completar el emparejamiento');
+    if (!res.ok) {
+      if (res.status === 409) {
+        // El servidor no tiene registrado el paso 1 (caduco, se reinicio, o
+        // alguien lo consumio). La aprobacion se queda, con su efimera y sus
+        // digitos: el usuario vuelve a aceptar y a comparar sin empezar de
+        // cero, y nada queda a medias por nuestra parte.
+        approval.state = 'pendiente';
+        approval.acceptedAt = null;
+        this._emitStatus();
+        throw this._httpError(res, 'El servidor no tiene registrada la aceptacion de este emparejamiento: acepta otra vez y vuelve a comparar los digitos');
+      }
+      throw this._httpError(res, 'No se pudo completar el emparejamiento');
+    }
+
     this._approvals.delete(pairingId);
     this._pendingPairings = Math.max(0, this._pendingPairings - 1);
     this._emitStatus();
+    return { ok: true };
   }
 
   async pairingReject(pairingId) {
@@ -1065,8 +1237,18 @@ class SyncService {
     const res = await this._request('GET', '/v1/pair/pending');
     if (!res.ok) return;
     const pending = (res.data && res.data.pending) || [];
-    if (pending.length !== this._pendingPairings) {
-      this._pendingPairings = pending.length;
+    const serverIds = new Set(pending.map(entry => entry.id));
+    // Las aceptadas a la espera de confirmacion ya no las lista el servidor y
+    // aun asi cuentan: si no, el contador cae a cero justo cuando el usuario
+    // tiene que confirmar.
+    let esperandoConfirmacion = 0;
+    for (const [id, approval] of this._approvals) {
+      if (serverIds.has(id)) continue;
+      if (approval.state === 'aceptado' && !this._approvalStale(approval)) esperandoConfirmacion++;
+    }
+    const total = serverIds.size + esperandoConfirmacion;
+    if (total !== this._pendingPairings) {
+      this._pendingPairings = total;
       this._emitStatus();
     }
   }

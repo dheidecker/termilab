@@ -368,8 +368,15 @@ function registerIpcHandlers(mainWindow) {
     return await syncService.pairingPending();
   }));
 
+  // Emparejamiento en dos pasos: 'approve' manda solo la publica y 'confirm'
+  // es lo unico que entrega la clave maestra, cuando el usuario ha comparado
+  // los seis digitos. Ver el bloque de estados en sync-service.js.
   ipcMain.handle('sync:pair-approve', wrapHandler(async (event, id) => {
-    await syncService.pairingApprove(id);
+    return await syncService.pairingApprove(id);
+  }));
+
+  ipcMain.handle('sync:pair-confirm', wrapHandler(async (event, id) => {
+    return await syncService.pairingConfirm(id);
   }));
 
   ipcMain.handle('sync:pair-reject', wrapHandler(async (event, id) => {
@@ -416,7 +423,7 @@ function removeIpcHandlers() {
     'sync:status', 'sync:login', 'sync:logout', 'sync:now',
     'sync:devices', 'sync:revoke-device',
     'sync:pair-request', 'sync:pair-pending', 'sync:pair-approve',
-    'sync:pair-reject', 'sync:pair-claim',
+    'sync:pair-confirm', 'sync:pair-reject', 'sync:pair-claim',
   ];
 
   for (const channel of channels) {

@@ -206,7 +206,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     pairing: {
       request: () => invoke('sync:pair-request'),
       pending: () => invoke('sync:pair-pending'),
+      // Dos pasos: approve() manda solo la clave publica (a partir de ahi los
+      // dos lados ven los seis digitos) y confirm() es el que entrega la clave
+      // maestra, cuando el usuario dice que los digitos coinciden.
       approve: (id) => invoke('sync:pair-approve', id),
+      confirm: (id) => invoke('sync:pair-confirm', id),
       reject: (id) => invoke('sync:pair-reject', id),
       claim: (id) => invoke('sync:pair-claim', id),
     },
