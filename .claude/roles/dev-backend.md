@@ -39,9 +39,12 @@ Detalles del stub que costaron intentos:
 - Los canales `updater:*` los registra `main.js` (stubs de dev), **no**
   `ipc-handlers.js`: al comparar contra preload hay que excluirlos o salen como
   "sin handler" falsos.
-- Cuando toques el arnés, valídalo con un **control negativo**: vacía
-  `SECRET_FIELDS` y comprueba que se pone rojo. Un arnés de seguridad que no
-  falla cuando quitas la protección no está probando nada.
+- Cuando toques el arnés, valídalo con un **control negativo**: rompe la
+  protección a propósito y comprueba que se pone rojo. Un arnés de seguridad que
+  no falla cuando quitas la protección no está probando nada. Hazlo sobre una
+  **copia** (`cp -R electron scripts /tmp/x` + `ln -s` de `node_modules`, o el
+  grafo revienta con `Cannot find module 'ssh2'` y enrojece todo por el motivo
+  equivocado), no sobre el árbol compartido.
 
 ## `git add` de un archivo ya borrado falla; `git commit -- <rutas>` no
 
@@ -99,32 +102,72 @@ Comprobado contra `https://termilab.rhinlab.com` (solo lecturas y un
 - Sin `Authorization`, `/v1/*` da 401 `{"error":"falta el token"}`. Un 401 en
   cualquier momento significa dispositivo revocado desde otro sitio: hay que
   cerrar sesión de verdad, no reintentar.
+- **No se puede averiguar qué rutas `/v1/*` existen sin token**: el hook de auth
+  responde 401 antes de enrutar, así que `/v1/pair/:id/loquesea` también da 401.
+  Un 401 ahí no significa «la ruta existe».
 - Lápida de `keys`: se manda `enc:false` con `payload` **y** `ciphertext` nulos.
   La restricción del servidor es "no mandes los dos", no "manda uno". Esto **no
   está probado contra el servidor real** (requiere token de dispositivo); si un
   día falla al borrar una clave, es el primer sitio donde mirar.
 
-## Emparejamiento: los dígitos NO pueden existir al pedirlo
+## Emparejamiento: dos pasos, y el orden es lo único que protege
 
-Trampa de diseño que cuesta media hora entender. `sync.pairing.request()`
-devuelve `{pairingId, digits}` según el contrato IPC, pero los seis dígitos
-salen de **las dos** públicas y el que pide solo tiene la suya: hasta que el otro
-dispositivo aprueba, no hay dígitos que enseñar. Por eso:
+El protocolo viejo (una sola petición `/complete` con `{pub, ciphertext, nonce}`)
+era vulnerable: el que pide solo podía derivar los dígitos **después** de que el
+secreto ya hubiera salido, así que compararlos no protegía de nada. Hoy son dos
+pasos, `/accept` (solo la pública) y `/complete` (la clave maestra), con **409 del
+servidor** si te saltas el primero. No los juntes «porque es una llamada menos»:
+esa comodidad es el fallo entero.
 
-- `request()` devuelve `digits: null` y arranca un sondeo de `GET /v1/pair/:id`;
-  cuando llega `pub_existing` se emite `sync:status` con un campo extra
-  `pairing: {id, digits, state}`. **La interfaz tiene que leer los dígitos de
-  ahí**, no del retorno de `request()`.
-- El lado que aprueba sí los tiene ya en `pairing.pending()`, porque genera su
-  efímera en ese momento. Está **cacheada por `pairing_id`**: si la regeneras en
-  `approve()`, los dígitos que vio el usuario dejan de ser los que se usan y el
-  otro lado ve otros. `approve()` sin `pending()` previo llama a `pending()` él
-  solo justo por esto.
+Sigue siendo cierto que **los dígitos no existen al pedir**: salen de las dos
+públicas y `request()` devuelve `digits: null`. La interfaz los lee de
+`sync:status` → `pairing: {id, digits, state}`, nunca del retorno de `request()`.
+
+Lo que cuesta descubrir del lado que aprueba:
+
+- La efímera privada vive **solo** en el `Map` `_approvals`, en memoria. Si el
+  servidor deja de listar el emparejamiento en `/v1/pair/pending` tras el
+  `/accept` —**no está comprobado contra el real**, hace falta token de
+  dispositivo; el cliente y el arnés asumen lo peor—, la poda «lo que no esté en
+  la lista se borra» **mata la confirmación**. Por eso las aprobaciones en
+  estado `aceptado` se conservan y `pairingPending()` las devuelve aunque el
+  servidor ya no las mande. Mismo motivo para sumarlas a `_pendingPairings`: si
+  no, el contador caería a cero justo cuando el usuario tiene que confirmar.
+- Tras un **409** la aprobación se devuelve a `pendiente` pero **no se borra**:
+  el `kp` cacheado hace que al reaceptar salgan **los mismos dígitos**. Si la
+  borras, el usuario vuelve a empezar y compara unos dígitos nuevos.
+- La comprobación de «¿tengo clave maestra?» va **antes** del `/accept`. Aceptar
+  sin poder completar deja al otro lado mirando unos dígitos que no llevan a nada.
+- Si `pub_existing` **cambia** entre el `verificar` y el `listo`, no se recalculan
+  los dígitos: se corta (`state = 'rejected'`). Recalcular sería enseñar unos
+  dígitos que el usuario ya no está mirando.
+
+Los nombres de estado son un **híbrido español/inglés a propósito**
+(`pendiente`, `verificar`, `listo`, pero `rejected`, `expired`, `done`): la
+interfaz de `src/components/Sync/PairingClaim.jsx` ya compara contra
+`'rejected'`/`'expired'`. Renombrarlos «para ordenar» rompe la UI en silencio,
+porque nada en el build cruza main con renderer. Están documentados en el bloque
+de constantes de `sync-service.js`; si añades uno, va ahí y se avisa a
+`dev-frontend`.
 
 Y al sellar la clave maestra, va en **base64 dentro del texto cifrado**, no en
 crudo: el descifrado devuelve string utf-8 y 32 bytes aleatorios no son utf-8
 válido, así que un viaje de ida y vuelta en crudo la corrompe sin avisar
 (y el error aparece luego, al no poder descifrar ninguna key).
+
+### Probar el emparejamiento sin dos máquinas
+
+Un solo proceso hace los dos papeles: `_claims` (el que pide) y `_approvals`
+(el que aprueba) son mapas distintos que no se rozan. Lo único compartido es el
+llavero, así que para comprobar que la clave **llega de verdad** hay que
+`cryptoService.clearAll()` (y volver a poner el token) entre confirmar y
+reclamar. En el arnés los sondeos se disparan llamando a `_fetchClaim()` a mano;
+esperar al `setTimeout` de 2 s solo hace la prueba lenta y floja.
+
+Dos ruidos de consola que **no** son fallos y que ya están domados en el arnés:
+el aviso de pública cambiada a mitad, y el `syncNow()` en segundo plano que
+`pairingClaim()` lanza y que suelta `fetch failed` si cierras el servidor falso
+antes de que salga.
 
 ## Cifrado por campo de `hosts` (la fuga que ya ocurrió)
 
