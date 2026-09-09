@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
+import { normalizeSyncStatus } from '../components/Sync/helpers';
 
 const AppContext = createContext(null);
 
@@ -38,6 +39,13 @@ const MOCK_SETTINGS = {
 const api = () => window.electronAPI;
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 
+/* ── Sync bridge ──
+   Built by the main process; absent in the browser and in any build whose main
+   process predates sync. Callers get a rejected promise with a readable message
+   instead of "cannot read property of undefined". */
+const syncApi = () => window.electronAPI?.sync;
+const noSync = () => Promise.reject(new Error('Sync is not available in this build'));
+
 /* ── Initial State ── */
 const initialState = {
   hosts: [],
@@ -54,6 +62,10 @@ const initialState = {
   hostFormOpen: false,
   editingHost: null,
   broadcast: false,
+  /* Sync — `available` is false until we have seen window.electronAPI.sync.
+     `status` stays null while the first sync.status() is in flight so the UI
+     can tell "not signed in" from "we don't know yet". */
+  sync: { available: false, loading: true, status: null },
 };
 
 /* ── Reducer ── */
@@ -64,6 +76,32 @@ function appReducer(state, action) {
       return { ...state, loading: action.payload };
     case 'INIT_DATA':
       return { ...state, ...action.payload, loading: false };
+
+    /* ── Sync ── */
+    case 'SET_SYNC_AVAILABLE':
+      return {
+        ...state,
+        sync: {
+          ...state.sync,
+          available: !!action.payload,
+          /* No sync bridge means nothing will ever load. Stop waiting. */
+          loading: action.payload ? state.sync.loading : false,
+        },
+      };
+    case 'SET_SYNC_STATUS': {
+      /* Push events may carry only the fields that changed, so they merge.
+         A full sync.status() reply replaces, otherwise a cleared field
+         (email after logout) would keep its stale value forever. */
+      const base = action.replace ? {} : (state.sync.status || {});
+      return {
+        ...state,
+        sync: {
+          ...state.sync,
+          loading: false,
+          status: normalizeSyncStatus({ ...base, ...(action.payload || {}) }),
+        },
+      };
+    }
 
     /* ── Hosts ── */
     case 'SET_HOSTS':
@@ -290,6 +328,45 @@ export function AppProvider({ children }) {
     return () => cancelAnimationFrame(raf);
   }, [appTheme, accentColor]);
 
+  /**
+   * Sync status subscription.
+   *
+   * The bridge may not exist at all (browser dev mode, or an older main
+   * process): every call is optional-chained and the UI falls back to an
+   * "unavailable" panel instead of crashing. Status arrives twice — once
+   * pulled with sync.status(), then pushed on every change — so nothing here
+   * polls.
+   */
+  useEffect(() => {
+    const sync = window.electronAPI?.sync;
+    if (!sync || typeof sync.status !== 'function') {
+      dispatch({ type: 'SET_SYNC_AVAILABLE', payload: false });
+      return undefined;
+    }
+    dispatch({ type: 'SET_SYNC_AVAILABLE', payload: true });
+
+    let mounted = true;
+    Promise.resolve()
+      .then(() => sync.status())
+      .then(s => { if (mounted) dispatch({ type: 'SET_SYNC_STATUS', payload: s, replace: true }); })
+      .catch(err => {
+        if (mounted) dispatch({
+          type: 'SET_SYNC_STATUS',
+          payload: { error: err?.message || 'Could not read sync status' },
+          replace: true,
+        });
+      });
+
+    const listener = sync.onStatus?.(s => dispatch({ type: 'SET_SYNC_STATUS', payload: s }));
+
+    return () => {
+      mounted = false;
+      /* Call the remover, not the listener. Passing the listener back is
+         harmless if the bridge ignores its arguments. */
+      sync.removeStatusListener?.(listener);
+    };
+  }, []);
+
   /* ── Action creators ── */
   const actions = {
     /* Hosts */
@@ -492,6 +569,115 @@ export function AppProvider({ children }) {
 
     /* Broadcast */
     toggleBroadcast: useCallback(() => dispatch({ type: 'TOGGLE_BROADCAST' }), []),
+
+    /* ── Sync ──
+       Every call funnels through here so the "is the bridge there?" guard
+       lives in one place. Shapes are normalized in components/Sync/helpers. */
+    refreshSyncStatus: useCallback(async () => {
+      const sync = syncApi();
+      if (!sync?.status) return null;
+      try {
+        const status = await sync.status();
+        dispatch({ type: 'SET_SYNC_STATUS', payload: status, replace: true });
+        return status;
+      } catch (err) {
+        dispatch({
+          type: 'SET_SYNC_STATUS',
+          payload: { error: err?.message || 'Could not read sync status' },
+          replace: true,
+        });
+        return null;
+      }
+    }, []),
+
+    /* Opens the system browser and resolves only when the user finishes there,
+       which can take minutes and expires after ten. Callers must keep their own
+       waiting state; this one never rejects on its own timer. */
+    syncLogin: useCallback(async () => {
+      const sync = syncApi();
+      if (!sync?.login) return noSync();
+      return sync.login();
+    }, []),
+
+    syncLogout: useCallback(async () => {
+      const sync = syncApi();
+      if (!sync?.logout) return noSync();
+      await sync.logout();
+      dispatch({ type: 'SET_SYNC_STATUS', payload: { signedIn: false }, replace: true });
+    }, []),
+
+    syncNow: useCallback(async () => {
+      const sync = syncApi();
+      if (!sync?.syncNow) return noSync();
+      return sync.syncNow();
+    }, []),
+
+    syncDevices: useCallback(async () => {
+      const sync = syncApi();
+      if (!sync?.devices) return noSync();
+      return sync.devices();
+    }, []),
+
+    syncRevokeDevice: useCallback(async (id) => {
+      const sync = syncApi();
+      if (!sync?.revokeDevice) return noSync();
+      return sync.revokeDevice(id);
+    }, []),
+
+    syncPairingRequest: useCallback(async () => {
+      const sync = syncApi();
+      if (!sync?.pairing?.request) return noSync();
+      return sync.pairing.request();
+    }, []),
+
+    syncPairingPending: useCallback(async () => {
+      const sync = syncApi();
+      if (!sync?.pairing?.pending) return noSync();
+      return sync.pairing.pending();
+    }, []),
+
+    syncPairingApprove: useCallback(async (id) => {
+      const sync = syncApi();
+      if (!sync?.pairing?.approve) return noSync();
+      return sync.pairing.approve(id);
+    }, []),
+
+    syncPairingReject: useCallback(async (id) => {
+      const sync = syncApi();
+      if (!sync?.pairing?.reject) return noSync();
+      return sync.pairing.reject(id);
+    }, []),
+
+    syncPairingClaim: useCallback(async (id) => {
+      const sync = syncApi();
+      if (!sync?.pairing?.claim) return noSync();
+      return sync.pairing.claim(id);
+    }, []),
+
+    /* Re-read every collection from the store. Used after a sync pull, which
+       rewrites the JSON files under the renderer's feet (tombstones included). */
+    reloadStore: useCallback(async () => {
+      if (!hasApi()) return;
+      const [hosts, groups, snippets, keys, portForwards, settings] = await Promise.all([
+        api().store.getHosts(),
+        api().store.getGroups(),
+        api().store.getSnippets(),
+        api().store.getKeys(),
+        api().store.getPortForwards(),
+        api().store.getSettings(),
+      ]);
+      dispatch({
+        type: 'INIT_DATA',
+        payload: {
+          hosts: hosts || [],
+          groups: groups || [],
+          snippets: snippets || [],
+          keys: keys || [],
+          portForwards: portForwards || [],
+          settings: settings || MOCK_SETTINGS,
+        },
+      });
+    }, []),
 
     /* Open SFTP tab */
     openSFTPTab: useCallback(async (host) => {
