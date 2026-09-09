@@ -23,15 +23,51 @@ NODE_PATH=<proyecto>/node_modules node h.cjs
 
 `renderToStaticMarkup(<AppContext.Provider value={{state, dispatch, actions}}>…)`
 con `actions = new Proxy({}, {get: () => () => Promise.resolve({})})` recorre
-todas las ramas de un componente y caza los crashes de render. **No ejecuta
-efectos**, así que los hijos salen en su estado de carga: eso no lo cubre.
-Pon el harness fuera del repo, pero con rutas absolutas a `src/` (esbuild
-resuelve `react` desde el directorio del *entry*, de ahí los `--external`).
+todas las ramas de un componente y caza los crashes de render. Pon el harness
+fuera del repo, pero con rutas absolutas a `src/` y con `import`, **no
+`require`**: un `require(VAR + '/x.jsx')` esbuild no lo resuelve, lo deja para
+runtime y Node revienta con `Unexpected token '<'`.
 
-Para el tema claro no hace falta ver la pantalla: parsea los tokens de
+**No ejecuta efectos.** Lo que llega de una acción IPC (la lista de
+`pairingPending()`, por ejemplo) nunca sale por sí solo. Se inyecta parcheando
+`useState` **por orden de llamada**:
+
+```js
+const real = React.useState;
+React.useState = (init) => { const [v, s] = real(init);
+  return overrides && cursor < overrides.length ? [overrides[cursor++] ?? v, s] : (cursor++, [v, s]); };
+```
+
+Funciona porque esbuild emite `import_react.useState(...)` (lectura de
+propiedad en cada llamada) y su helper `__toESM` copia con *getters* que
+delegan en el módulo real: parchear `react` alcanza a todos los módulos. Hay
+que contar los `useState` del componente en orden; si alguien añade uno en
+medio, el harness miente sin fallar. Deja el orden apuntado en el propio
+harness.
+
+### Y sí se puede *mirar*: Chrome headless + Read
+
+Hay `/Applications/Google Chrome.app`. Volcando el markup del harness a un
+`.html` con `<link>` a `src/index.css` y al CSS del componente:
+
+```
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+  --disable-gpu --hide-scrollbars --virtual-time-budget=1500 \
+  --window-size=720,2100 --screenshot=x.png file:///.../x.html
+```
+
+y luego `Read` del PNG. Es la única forma que he encontrado de ver de verdad
+jerarquía visual y paridad de temas sin abrir Electron (para el tema hay que
+poner `data-theme` en `<html>`, que es lo que hace `AppContext`). Envuelve el
+markup en `.settings-panel > .settings-content > .settings-section`, que es
+donde vive el panel de sync, o los fondos no se componen igual.
+
+Para *medir* contraste sigue siendo mejor el script: parsea los tokens de
 `index.css` (`:root` y `:root[data-theme='light']`), compón los `rgba` sobre su
-fondo y calcula el contraste WCAG. Es lo único que caza "texto ilegible en
-claro" sin abrir la app.
+fondo y calcula WCAG. Trampa cara: `sync-text-dim` (`--text-tertiary`) sobre dos
+capas apiladas de `--overlay-subtle` (tarjeta dentro de tarjeta) baja a
+**3.5:1 en oscuro**. Para una línea que dice qué hacer, usa `--text-secondary`
+(5.2:1). El borde de `.sync-digit` da 1.3:1: es decorativo, no lo "arregles".
 
 ## Trampas de React que este proyecto tiene activas
 
@@ -76,26 +112,57 @@ coinciden en tres puntos, y los tres cambian la interfaz:
    de las claves efímeras de *ambos* equipos, así que el equipo que pide no los
    conoce hasta que el otro contesta; llegan luego en el push de estado, en
    `status.pairing = {id, digits, state}` (campo extra, fuera del contrato).
-   Los estados vienen en español: `pendiente`, `listo`, `rejected`, `expired`.
    `status.pairing` pasa a `null` cuando el emparejamiento muere o se completa.
 2. **`pairing.claim(id)` no es un sondeo.** Bloquea hasta 30 s esperando al otro
-   lado y luego **instala la clave maestra**; si no ha habido aprobación lanza
-   ("todavia no ha aprobado", "rechazo", "caduco"). Llamarlo en bucle cada 3 s
+   lado y luego **instala la clave maestra**; si el otro no ha confirmado lanza
+   ("todavia no ha confirmado", "rechazo", "caduco"). Llamarlo en bucle cada 3 s
    apila llamadas de 30 s y, peor, instala la clave sin que nadie haya comparado
-   los dígitos. Se llama cuando el usuario confirma que coinciden.
-3. **La comparación de dígitos está invertida respecto a lo que uno espera.**
-   El equipo que aprueba deriva los dígitos en `pairingPending()` y los ve
-   *antes*; el que pide solo puede verlos *después* de que el otro apruebe,
-   porque `pub_existing` no existe en el servidor hasta el `/complete`. O sea:
-   quien aprueba no puede comparar contra la otra pantalla antes de soltar la
-   clave sellada. La interfaz lo dice tal cual ("compruébalo justo después y
-   revoca si no coincide"); **arreglarlo es cosa del protocolo, no del
-   renderer** — está reportado, no lo silencies con copy optimista.
+   los dígitos. Se llama cuando el usuario dice que coinciden, y solo entonces.
+3. **La ventana de comparación ya no está invertida** (lo estuvo, y era un
+   agujero real: quien aprobaba soltaba la clave sin poder comparar). Hoy el
+   protocolo tiene dos pasos y la interfaz vive de ellos:
+   - Quien aprueba: `approve(id)` es **solo el paso 1** (publica la pública) y
+     resuelve `{state, digits}`; `confirm(id)` es el paso 2 y **la única llamada
+     que saca la clave maestra**. Sin el botón de confirm el otro equipo espera
+     para siempre.
+   - Quien pide: `state === 'verificar'` = dígitos en las dos pantallas y clave
+     maestra todavía dentro. `'pendiente'` es solo "el otro no ha aceptado aún".
+     Los cinco estados: `pendiente`, `verificar`, `listo`, `rejected`, `expired`.
+   **No juntes los dos pasos.** El servidor da 409 y esa comodidad es el fallo
+   entero.
+
+Tres cosas más que no se leen en el código y que alguien va a querer "arreglar":
+
+- **Las entradas de `pending()` traen `digits` ya en `'pendiente'`** (el que
+  aprueba las deriva en local con `pub_new`). La interfaz **las esconde a
+  propósito** hasta `'aceptado'`: enseñarlas antes invita a comparar contra una
+  pantalla que todavía no muestra nada, y eso enseña al usuario a decir que sí
+  sin mirar. No es un bug.
+- **El que pide no tiene forma de rechazar.** `pairing.reject` es del lado que
+  aprueba; en `PairingClaim` el "no coinciden" solo para en local (nunca llama a
+  `claim`, así que la clave no se instala) y manda rechazar en el otro equipo.
+  Si quieres un rechazo de verdad desde ahí, hace falta un canal nuevo: es
+  trabajo de `dev-backend`, no lo improvises con el canal del otro lado.
+- **Tras un 409 en `confirm`, el main deja la aprobación en `'pendiente'` con su
+  efímera cacheada**: aceptar otra vez da **los mismos seis dígitos**. Por eso
+  la tarjeta se queda en pantalla en vez de recargar la lista; recargar en ese
+  punto puede vaciarla y el usuario cree que perdió el emparejamiento.
 
 Además: `preload.removeStatusListener()` hace `removeAllListeners('sync:status')`
 e ignora el argumento. **Solo puede haber un suscriptor en todo el renderer**, y
 está en `AppContext`; si un componente se suscribe también, su desmontaje deja
 sorda a la app entera. Consume el estado desde `state.sync`, no te suscribas.
+
+**El texto de la pantalla de comparación es parte de la criptografía**, y es
+requisito explícito de Derek, no gusto mío: los dígitos son lo más grande de la
+pantalla en los dos equipos; el botón dice que **coinciden** (nunca "continuar"
+ni "aceptar"); rechazar cuesta un clic, igual que aceptar; una línea dice que un
+desajuste significa que hay alguien en medio; y se dice qué se autoriza
+(descifrar claves SSH **y contraseñas de hosts**). Si alguien "simplifica" ese
+copy, ha quitado la mitad humana de la protección.
+
+`secretsWithheld` / `secretsBlocked` del estado cuentan **campos, no hosts**:
+un host puede aportar contraseña y passphrase. No escribas "N hosts".
 
 Los mensajes de error del proceso main llegan **en español** ("Sesion caducada o
 dispositivo revocado") y se pintan tal cual en los banners, mientras que el resto
