@@ -290,28 +290,6 @@
 }
 
 /* Sync placeholder */
-.settings-sync-placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 32px 16px;
-  text-align: center;
-  gap: 12px;
-}
-
-.settings-sync-placeholder svg {
-  width: 48px;
-  height: 48px;
-  color: var(--text-tertiary);
-  opacity: 0.5;
-}
-
-.settings-sync-placeholder p {
-  font-size: var(--font-size-sm);
-  color: var(--text-tertiary);
-}
-
 /* About section */
 .settings-about {
   display: flex;
