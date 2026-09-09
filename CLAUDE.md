@@ -84,8 +84,13 @@ Two consequences worth knowing:
 ### Sync backend
 
 Termilab syncs against a service on the user's own server, reachable at
-`https://termilab.rhinlab.com`. Source and deployment live in `/home/contenedores/termilab` on that
-host, not in this repo; its `README.md` documents the endpoints.
+`https://termilab.rhinlab.com`. **Its source lives in `server/` in this repo** and is deployed to
+`/home/contenedores/termilab` on that host; `server/README.md` documents the endpoints.
+
+Client and server share a protocol that is not versioned or negotiated, so **a change on one side
+is a change on both**. They are in one repo for exactly that reason — keep them in the same commit
+when the contract moves. Deploying is copying `server/` to the host (minus `.env` and `data/`) and
+running `docker compose up -d --build`; the API applies its own migrations on boot.
 
 Three things about it shape the client:
 

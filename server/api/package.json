@@ -1,0 +1,12 @@
+{
+  "name": "termilab-sync",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/server.js",
+  "dependencies": {
+    "fastify": "^5.2.0",
+    "google-auth-library": "^9.15.0",
+    "pg": "^8.13.1"
+  }
+}
