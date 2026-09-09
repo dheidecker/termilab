@@ -14,6 +14,9 @@
  *     de verdad contra el, con userData en un mkdtemp. Comprueba sobre todo el
  *     CIFRADO POR CAMPO: que la contrasena de un host no aparece en claro en
  *     ningun byte del cuerpo que sale hacia el servidor.
+ *  4. El EMPAREJAMIENTO EN DOS PASOS completo (/accept y luego /complete),
+ *     mirando los cuerpos que salen: ningun material cifrado puede viajar
+ *     antes de que el usuario confirme los seis digitos.
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -129,7 +132,12 @@ Module._load = function (request, parent, isMain) {
 function fakeServer() {
   const rows = [];             // { cursor, record }
   const bodies = [];           // TODOS los cuerpos crudos que ha recibido
+  const requests = [];         // { method, path, raw } de TODAS las peticiones
+  const pairings = new Map();  // id -> { id, pubNew, pubExisting, ciphertext, nonce, state }
+  // Un tercero que sustituye claves publicas por el camino.
+  const mitm = { pubNew: null, pubExisting: null };
   let cursor = 0;
+  let pairSeq = 0;
 
   const server = http.createServer((req, res) => {
     const chunks = [];
@@ -138,7 +146,9 @@ function fakeServer() {
       const raw = Buffer.concat(chunks).toString('utf-8');
       if (raw) bodies.push(raw);
       const url = new URL(req.url, 'http://localhost');
+      requests.push({ method: req.method, path: url.pathname, raw });
       res.setHeader('content-type', 'application/json');
+      const json = (code, data) => { res.statusCode = code; res.end(JSON.stringify(data)); };
 
       if (req.method === 'POST' && url.pathname === '/v1/sync') {
         const records = (JSON.parse(raw || '{}').records) || [];
@@ -170,9 +180,82 @@ function fakeServer() {
         return;
       }
 
-      if (url.pathname === '/v1/pair/pending') {
-        res.end(JSON.stringify({ pairings: [] }));
-        return;
+      // ── Emparejamiento en DOS pasos, como el servidor real ──
+      // /accept recibe SOLO la publica; /complete la clave maestra sellada y
+      // responde 409 si no hubo /accept antes. Juntar los dos pasos es el
+      // fallo que este protocolo arregla, asi que aqui se rechaza a proposito.
+      if (req.method === 'POST' && url.pathname === '/v1/pair/request') {
+        const body = JSON.parse(raw || '{}');
+        if (!body.pub) return json(400, { error: 'falta la clave publica' });
+        const id = `par-${++pairSeq}`;
+        pairings.set(id, { id, pubNew: body.pub, pubExisting: null, ciphertext: null, nonce: null, state: 'pendiente' });
+        return json(200, { pairing_id: id });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/pair/pending') {
+        const pending = [...pairings.values()]
+          .filter(p => p.state === 'pendiente')
+          .map(p => ({
+            id: p.id,
+            pub_new: mitm.pubNew || p.pubNew,
+            device_name: 'portatil-nuevo',
+            platform: 'linux',
+            created_at: '2026-01-01T00:00:00.000Z',
+            expires_at: '2026-01-01T00:10:00.000Z',
+          }));
+        return json(200, { pending });
+      }
+
+      const pairMatch = url.pathname.match(/^\/v1\/pair\/([^/]+)(?:\/(accept|complete|reject))?$/);
+      if (pairMatch) {
+        const pairing = pairings.get(decodeURIComponent(pairMatch[1]));
+        const action = pairMatch[2];
+        if (!pairing) return json(404, { error: 'emparejamiento desconocido' });
+
+        if (req.method === 'POST' && action === 'accept') {
+          const body = JSON.parse(raw || '{}');
+          if (!body.pub) return json(400, { error: 'falta la clave publica' });
+          if ('ciphertext' in body || 'nonce' in body) {
+            return json(400, { error: 'el paso 1 no puede llevar material cifrado' });
+          }
+          if (pairing.state !== 'pendiente') return json(409, { error: 'ese emparejamiento ya no esta pendiente' });
+          pairing.pubExisting = body.pub;
+          pairing.state = 'verificar';
+          return json(200, { status: 'verificar' });
+        }
+
+        if (req.method === 'POST' && action === 'complete') {
+          const body = JSON.parse(raw || '{}');
+          if ('pub' in body) return json(400, { error: 'la publica va en el paso 1, no aqui' });
+          if (pairing.state !== 'verificar') {
+            return json(409, { error: 'ese emparejamiento no se ha aceptado todavia' });
+          }
+          if (!body.ciphertext || !body.nonce) return json(400, { error: 'falta el material cifrado' });
+          pairing.ciphertext = body.ciphertext;
+          pairing.nonce = body.nonce;
+          pairing.state = 'listo';
+          return json(200, { status: 'listo' });
+        }
+
+        if (req.method === 'POST' && action === 'reject') {
+          pairing.state = 'rechazado';
+          return json(200, { status: 'rechazado' });
+        }
+
+        if (req.method === 'GET' && !action) {
+          if (pairing.state === 'rechazado') return json(403, { error: 'rechazado' });
+          if (pairing.state === 'caducado') return json(410, { error: 'caducado' });
+          if (pairing.state === 'pendiente') return json(202, { status: 'pendiente' });
+          if (pairing.state === 'verificar') {
+            return json(202, { status: 'verificar', pub_existing: mitm.pubExisting || pairing.pubExisting });
+          }
+          return json(200, {
+            status: 'listo',
+            pub_existing: mitm.pubExisting || pairing.pubExisting,
+            ciphertext: pairing.ciphertext,
+            nonce: pairing.nonce,
+          });
+        }
       }
       res.statusCode = 404;
       res.end(JSON.stringify({ error: 'no existe' }));
@@ -192,7 +275,25 @@ function fakeServer() {
     },
     /** El cuerpo entero que ha viajado, para buscar cadenas en claro. */
     allBodies: () => bodies.join('\n'),
-    reset: () => { bodies.length = 0; },
+    reset: () => { bodies.length = 0; requests.length = 0; },
+    mitm,
+    requests,
+    pairRequests: () => requests.filter(r => r.path.startsWith('/v1/pair/')),
+    /** Peticiones cuyo CUERPO lleva material cifrado, miradas desde fuera. */
+    requestsConCifrado: () => requests.filter(r => {
+      if (!r.raw) return false;
+      let body;
+      try { body = JSON.parse(r.raw); } catch (_) { return /ciphertext/.test(r.raw); }
+      return !!(body && typeof body === 'object' && (body.ciphertext || body.nonce));
+    }),
+    pairing: id => pairings.get(id) || null,
+    /** El servidor pierde el paso 1 (reinicio, caducidad): el /complete dara 409. */
+    olvidaAceptacion: id => {
+      const pairing = pairings.get(id);
+      pairing.state = 'pendiente';
+      pairing.pubExisting = null;
+    },
+    resetPairings: () => { pairings.clear(); mitm.pubNew = null; mitm.pubExisting = null; },
   };
 }
 
@@ -428,6 +529,202 @@ async function main() {
     assert.strictEqual(typeof payload.password, 'object', 'no se reenvio sellada');
     assert.ok(!api.allBodies().includes('la-que-ya-se-filtro'));
   });
+
+  // ── E. Emparejamiento en dos pasos ────────────────────────
+  //
+  // El mismo proceso hace los dos papeles: `_claims` (el que pide) y
+  // `_approvals` (el que aprueba) son mapas distintos y no se rozan. Lo unico
+  // compartido es el llavero, asi que para comprobar que la clave maestra
+  // llega de verdad se borra antes de reclamarla.
+  //
+  // Los sondeos se disparan a mano con `_fetchClaim` en vez de esperar al
+  // temporizador de 2 s: es la misma funcion que usa `_pollClaim`.
+  const pairingCrypto = require(path.join(ROOT, 'electron', 'services', 'pairing-crypto.js'));
+  const MASTER = Buffer.alloc(32, 42);
+
+  const nuevoEscenario = async () => {
+    syncService._claims.clear();
+    syncService._approvals.clear();
+    api.resetPairings();
+    api.reset();
+    await cryptoService.clearAll();
+    await cryptoService.setToken('token-de-prueba');
+    await cryptoService.setMasterKey(MASTER);
+  };
+
+  const flujo = {};
+  await nuevoEscenario();
+
+  await check('paso 1: aceptar manda SOLO la clave publica', async () => {
+    const pedido = await syncService.pairingRequest();
+    flujo.id = pedido.pairingId;
+    assert.ok(flujo.id, 'el servidor no devolvio pairing_id');
+    assert.strictEqual(pedido.digits, null, 'no puede haber digitos al pedir: falta la otra publica');
+
+    const { pending } = await syncService.pairingPending();
+    const entrada = pending.find(e => e.id === flujo.id);
+    assert.ok(entrada, 'el emparejamiento no sale como pendiente en el otro lado');
+    assert.strictEqual(entrada.state, 'pendiente');
+    assert.ok(/^\d{6}$/.test(entrada.digits || ''), `digitos raros: ${entrada.digits}`);
+    flujo.digitsAprueba = entrada.digits;
+
+    const aceptado = await syncService.pairingApprove(flujo.id);
+    assert.strictEqual(aceptado.state, 'aceptado');
+    assert.strictEqual(aceptado.digits, flujo.digitsAprueba, 'los digitos cambiaron al aceptar');
+
+    const accept = api.pairRequests().filter(r => r.path.endsWith('/accept'));
+    assert.strictEqual(accept.length, 1, 'deberia haber exactamente un /accept');
+    assert.deepStrictEqual(Object.keys(JSON.parse(accept[0].raw)).sort(), ['pub'],
+      'el paso 1 lleva algo mas que la clave publica');
+    assert.strictEqual(api.pairRequests().filter(r => r.path.endsWith('/complete')).length, 0,
+      'se llamo a /complete en el paso 1');
+  });
+
+  await check('el que pide pasa a "verificar" con los MISMOS digitos', async () => {
+    await syncService._fetchClaim(flujo.id);
+    const status = await syncService.status();
+    assert.ok(status.pairing, 'el estado no expone el emparejamiento en curso');
+    assert.strictEqual(status.pairing.id, flujo.id);
+    assert.strictEqual(status.pairing.state, 'verificar',
+      `el que pide deberia poder comparar ya, y esta en ${status.pairing.state}`);
+    assert.strictEqual(status.pairing.digits, flujo.digitsAprueba,
+      'los dos lados ven digitos distintos con las claves de verdad');
+  });
+
+  await check('nada cifrado ha salido antes de que el usuario confirme', () => {
+    // Mirado desde fuera: los cuerpos que ha recibido el servidor, no el
+    // estado interno del servicio.
+    const conCifrado = api.requestsConCifrado();
+    assert.deepStrictEqual(conCifrado.map(r => `${r.method} ${r.path}`), [],
+      'salio material cifrado antes de confirmar');
+    const pairing = api.pairing(flujo.id);
+    assert.strictEqual(pairing.ciphertext, null, 'el servidor ya guarda un ciphertext');
+    assert.strictEqual(pairing.state, 'verificar');
+  });
+
+  await check('confirmar sin haber aceptado no manda nada al servidor', async () => {
+    const otro = await syncService.pairingRequest();
+    await syncService.pairingPending();
+    const antes = api.pairRequests().filter(r => r.path.endsWith('/complete')).length;
+    await assert.rejects(
+      () => syncService.pairingConfirm(otro.pairingId),
+      err => /acept/i.test(err.message),
+      'confirmar sin aceptar deberia dar un error que hable de aceptar'
+    );
+    const despues = api.pairRequests().filter(r => r.path.endsWith('/complete')).length;
+    assert.strictEqual(despues, antes, 'se mando un /complete sin haber aceptado');
+    syncService._claims.delete(otro.pairingId);
+    syncService._approvals.delete(otro.pairingId);
+  });
+
+  await check('paso 2: confirmar entrega la clave y llega identica al otro lado', async () => {
+    await syncService.pairingConfirm(flujo.id);
+
+    const complete = api.pairRequests().filter(r => r.path.endsWith('/complete'));
+    assert.strictEqual(complete.length, 1, 'deberia haber exactamente un /complete');
+    assert.deepStrictEqual(Object.keys(JSON.parse(complete[0].raw)).sort(), ['ciphertext', 'nonce'],
+      'el paso 2 no debe volver a mandar la publica');
+
+    // A partir de aqui hacemos de dispositivo nuevo: sin clave maestra.
+    await cryptoService.clearAll();
+    await cryptoService.setToken('token-de-prueba');
+    assert.strictEqual(await cryptoService.hasMasterKey(), false);
+
+    await syncService._fetchClaim(flujo.id);
+    const status = await syncService.status();
+    assert.strictEqual(status.pairing.state, 'listo');
+
+    await syncService.pairingClaim(flujo.id);
+    const instalada = await cryptoService.getMasterKey();
+    assert.ok(instalada && instalada.equals(MASTER), 'la clave maestra instalada no es la que se envio');
+  });
+
+  await check('con una publica sustituida por un tercero, los digitos no cuadran', async () => {
+    await nuevoEscenario();
+    const pedido = await syncService.pairingRequest();
+    // El servidor (o quien este en medio) ensena al que aprueba OTRA publica.
+    const atacante = pairingCrypto.generateEphemeralKeyPair();
+    api.mitm.pubNew = atacante.pub;
+    const { pending } = await syncService.pairingPending();
+    const entrada = pending.find(e => e.id === pedido.pairingId);
+    await syncService.pairingApprove(pedido.pairingId);
+    api.mitm.pubNew = null;
+
+    await syncService._fetchClaim(pedido.pairingId);
+    const status = await syncService.status();
+    assert.strictEqual(status.pairing.state, 'verificar');
+    assert.ok(status.pairing.digits && entrada.digits, 'faltan digitos que comparar');
+    assert.notStrictEqual(status.pairing.digits, entrada.digits,
+      'LOS DIGITOS COINCIDEN CON UNA PUBLICA SUSTITUIDA: el usuario no podria verlo');
+  });
+
+  await check('si la publica del otro cambia a mitad, se corta el emparejamiento', async () => {
+    await nuevoEscenario();
+    const pedido = await syncService.pairingRequest();
+    await syncService.pairingPending();
+    await syncService.pairingApprove(pedido.pairingId);
+    await syncService._fetchClaim(pedido.pairingId);
+    assert.strictEqual((await syncService.status()).pairing.state, 'verificar');
+
+    const atacante = pairingCrypto.generateEphemeralKeyPair();
+    api.mitm.pubExisting = atacante.pub;   // cambiazo despues de ensenar los digitos
+    // El servicio avisa por consola; aqui el aviso es lo esperado, no ruido.
+    const errorReal = console.error;
+    console.error = () => {};
+    try { await syncService._fetchClaim(pedido.pairingId); } finally { console.error = errorReal; }
+    const status = await syncService.status();
+    assert.strictEqual(status.pairing.state, 'rejected', 'siguio adelante con otra publica');
+    api.mitm.pubExisting = null;
+  });
+
+  await check('un 409 al completar se explica y no deja nada a medias', async () => {
+    await nuevoEscenario();
+    const pedido = await syncService.pairingRequest();
+    await syncService.pairingPending();
+    const primero = await syncService.pairingApprove(pedido.pairingId);
+
+    // El servidor pierde el paso 1 (reinicio, caducidad, otro lo consumio).
+    api.olvidaAceptacion(pedido.pairingId);
+    await assert.rejects(
+      () => syncService.pairingConfirm(pedido.pairingId),
+      err => /acept/i.test(err.message) && !/HTTP 409/.test(err.message),
+      'el 409 deberia llegar como frase legible, no como codigo'
+    );
+    assert.strictEqual(api.pairing(pedido.pairingId).ciphertext, null,
+      'el servidor se quedo con material cifrado pese al 409');
+    await syncService._fetchClaim(pedido.pairingId);
+    assert.strictEqual((await syncService.status()).pairing.state, 'pendiente',
+      'el que pide se quedo creyendo que ya habia alguien');
+
+    // Y se puede retomar sin empezar de cero, con los mismos digitos.
+    const segundo = await syncService.pairingApprove(pedido.pairingId);
+    assert.strictEqual(segundo.digits, primero.digits, 'los digitos cambiaron tras el 409');
+    await syncService.pairingConfirm(pedido.pairingId);
+    await syncService._fetchClaim(pedido.pairingId);
+    assert.strictEqual((await syncService.status()).pairing.state, 'listo');
+
+    await cryptoService.clearAll();
+    await cryptoService.setToken('token-de-prueba');
+    await syncService.pairingClaim(pedido.pairingId);
+    assert.ok((await cryptoService.getMasterKey()).equals(MASTER), 'la clave no llego tras el 409');
+  });
+
+  await check('rechazar corta el emparejamiento del otro lado', async () => {
+    await nuevoEscenario();
+    const pedido = await syncService.pairingRequest();
+    await syncService.pairingPending();
+    await syncService.pairingReject(pedido.pairingId);
+    await syncService._fetchClaim(pedido.pairingId);
+    assert.strictEqual((await syncService.status()).pairing.state, 'rejected');
+    await assert.rejects(() => syncService.pairingClaim(pedido.pairingId), /rechaz/i);
+  });
+
+  syncService._claims.clear();
+  syncService._approvals.clear();
+  // `pairingClaim` lanza un sync en segundo plano: si cerramos el servidor
+  // antes de que salga, deja un 'fetch failed' en consola que parece un fallo
+  // del arnes y no lo es.
+  await new Promise(r => setTimeout(r, 300));
 
   await api.close();
   Module._load = realLoad;
