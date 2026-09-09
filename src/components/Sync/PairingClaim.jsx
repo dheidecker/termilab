@@ -12,12 +12,17 @@ import './Sync.css';
  * The six digits are derived from both devices' ephemeral public keys, so if
  * they do not match on both screens the exchange has been tampered with.
  *
- * Timing worth knowing: `pairing.request()` cannot return the digits, because
- * they need the other device's public key. They arrive later on the status
- * push (`status.pairing.digits`). So this component asks for the pairing,
- * waits, shows the digits when they land, and only calls `pairing.claim()`
- * after the user says they match — claim() is what installs the master key,
- * and firing it automatically would mean nobody ever compared anything.
+ * The pairing has two steps and `status.pairing.state` says which one we are
+ * in — `pairing.request()` cannot return the digits, they need the other
+ * device's public key and arrive later on the status push:
+ *
+ *   'pendiente'  the other device has not accepted yet. No digits.
+ *   'verificar'  it accepted and sent its public key: the digits are on both
+ *                screens and the master key has NOT been sent anywhere. This
+ *                is the moment to compare — the whole point of the protocol.
+ *   'listo'      the other side already confirmed; the sealed key is waiting
+ *                and `pairing.claim()` will open it. We still make the user
+ *                compare, because claiming is what installs it here.
  */
 export default function PairingClaim({ deviceName, pairing, onPaired }) {
   const { actions } = useApp();
@@ -27,7 +32,7 @@ export default function PairingClaim({ deviceName, pairing, onPaired }) {
   const [requesting, setRequesting] = useState(false);
   const [claiming, setClaiming] = useState(false);
   const [error, setError] = useState(null);
-  const [gaveUp, setGaveUp] = useState(false);   // user cancelled a mismatch
+  const [gaveUp, setGaveUp] = useState(false);   // user said the digits differ
 
   const mounted = useRef(true);
   /* StrictMode runs effects twice in dev; without this we would open two
@@ -47,6 +52,10 @@ export default function PairingClaim({ deviceName, pairing, onPaired }) {
   const state = pairing?.state || null;
   const rejected = state === 'rejected';
   const expired = state === 'expired' || (requested.current && !requesting && !pairingId && !error);
+  /* Digits on screen and the master key still where it belongs: compare now.
+     'listo' means the other side confirmed already; the comparison is still
+     ours to make, since claim() is what installs the key on this computer. */
+  const comparing = !!digits && state !== 'pendiente';
 
   const request = useCallback(async () => {
     requested.current = true;
@@ -83,14 +92,16 @@ export default function PairingClaim({ deviceName, pairing, onPaired }) {
       const result = await syncPairingClaim(pairingId);
       if (!mounted.current) return;
       if (result && result.ok === false) {
-        setError('The other device has not approved this request yet.');
+        setError('The other device has not confirmed the digits yet.');
         return;
       }
-      onPaired?.('This computer is paired. Your SSH keys can be decrypted here now.');
+      onPaired?.('This computer is paired. Your SSH keys and host passwords can be decrypted here now.');
       await refreshSyncStatus();
     } catch (err) {
       /* claim() waits for the other side for up to half a minute before it
-         gives up, so a rejection here is a real answer, not impatience. */
+         gives up, so a rejection here is a real answer, not impatience. The
+         message from the main process arrives in Spanish and already says
+         what happened; the pairing stays on screen, it can be retried. */
       if (mounted.current) setError(errorMessage(err, 'Could not finish pairing.'));
     } finally {
       if (mounted.current) setClaiming(false);
@@ -107,10 +118,10 @@ export default function PairingClaim({ deviceName, pairing, onPaired }) {
       </div>
 
       <p className="sync-text">
-        Your SSH private keys are encrypted with a master key that lives in the system keychain —
-        the server never has it. {deviceName ? <strong>{deviceName}</strong> : 'This computer'} does
-        not have that key yet, so it cannot read your keys until another Termilab device hands it
-        over.
+        Your SSH private keys and your saved host passwords are encrypted with a master key that
+        lives in the system keychain — the server never has it.{' '}
+        {deviceName ? <strong>{deviceName}</strong> : 'This computer'} does not have that key yet,
+        so it cannot read them until another Termilab device hands it over.
       </p>
 
       {error && <div className="sync-banner sync-banner-error">{error}</div>}
@@ -118,8 +129,9 @@ export default function PairingClaim({ deviceName, pairing, onPaired }) {
       {gaveUp && (
         <>
           <div className="sync-banner sync-banner-error">
-            Pairing stopped. The digits did not match, so treat that other approval as hostile:
-            revoke the device that approved it and start again with both computers in front of you.
+            Stopped, and nothing was installed here. Different digits mean someone is sitting
+            between the two computers: reject the request on the other computer as well, then try
+            again with both of them in front of you.
           </div>
           <div className="sync-actions">
             <button className="sync-btn sync-btn-ghost" onClick={startOver}>Start again</button>
@@ -156,47 +168,50 @@ export default function PairingClaim({ deviceName, pairing, onPaired }) {
             <span className="sync-spinner" aria-hidden="true" />
             <div className="sync-waiting-body"><strong>Asking to pair…</strong></div>
           </div>
-        ) : !digits ? (
+        ) : !comparing ? (
           <>
             <div className="sync-waiting">
               <span className="sync-spinner" aria-hidden="true" />
               <div className="sync-waiting-body">
-                <strong>Waiting for another device</strong>
+                <strong>Waiting for the other device to accept</strong>
                 <span className="sync-text-dim">
-                  Six digits will appear here as soon as it answers.
+                  Six digits will appear here as soon as it does.
                 </span>
               </div>
             </div>
             <ol className="sync-steps">
               <li>Open Termilab on a computer that already has your data.</li>
-              <li>Go to Settings → Sync: it will show a request from this computer, with six digits.</li>
-              <li>Approve it there, then compare the digits with the ones that appear here.</li>
+              <li>Go to Settings → Sync: it will show a request from this computer.</li>
+              <li>Accept it there — both screens then show the same six digits to compare.</li>
             </ol>
           </>
         ) : (
-          <>
+          <div className="sync-verify">
+            <div className="sync-verify-label">
+              Compare these six digits with the ones on the other computer
+            </div>
+            <DigitCode digits={digits} size="xl" />
             <p className="sync-text">
-              The other device answered. These six digits were computed here, from both devices'
-              keys:
+              If the two screens show different digits, someone is sitting between the two
+              computers — do not continue.
             </p>
-            <DigitCode digits={digits} />
-            <p className="sync-text sync-text-warn">
-              They must be identical to the ones the other computer showed you. If they differ,
-              someone is sitting between the two devices — do not continue.
+            <p className="sync-text">
+              Confirming authorises <strong>{deviceName || 'this computer'}</strong> to decrypt your
+              SSH private keys and the passwords saved for your hosts.
             </p>
             <div className="sync-actions">
               <button className="sync-btn sync-btn-primary" onClick={confirmMatch} disabled={claiming}>
-                {claiming ? 'Finishing…' : 'They match — finish pairing'}
+                {claiming ? 'Finishing…' : 'The digits match — pair this computer'}
               </button>
               <button
                 className="sync-btn sync-btn-danger"
                 onClick={() => setGaveUp(true)}
                 disabled={claiming}
               >
-                They don't match
+                They don't match — stop
               </button>
             </div>
-          </>
+          </div>
         )
       )}
     </div>

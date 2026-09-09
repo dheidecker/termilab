@@ -23,6 +23,11 @@ export function normalizeSyncStatus(raw) {
     pendingPairings: pending,
     syncing: !!s.syncing,
     error: readError(s.error),
+    /* Field-level secrets from the last sync. `withheld` did not go up (no
+       master key to encrypt them with), `blocked` came down sealed and this
+       device cannot open them. Neither means data was lost. */
+    secretsWithheld: toCount(s.secretsWithheld),
+    secretsBlocked: toCount(s.secretsBlocked),
     /* Not in the base IPC contract: the main process also reports the pairing
        this device started, because the six digits are not known when
        pairing.request() returns — they only exist once the other device
@@ -32,10 +37,22 @@ export function normalizeSyncStatus(raw) {
   };
 }
 
+/* Counters arrive as numbers, but a status push that predates the field, or a
+   string from a hand-written payload, must not print "NaN hosts". */
+function toCount(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
 function normalizePairing(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const id = raw.id || raw.pairingId || null;
   if (!id) return null;
+  /* `state` is one of the Spanish strings the main process documents:
+     'pendiente' (nobody accepted yet, no digits), 'verificar' (digits are on
+     both screens and the master key has NOT been sent), 'listo' (the other
+     side confirmed, the sealed key is waiting for claim()), 'rejected',
+     'expired'. PairingClaim branches on these literally. */
   return { id, digits: raw.digits || null, state: raw.state || null };
 }
 

@@ -6,18 +6,31 @@ import './Sync.css';
 
 /**
  * Shown on a device that already holds the master key when another device is
- * asking for it. Approving is not a formality: it lets that computer decrypt
- * every SSH private key in the account.
+ * asking for it. This side drives the two steps of the pairing:
  *
- * The digits below are computed on this device, from the requester's public key
- * and the ephemeral key this device will answer with — the server never makes
- * them up. The requesting computer can only show them once this one has
- * answered, so the comparison happens right after approving, and a mismatch
- * means the device that got approved is not the one the user is holding.
+ *   1. "Accept" (`pairing.approve`) publishes this device's public key and
+ *      NOTHING else. From that moment both computers can show the same six
+ *      digits — derived from both ephemeral public keys, never invented by the
+ *      server — and the master key has not moved.
+ *   2. "The digits match" (`pairing.confirm`) is the only call that lets the
+ *      master key leave this machine.
+ *
+ * Step 2 is not a formality and the UI must not make it look like one: whoever
+ * clicks it without looking at the other screen has thrown away the only
+ * protection against someone swapping a public key in the middle.
+ *
+ * Each entry from `pairing.pending()` carries `state`: 'pendiente' (waiting for
+ * step 1) or 'aceptado' (waiting for the human comparison).
  */
 export default function PairingApprovals({ count, onHandled }) {
   const { actions } = useApp();
-  const { syncPairingPending, syncPairingApprove, syncPairingReject, refreshSyncStatus } = actions;
+  const {
+    syncPairingPending,
+    syncPairingApprove,
+    syncPairingConfirm,
+    syncPairingReject,
+    refreshSyncStatus,
+  } = actions;
 
   const [pending, setPending] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -50,23 +63,66 @@ export default function PairingApprovals({ count, onHandled }) {
      panel is open shows up without polling. */
   useEffect(() => { load(); }, [load, count]);
 
-  const decide = async (item, approve) => {
+  /* Update one entry in place. approve() answers with the state and the digits
+     it is actually using, so the code appears without waiting for a refresh. */
+  const patch = (id, fields) => setPending(list => (
+    list.map(item => (item.id === id ? { ...item, ...fields } : item))
+  ));
+
+  /* Step 1. Publishes the public key: after this both screens show digits. */
+  const accept = async (item) => {
     setBusyId(item.id);
     setError(null);
     try {
-      if (approve) await syncPairingApprove(item.id);
-      else await syncPairingReject(item.id);
+      const result = await syncPairingApprove(item.id);
+      if (!mounted.current) return;
+      patch(item.id, {
+        state: result?.state || 'aceptado',
+        digits: result?.digits ?? item.digits ?? null,
+      });
+      await refreshSyncStatus();
+    } catch (err) {
+      if (mounted.current) setError(errorMessage(err, 'Could not accept the request.'));
+    } finally {
+      if (mounted.current) setBusyId(null);
+    }
+  };
+
+  /* Step 2. Hands over the master key. */
+  const confirm = async (item) => {
+    setBusyId(item.id);
+    setError(null);
+    try {
+      await syncPairingConfirm(item.id);
       if (!mounted.current) return;
       /* Reported upwards: handling the last request unmounts this card. */
-      onHandled?.(approve
-        ? `Approved. Check that “${item.deviceName || 'that device'}” now shows the same six digits — if it does not, revoke it below straight away.`
-        : 'Rejected. That device received nothing.');
+      onHandled?.(`Done. “${item.deviceName || 'That device'}” can now decrypt your SSH keys and your saved host passwords.`);
       await load();
       await refreshSyncStatus();
     } catch (err) {
-      if (mounted.current) {
-        setError(errorMessage(err, approve ? 'Could not approve the request.' : 'Could not reject the request.'));
-      }
+      if (!mounted.current) return;
+      /* A 409 means the server has no record of step 1 — the message from the
+         main process says so, in Spanish, and says what to do. The request
+         stays on screen at step 1: the digits are derived from the same
+         ephemeral key, so accepting again shows the same six. */
+      setError(errorMessage(err, 'Could not finish the pairing.'));
+      patch(item.id, { state: 'pendiente' });
+    } finally {
+      if (mounted.current) setBusyId(null);
+    }
+  };
+
+  const reject = async (item) => {
+    setBusyId(item.id);
+    setError(null);
+    try {
+      await syncPairingReject(item.id);
+      if (!mounted.current) return;
+      onHandled?.('Rejected. That device got nothing: your keys and passwords never left this computer.');
+      await load();
+      await refreshSyncStatus();
+    } catch (err) {
+      if (mounted.current) setError(errorMessage(err, 'Could not reject the request.'));
     } finally {
       if (mounted.current) setBusyId(null);
     }
@@ -80,8 +136,8 @@ export default function PairingApprovals({ count, onHandled }) {
       </div>
 
       <p className="sync-text">
-        Approving hands over the master key that decrypts every SSH private key in your account.
-        Do it only if you are the one asking, from the computer named below.
+        This happens in two steps, and the second one is yours to judge: first both computers show
+        the same six digits, then you say whether they match.
       </p>
 
       {loading && <p className="sync-text sync-text-dim">Loading requests…</p>}
@@ -94,37 +150,99 @@ export default function PairingApprovals({ count, onHandled }) {
         </p>
       )}
 
-      {pending.map(item => (
-        <div className="sync-pairing-request" key={item.id}>
-          <div className="sync-pairing-request-head">
-            <div>
-              <div className="sync-pairing-device">{item.deviceName || 'Unnamed device'}</div>
-              <div className="sync-text-dim">{platformLabel(item.platform)}</div>
+      {pending.map(item => {
+        const busy = busyId === item.id;
+        const name = item.deviceName || 'that device';
+        const accepted = item.state === 'aceptado';
+
+        return (
+          <div className="sync-pairing-request" key={item.id}>
+            <div className="sync-pairing-request-head">
+              <div>
+                <div className="sync-pairing-device">{item.deviceName || 'Unnamed device'}</div>
+                <div className="sync-text-dim">{platformLabel(item.platform)}</div>
+              </div>
             </div>
+
+            {!accepted && (
+              <>
+                <p className="sync-text">
+                  Accepting only sends this computer's public key, so both screens can show the same
+                  six digits. Nothing is decryptable by that device until you compare them.
+                </p>
+                <div className="sync-actions">
+                  <button
+                    className="sync-btn sync-btn-primary"
+                    onClick={() => accept(item)}
+                    disabled={busy}
+                  >
+                    {busy ? 'Working…' : 'Accept — show the digits'}
+                  </button>
+                  <button
+                    className="sync-btn sync-btn-danger"
+                    onClick={() => reject(item)}
+                    disabled={busy}
+                  >
+                    I did not ask for this — reject
+                  </button>
+                </div>
+              </>
+            )}
+
+            {accepted && item.digits && (
+              <div className="sync-verify">
+                <div className="sync-verify-label">
+                  Compare these six digits with the ones on <strong>{name}</strong>
+                </div>
+                <DigitCode digits={item.digits} size="xl" />
+                <p className="sync-text">
+                  If the two screens show different digits, someone is sitting between the two
+                  computers — reject.
+                </p>
+                <p className="sync-text">
+                  Confirming lets <strong>{name}</strong> decrypt your SSH private keys and the
+                  passwords saved for your hosts.
+                </p>
+                <div className="sync-actions">
+                  <button
+                    className="sync-btn sync-btn-primary"
+                    onClick={() => confirm(item)}
+                    disabled={busy}
+                  >
+                    {busy ? 'Sending…' : 'The digits match — hand over the key'}
+                  </button>
+                  <button
+                    className="sync-btn sync-btn-danger"
+                    onClick={() => reject(item)}
+                    disabled={busy}
+                  >
+                    They don't match — reject
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {accepted && !item.digits && (
+              <div className="sync-verify">
+                <p className="sync-text sync-text-warn">
+                  The six digits for this request are not available on this computer any more, so
+                  there is nothing to compare. Reject it and pair again with both computers in
+                  front of you.
+                </p>
+                <div className="sync-actions">
+                  <button
+                    className="sync-btn sync-btn-danger"
+                    onClick={() => reject(item)}
+                    disabled={busy}
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-          <DigitCode digits={item.digits} />
-          <p className="sync-text sync-text-warn">
-            Write these down. The other computer shows them right after you approve: if they are
-            different, it is not the computer you think it is — revoke it immediately.
-          </p>
-          <div className="sync-actions">
-            <button
-              className="sync-btn sync-btn-primary"
-              onClick={() => decide(item, true)}
-              disabled={busyId === item.id}
-            >
-              {busyId === item.id ? 'Working…' : 'Approve — it is my computer'}
-            </button>
-            <button
-              className="sync-btn sync-btn-danger"
-              onClick={() => decide(item, false)}
-              disabled={busyId === item.id}
-            >
-              Reject
-            </button>
-          </div>
-        </div>
-      ))}
+        );
+      })}
 
       {error && <div className="sync-banner sync-banner-error">{error}</div>}
     </div>

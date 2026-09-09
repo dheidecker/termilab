@@ -636,10 +636,20 @@ export function AppProvider({ children }) {
       return sync.pairing.pending();
     }, []),
 
+    /* Step 1 of two. Publishes this device's public key and nothing else, so
+       both screens can show the same six digits. Resolves {state, digits}. */
     syncPairingApprove: useCallback(async (id) => {
       const sync = syncApi();
       if (!sync?.pairing?.approve) return noSync();
       return sync.pairing.approve(id);
+    }, []),
+
+    /* Step 2. The only call that lets the master key leave this device: it
+       runs after the user says the six digits match on both screens. */
+    syncPairingConfirm: useCallback(async (id) => {
+      const sync = syncApi();
+      if (!sync?.pairing?.confirm) return noSync();
+      return sync.pairing.confirm(id);
     }, []),
 
     syncPairingReject: useCallback(async (id) => {

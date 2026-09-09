@@ -255,6 +255,27 @@
   color: var(--color-success);
 }
 
+/* Field-level secrets that did not travel. Not an error: the data is there,
+   it is just encrypted, and saying so is the difference between "my
+   passwords are gone" and "this computer is not paired yet". */
+.sync-secrets {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 10px;
+  border-left: 2px solid var(--color-warning);
+  border-radius: var(--radius-sm);
+  background: var(--overlay-subtle);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.sync-secrets strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
 .sync-note {
   display: flex;
   align-items: center;
@@ -298,6 +319,45 @@
   min-width: 26px;
   padding: 5px 0;
   font-size: var(--font-size-lg);
+}
+
+/* ─── The comparison moment ───
+   Same block on both computers. The digits are the largest thing on the
+   screen on purpose: this is the only step that catches someone swapping a
+   public key, and it only works if the user actually reads them. */
+.sync-verify {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 14px;
+  text-align: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+}
+
+.sync-verify-label {
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sync-verify .sync-text {
+  max-width: 46ch;
+}
+
+.sync-verify .sync-actions {
+  justify-content: center;
+  margin-top: 2px;
+}
+
+/* No token goes above 24px; the pairing code is the one place that needs it. */
+.sync-digits-xl .sync-digit {
+  min-width: 44px;
+  padding: 12px 0;
+  font-size: 32px;
+  letter-spacing: 2px;
 }
 
 /* ─── Incoming pairing request ─── */
