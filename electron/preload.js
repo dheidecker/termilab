@@ -179,11 +179,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     download: () => invoke('updater:download'),
     install: () => invoke('updater:install'),
     getVersion: () => invoke('updater:version'),
+    /* Returns the listener so each caller can detach only its own.
+       Two components subscribe (UpdateNotification and Settings); a blanket
+       removeAllListeners() left the other one deaf until the app restarted. */
     onStatus: (callback) => {
-      ipcRenderer.on('updater:status', (_, data) => callback(data));
+      const listener = (_, data) => callback(data);
+      ipcRenderer.on('updater:status', listener);
+      return listener;
     },
-    removeStatusListener: () => {
-      ipcRenderer.removeAllListeners('updater:status');
+    removeStatusListener: (listener) => {
+      if (listener) ipcRenderer.removeListener('updater:status', listener);
+      else ipcRenderer.removeAllListeners('updater:status');
     },
   },
 
@@ -200,8 +206,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('sync:status', listener);
       return listener;
     },
-    removeStatusListener: () => {
-      ipcRenderer.removeAllListeners('sync:status');
+    removeStatusListener: (listener) => {
+      if (listener) ipcRenderer.removeListener('sync:status', listener);
+      else ipcRenderer.removeAllListeners('sync:status');
     },
     pairing: {
       request: () => invoke('sync:pair-request'),

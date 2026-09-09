@@ -14,7 +14,7 @@ export default function UpdateNotification() {
 
     api.getVersion?.().then(v => setCurrentVersion(v)).catch(() => {});
 
-    api.onStatus((data) => {
+    const listener = api.onStatus((data) => {
       if (data.status === 'available') {
         setStatus('available');
         setInfo(data);
@@ -32,7 +32,7 @@ export default function UpdateNotification() {
     });
 
     return () => {
-      api.removeStatusListener?.();
+      api.removeStatusListener?.(listener);
     };
   }, []);
 

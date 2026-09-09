@@ -149,9 +149,13 @@ function setupAutoUpdater() {
       return app.getVersion();
     });
 
-    // Check for updates after a short delay
+    // Check for updates after a short delay.
+    // Log the failure: swallowing it meant a broken update feed looked
+    // identical to "you are up to date", with nothing in the console.
     setTimeout(() => {
-      autoUpdater.checkForUpdates().catch(() => {});
+      autoUpdater.checkForUpdates().catch((err) => {
+        console.error('[Updater] Startup check failed:', err.message);
+      });
     }, 5000);
 
   } catch (err) {

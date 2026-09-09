@@ -68,6 +68,13 @@ const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'termilab-arnes-'));
 const handlers = new Map();      // canal -> handler registrado por ipc-handlers
 let bridge = null;               // lo que preload expone como window.electronAPI
 
+// Listeners que preload engancha con ipcRenderer.on, para poder comprobar que
+// cada suscriptor desengancha el suyo y no los de los demas.
+const rendererListeners = new Map();
+const emit = (channel, data) => {
+  for (const listener of (rendererListeners.get(channel) || []).slice()) listener({}, data);
+};
+
 const electronStub = {
   app: {
     getPath: () => userData,
@@ -95,8 +102,16 @@ const electronStub = {
       if (!fn) return Promise.reject(new Error(`canal sin registrar: ${channel}`));
       return Promise.resolve(fn({}, ...args));
     },
-    on: () => {},
-    removeListener: () => {},
+    on: (channel, listener) => {
+      if (!rendererListeners.has(channel)) rendererListeners.set(channel, []);
+      rendererListeners.get(channel).push(listener);
+    },
+    removeListener: (channel, listener) => {
+      const list = rendererListeners.get(channel) || [];
+      const i = list.indexOf(listener);
+      if (i >= 0) list.splice(i, 1);
+    },
+    removeAllListeners: (channel) => { rendererListeners.set(channel, []); },
     send: () => {},
   },
   contextBridge: {
@@ -338,6 +353,34 @@ async function main() {
       if (!handlers.has(m[1])) missing.push(m[1]);
     }
     assert.deepStrictEqual(missing, [], `canales sin handler: ${missing.join(', ')}`);
+  });
+
+  await check('cada suscriptor a *:status desengancha solo el suyo', () => {
+    // Dos componentes escuchan updater:status (UpdateNotification y Settings).
+    // Con removeAllListeners, cerrar Settings dejaba sordo al cartel de
+    // actualizacion hasta reiniciar la app. onStatus devuelve su listener y
+    // removeStatusListener(listener) quita solo ese.
+    for (const domain of ['updater', 'sync']) {
+      const chan = `${domain}:status`;
+      const api = bridge[domain];
+      const a = [], b = [];
+      const lA = api.onStatus(d => a.push(d));
+      const lB = api.onStatus(d => b.push(d));
+      assert.strictEqual(typeof lA, 'function', `${chan}: onStatus no devolvio el listener`);
+      assert.notStrictEqual(lA, lB, `${chan}: devolvio el mismo listener dos veces`);
+
+      emit(chan, 1);
+      assert.deepStrictEqual([a.length, b.length], [1, 1], `${chan}: no recibieron los dos`);
+
+      api.removeStatusListener(lB);
+      emit(chan, 2);
+      assert.deepStrictEqual([a.length, b.length], [2, 1],
+        `${chan}: al irse un suscriptor, el otro dejo de recibir`);
+
+      api.removeStatusListener();   // sin argumento: limpia todo (compatibilidad)
+      emit(chan, 3);
+      assert.strictEqual(a.length, 2, `${chan}: sin argumento no limpio`);
+    }
   });
 
   const cryptoService = require(path.join(ROOT, 'electron', 'services', 'crypto-service.js'));

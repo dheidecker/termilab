@@ -36,8 +36,8 @@ export default function Settings({ fullPage = false }) {
   useEffect(() => {
     if (window.electronAPI?.updater) {
       window.electronAPI.updater.getVersion?.().then(v => v && setAppVersion(v)).catch(() => {});
-      window.electronAPI.updater.onStatus((data) => setUpdateStatus(data));
-      return () => window.electronAPI.updater.removeStatusListener?.();
+      const listener = window.electronAPI.updater.onStatus((data) => setUpdateStatus(data));
+      return () => window.electronAPI.updater.removeStatusListener?.(listener);
     }
   }, []);
 
