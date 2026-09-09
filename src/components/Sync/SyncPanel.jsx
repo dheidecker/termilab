@@ -259,6 +259,11 @@ export default function SyncPanel() {
             {`Sent ${lastResult.pushed ?? 0} change${lastResult.pushed === 1 ? '' : 's'}, received ${lastResult.pulled ?? 0}.`}
           </div>
         )}
+        <SecretsNotice
+          withheld={status.secretsWithheld}
+          blocked={status.secretsBlocked}
+          hasMasterKey={status.hasMasterKey}
+        />
         {pairingNotice && (
           <div className="sync-banner sync-banner-ok">
             <span>{pairingNotice}</span>
@@ -283,6 +288,46 @@ export default function SyncPanel() {
       )}
 
       <SyncDevices lastSyncAt={status.lastSyncAt} pendingPairings={status.pendingPairings} />
+    </div>
+  );
+}
+
+/**
+ * Passwords and passphrases are encrypted field by field before they leave the
+ * machine, so a computer without the master key syncs its hosts but not their
+ * secrets — in both directions. Without this notice that reads as data loss,
+ * and the user goes looking for a password that is right there, sealed.
+ *
+ * Counts are fields, not hosts: one host can hold a password and a passphrase.
+ */
+function SecretsNotice({ withheld, blocked, hasMasterKey }) {
+  if (!withheld && !blocked) return null;
+  const plural = (n) => (n === 1 ? '' : 's');
+
+  return (
+    <div className="sync-secrets">
+      {blocked > 0 && (
+        <span>
+          <strong>
+            {blocked} saved password{plural(blocked)} arrived from your other computers still
+            encrypted.
+          </strong>{' '}
+          The hosts are here; their passwords cannot be opened without the master key. Nothing was
+          lost.
+        </span>
+      )}
+      {withheld > 0 && (
+        <span>
+          <strong>
+            {withheld} saved password{plural(withheld)} stayed on this computer.
+          </strong>{' '}
+          They are not backed up: without the master key Termilab cannot encrypt them, and it will
+          not upload them in the clear.
+        </span>
+      )}
+      {/* Not sync-text-dim: --text-tertiary lands at 3.5:1 on this background,
+          and this is the line that says what to do about it. */}
+      {!hasMasterKey && <span>Pair this computer to unlock them.</span>}
     </div>
   );
 }
