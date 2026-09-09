@@ -16,9 +16,24 @@ for f in electron/main.js electron/preload.js electron/ipc-handlers.js electron/
 
 Y para cargar el grafo entero (detecta `require` a archivos borrados, que
 `node --check` no ve), stubea `electron` con `Module._load` y requiere
-`ipc-handlers.js`; con eso basta, arrastra todos los servicios. Mismo truco para
-probar `store-service` sin Electron: solo necesita `app.getPath()` devolviendo un
-directorio temporal.
+`ipc-handlers.js`; con eso basta, arrastra todos los servicios.
+
+### Arnés completo (lo que hace falta en el stub)
+
+Con un stub un poco más gordo se prueba de verdad el main sin abrir Electron, y
+merece la pena rehacerlo cada vez: se escribe en 15 minutos y encuentra cosas
+que el ojo no ve (dos carreras de este ciclo salieron de ahí).
+
+- `app.getPath()` → un `mkdtemp`; `store-service` y `sync-service` lo resuelven
+  perezosamente, así que basta con stubear antes del primer `require`.
+- `safeStorage` falso (`isEncryptionAvailable: () => true` y un prefijo tonto en
+  `encryptString`): comprueba el cableado, no la criptografía del SO.
+- `ipcMain.handle` guardando en un `Map`, más `contextBridge.exposeInMainWorld`
+  capturando el objeto y un `ipcRenderer.invoke` que llama al `Map`. Así pruebas
+  el contrato IPC **de punta a punta**, y detectas un canal que preload llama y
+  nadie registra (que es exactamente el fallo que no da la cara hasta runtime).
+- Para el HTTP, un `http.createServer` local y `TERMILAB_SYNC_URL` apuntando a
+  él. No hace falta el servidor real.
 
 ## `git add` de un archivo ya borrado falla; `git commit -- <rutas>` no
 
@@ -32,8 +47,9 @@ git commit -m "..." -- electron/ruta-a.js electron/ruta-b.js
 ```
 
 Commitea el estado del worktree de esas rutas (incluidas borradas) y **deja
-intacto lo que el otro agente tenga ya en stage**. Comprobado: sus `D src/...`
-staged sobrevivieron a tres commits míos.
+intacto lo que el otro agente tenga ya en stage**. Comprobado dos veces: los
+cambios de `dev-frontend` en `src/` sobrevivieron a seis commits míos. Para
+archivos **nuevos** sí hace falta un `git add` previo de esas rutas concretas.
 
 ## Ajustes: `_readSettings` devuelve defaults si no hay archivo
 
@@ -52,22 +68,78 @@ Ninguna operación de settings toma `_acquireLock` (el lock es solo para las
 colecciones). La escritura es `write .tmp` + `rename`, atómica, así que dos
 `getSettings()` concurrentes al arrancar no corrompen el archivo.
 
-## Decisiones de Derek que no se leen en el código
+## El nombre `.tmp` compartido es una carrera de verdad
 
+El patrón `write ${file}.tmp` + `rename` de este repo **no es seguro con dos
+escrituras solapadas del mismo archivo**: la primera renombra, la segunda falla
+con `ENOENT` al renombrar un `.tmp` que ya no existe, y su estado se pierde en
+silencio (el `catch` solo borra el temporal). En `sync-service` y
+`crypto-service` el temporal lleva sufijo único (`.${pid}.${seq}.tmp`).
+`store-service` sigue con el nombre fijo: le salva el `_acquireLock` por
+colección, salvo en settings, que no lo toma. Si algún día dos rutas escriben
+settings a la vez, esto es lo que se rompe.
+
+## Servidor de sync: lo que el contrato escrito no dice
+
+Comprobado contra `https://termilab.rhinlab.com` (solo lecturas y un
+`/auth/start` que caduca solo; no dejé nada que borrar).
+
+- Los errores vienen como `{"error": "texto en español"}`, no `message`.
+- `/auth/poll` con un código desconocido responde **404**, no 410. Cualquier
+  estado que no sea 202/200 hay que tratarlo como código muerto y dejar de
+  sondear.
+- Sin `Authorization`, `/v1/*` da 401 `{"error":"falta el token"}`. Un 401 en
+  cualquier momento significa dispositivo revocado desde otro sitio: hay que
+  cerrar sesión de verdad, no reintentar.
+- Lápida de `keys`: se manda `enc:false` con `payload` **y** `ciphertext` nulos.
+  La restricción del servidor es "no mandes los dos", no "manda uno". Esto **no
+  está probado contra el servidor real** (requiere token de dispositivo); si un
+  día falla al borrar una clave, es el primer sitio donde mirar.
+
+## Emparejamiento: los dígitos NO pueden existir al pedirlo
+
+Trampa de diseño que cuesta media hora entender. `sync.pairing.request()`
+devuelve `{pairingId, digits}` según el contrato IPC, pero los seis dígitos
+salen de **las dos** públicas y el que pide solo tiene la suya: hasta que el otro
+dispositivo aprueba, no hay dígitos que enseñar. Por eso:
+
+- `request()` devuelve `digits: null` y arranca un sondeo de `GET /v1/pair/:id`;
+  cuando llega `pub_existing` se emite `sync:status` con un campo extra
+  `pairing: {id, digits, state}`. **La interfaz tiene que leer los dígitos de
+  ahí**, no del retorno de `request()`.
+- El lado que aprueba sí los tiene ya en `pairing.pending()`, porque genera su
+  efímera en ese momento. Está **cacheada por `pairing_id`**: si la regeneras en
+  `approve()`, los dígitos que vio el usuario dejan de ser los que se usan y el
+  otro lado ve otros. `approve()` sin `pending()` previo llama a `pending()` él
+  solo justo por esto.
+
+Y al sellar la clave maestra, va en **base64 dentro del texto cifrado**, no en
+crudo: el descifrado devuelve string utf-8 y 32 bytes aleatorios no son utf-8
+válido, así que un viaje de ida y vuelta en crudo la corrompe sin avisar
+(y el error aparece luego, al no poder descifrar ninguna key).
+
+## Decisiones tomadas aquí que no se leen en el código
+
+- **La clave maestra se genera sola en el primer login.** Si ese dispositivo
+  empareja después, la que llega **sustituye** a la local, y los registros
+  cifrados con la vieja quedan ilegibles: se saltan, se avisa en `status.error`
+  y **no se toca la copia local**. Nunca borrar lo local por no poder descifrar.
+- **`logout()` conserva la clave maestra** (es del usuario, no de la sesión) y
+  sí borra token, cursor y sombra.
+- `syncNow()` está **serializado en cadena**, no protegido con un "ya hay una
+  sincronización en curso": el login lanza un sync en segundo plano y el usuario
+  que pulsa "sincronizar" justo después se comía el error. `logout()` espera esa
+  cadena, o el `_save()` del sync en vuelo resucita el cursor de una sesión ya
+  cerrada.
 - El asistente de IA se **elimina**, no se desactiva (rama `feat/sync-sin-ia`).
   No lo reintroduzcas "por compatibilidad" ni dejes stubs de los canales `ai:*`.
 - Las API keys que quedaron en claro en `<userData>/data/settings.json` son una
   fuga real: se purgan al leer los ajustes, no se dejan "porque ya no se usan".
 
-Cuando esa rama se integre, el `CLAUDE.md` queda desfasado en tres puntos —
-canal de ejemplo `ai:chat`, la tabla de "módulos duplicados" (`command-safety` /
-`ai-models` ya no existen en ninguno de los dos lados) y la sección entera "AI
-assistant command safety". Ese archivo lo mantiene quien orquesta, avísale.
-
 ## Fronteras
 
 `electron/` es tuyo; `src/` no, ni siquiera para "un import que sobra". El
 puente de preload y su consumidor en el renderer se rompen en momentos
-distintos: al quitar `ai` de `preload.js` los `window.electronAPI?.ai?.chat(...)`
-que sigan en `src/` se evalúan a `undefined` y el fallo aparece más tarde, al
-leer `res.success`. Menciónalo en la entrega para que lo arregle `dev-frontend`.
+distintos: lo que `preload.js` no expone se evalúa a `undefined` en `src/` y el
+fallo aparece más tarde, al leer una propiedad del resultado. Si cambias el
+puente, dilo en la entrega para que lo arregle `dev-frontend`.
