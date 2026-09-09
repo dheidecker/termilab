@@ -362,6 +362,29 @@ class StoreService {
     }
   }
 
+  // ─── Raw collection access (sync engine only) ───────────
+
+  /**
+   * The unfiltered contents of a collection file, private key material included.
+   * `getKeys()` redacts; the sync engine needs the real thing to encrypt it
+   * before it leaves the machine. Do not expose this over IPC.
+   * @param {string} collection - file name without .json ('port-forwards', not 'port_forwards')
+   */
+  async readRaw(collection) {
+    return this._readCollection(collection);
+  }
+
+  /** Replaces a whole collection, under the same lock as the normal writers. */
+  async writeRaw(collection, items) {
+    await this._acquireLock(collection);
+    try {
+      await this._writeCollection(collection, items);
+      return items.length;
+    } finally {
+      this._releaseLock(collection);
+    }
+  }
+
   // ─── Settings ───────────────────────────────────────────
 
   async getSettings() {
