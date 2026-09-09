@@ -6,6 +6,7 @@ const sshService = require('./services/ssh-service');
 const sftpService = require('./services/sftp-service');
 const portForwardService = require('./services/port-forward-service');
 const localShellService = require('./services/local-shell-service');
+const syncService = require('./services/sync-service');
 
 // Prevent garbage collection of mainWindow
 let mainWindow = null;
@@ -192,6 +193,7 @@ app.on('before-quit', async () => {
     sftpService.closeAll();
     await portForwardService.stopAll();
     await localShellService.killAll();
+    syncService.stop();
     removeIpcHandlers();
   } catch (err) {
     console.error('[Main] Cleanup error during quit:', err.message);

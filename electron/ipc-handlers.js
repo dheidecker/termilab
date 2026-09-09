@@ -8,6 +8,7 @@ const storeService = require('./services/store-service');
 const keyService = require('./services/key-service');
 const portForwardService = require('./services/port-forward-service');
 const localShellService = require('./services/local-shell-service');
+const syncService = require('./services/sync-service');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -35,6 +36,8 @@ function registerIpcHandlers(mainWindow) {
   sftpService.setMainWindow(mainWindow);
   portForwardService.setMainWindow(mainWindow);
   localShellService.setMainWindow(mainWindow);
+  syncService.setMainWindow(mainWindow);
+  syncService.start();
 
   // ─── SSH Handlers ─────────────────────────────────────
 
@@ -331,6 +334,52 @@ function registerIpcHandlers(mainWindow) {
     mainWindow.webContents.send('window:maximize-change', false);
   });
 
+  // ─── Sync ─────────────────────────────────────────────
+
+  ipcMain.handle('sync:status', wrapHandler(async () => {
+    return await syncService.status();
+  }));
+
+  ipcMain.handle('sync:login', wrapHandler(async () => {
+    return await syncService.login();
+  }));
+
+  ipcMain.handle('sync:logout', wrapHandler(async () => {
+    await syncService.logout();
+  }));
+
+  ipcMain.handle('sync:now', wrapHandler(async () => {
+    return await syncService.syncNow();
+  }));
+
+  ipcMain.handle('sync:devices', wrapHandler(async () => {
+    return await syncService.devices();
+  }));
+
+  ipcMain.handle('sync:revoke-device', wrapHandler(async (event, id) => {
+    await syncService.revokeDevice(id);
+  }));
+
+  ipcMain.handle('sync:pair-request', wrapHandler(async () => {
+    return await syncService.pairingRequest();
+  }));
+
+  ipcMain.handle('sync:pair-pending', wrapHandler(async () => {
+    return await syncService.pairingPending();
+  }));
+
+  ipcMain.handle('sync:pair-approve', wrapHandler(async (event, id) => {
+    await syncService.pairingApprove(id);
+  }));
+
+  ipcMain.handle('sync:pair-reject', wrapHandler(async (event, id) => {
+    await syncService.pairingReject(id);
+  }));
+
+  ipcMain.handle('sync:pair-claim', wrapHandler(async (event, id) => {
+    return await syncService.pairingClaim(id);
+  }));
+
   // ─── System Info ──────────────────────────────────────────
 
   ipcMain.handle('system:info', wrapHandler(async () => {
@@ -364,6 +413,10 @@ function removeIpcHandlers() {
     'dialog:open-file', 'dialog:save-file',
     'window:is-maximized',
     'system:info',
+    'sync:status', 'sync:login', 'sync:logout', 'sync:now',
+    'sync:devices', 'sync:revoke-device',
+    'sync:pair-request', 'sync:pair-pending', 'sync:pair-approve',
+    'sync:pair-reject', 'sync:pair-claim',
   ];
 
   for (const channel of channels) {

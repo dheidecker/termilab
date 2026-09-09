@@ -187,6 +187,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  // ─── Sync ─────────────────────────────────────────────
+  sync: {
+    status: () => invoke('sync:status'),
+    login: () => invoke('sync:login'),
+    logout: () => invoke('sync:logout'),
+    syncNow: () => invoke('sync:now'),
+    devices: () => invoke('sync:devices'),
+    revokeDevice: (id) => invoke('sync:revoke-device', id),
+    onStatus: (callback) => {
+      const listener = (event, status) => callback(status);
+      ipcRenderer.on('sync:status', listener);
+      return listener;
+    },
+    removeStatusListener: () => {
+      ipcRenderer.removeAllListeners('sync:status');
+    },
+    pairing: {
+      request: () => invoke('sync:pair-request'),
+      pending: () => invoke('sync:pair-pending'),
+      approve: (id) => invoke('sync:pair-approve', id),
+      reject: (id) => invoke('sync:pair-reject', id),
+      claim: (id) => invoke('sync:pair-claim', id),
+    },
+  },
+
   // ─── System Info ──────────────────────────────────────────
   system: {
     getInfo: () => invoke('system:info'),
