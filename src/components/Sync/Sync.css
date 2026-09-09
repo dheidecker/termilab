@@ -1,0 +1,401 @@
+/* Sync.css — the sync panel, device list and pairing cards.
+   Every colour is a token from index.css so the light theme follows. */
+
+.sync-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ─── Card ─── */
+.sync-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: var(--overlay-subtle);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+}
+
+.sync-card-muted {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Pairing needs to read as "stop and look at this". */
+.sync-card-attention {
+  border-left: 3px solid var(--color-warning);
+  background: var(--color-warning-muted);
+}
+
+.sync-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sync-card-title svg {
+  width: 15px;
+  height: 15px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+/* ─── Text ─── */
+.sync-text {
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.sync-text strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.sync-text-dim {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+}
+
+.sync-text-warn {
+  color: var(--color-warning);
+  font-weight: 500;
+}
+
+.sync-steps {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* ─── Buttons ─── */
+.sync-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sync-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 7px 14px;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-base), color var(--transition-base),
+              border-color var(--transition-base);
+}
+
+.sync-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.sync-btn-sm {
+  padding: 4px 10px;
+  font-size: var(--font-size-xs);
+}
+
+.sync-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.sync-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.sync-btn-ghost {
+  background: transparent;
+  border-color: var(--border-primary);
+  color: var(--text-secondary);
+}
+
+.sync-btn-ghost:hover:not(:disabled) {
+  background: var(--hover-overlay);
+  color: var(--text-primary);
+}
+
+.sync-btn-danger {
+  background: transparent;
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.sync-btn-danger:hover:not(:disabled) {
+  background: var(--color-danger);
+  color: var(--accent-contrast);
+}
+
+/* ─── Account row ─── */
+.sync-account {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sync-account-avatar {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-muted);
+  color: var(--accent);
+  font-size: var(--font-size-base);
+  font-weight: 700;
+}
+
+.sync-account-body {
+  flex: 1;
+  min-width: 140px;
+}
+
+.sync-account-email {
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.sync-account-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.sync-dot { color: var(--text-placeholder); }
+
+/* ─── Waiting / spinner ─── */
+.sync-waiting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+}
+
+.sync-waiting-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.sync-waiting-body strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.sync-spinner {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid var(--border-primary);
+  border-top-color: var(--accent);
+  animation: sync-spin 0.8s linear infinite;
+}
+
+@keyframes sync-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Banners / notes ─── */
+.sync-banner {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+.sync-banner-error {
+  background: var(--color-danger-muted);
+  color: var(--color-danger);
+}
+
+.sync-banner-ok {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: var(--color-success-muted);
+  color: var(--color-success);
+}
+
+.sync-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+/* ─── Six pairing digits ─── */
+.sync-digits {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  user-select: text;
+}
+
+.sync-digit {
+  min-width: 34px;
+  padding: 8px 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xl);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 1px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+}
+
+/* Splits the code 3 + 3 so it is easy to read out loud. */
+.sync-digits-sep {
+  width: 10px;
+}
+
+.sync-digits-sm .sync-digit {
+  min-width: 26px;
+  padding: 5px 0;
+  font-size: var(--font-size-lg);
+}
+
+/* ─── Incoming pairing request ─── */
+.sync-pairing-request {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+}
+
+.sync-pairing-request-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sync-pairing-device {
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ─── Device list ─── */
+.sync-device-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sync-device {
+  padding: 8px 0;
+  border-top: 1px solid var(--border-secondary);
+}
+
+.sync-device:first-child {
+  border-top: none;
+}
+
+.sync-device.is-revoked {
+  opacity: 0.55;
+}
+
+.sync-device-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sync-device-body {
+  min-width: 0;
+}
+
+.sync-device-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: var(--font-size-md);
+  color: var(--text-primary);
+}
+
+.sync-device-meta {
+  margin-top: 2px;
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.sync-device-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
+  background: var(--color-danger-muted);
+  border-radius: var(--radius-sm);
+}
+
+.sync-badge {
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.sync-badge-current {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
+.sync-badge-revoked {
+  background: var(--overlay-strong);
+  color: var(--text-secondary);
+}
