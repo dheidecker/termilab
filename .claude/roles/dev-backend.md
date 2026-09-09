@@ -18,22 +18,30 @@ Y para cargar el grafo entero (detecta `require` a archivos borrados, que
 `node --check` no ve), stubea `electron` con `Module._load` y requiere
 `ipc-handlers.js`; con eso basta, arrastra todos los servicios.
 
-### Arnés completo (lo que hace falta en el stub)
+### El arnés ya existe: `scripts/check-main.js`
 
-Con un stub un poco más gordo se prueba de verdad el main sin abrir Electron, y
-merece la pena rehacerlo cada vez: se escribe en 15 minutos y encuentra cosas
-que el ojo no ve (dos carreras de este ciclo salieron de ahí).
+`node scripts/check-main.js` (sin argumentos, sin red, sin Electron). Hace
+`node --check` de todo `electron/`, carga el grafo entero con `electron`
+stubeado, comprueba que ningún `invoke('canal')` de `preload.js` se quede sin
+handler, y corre sincronizaciones **de verdad** contra un `http.createServer`
+local con `TERMILAB_SYNC_URL`. **Amplíalo en vez de reescribirlo.** No está en
+`package.json` a propósito: `scripts/` no se empaqueta.
 
-- `app.getPath()` → un `mkdtemp`; `store-service` y `sync-service` lo resuelven
-  perezosamente, así que basta con stubear antes del primer `require`.
-- `safeStorage` falso (`isEncryptionAvailable: () => true` y un prefijo tonto en
-  `encryptString`): comprueba el cableado, no la criptografía del SO.
-- `ipcMain.handle` guardando en un `Map`, más `contextBridge.exposeInMainWorld`
-  capturando el objeto y un `ipcRenderer.invoke` que llama al `Map`. Así pruebas
-  el contrato IPC **de punta a punta**, y detectas un canal que preload llama y
-  nadie registra (que es exactamente el fallo que no da la cara hasta runtime).
-- Para el HTTP, un `http.createServer` local y `TERMILAB_SYNC_URL` apuntando a
-  él. No hace falta el servidor real.
+Detalles del stub que costaron intentos:
+
+- `app.getPath()` → un `mkdtemp`, y hay que stubearlo **antes del primer
+  `require`**: `store-service` calcula `this.dataDir` en el **constructor**, y
+  el singleton se crea al requerir el módulo (`crypto-service` y `sync-service`
+  sí lo resuelven perezosamente).
+- El `BrowserWindow` falso necesita `on()`, `isDestroyed()` y
+  `webContents.send()`: `registerIpcHandlers` engancha eventos y `_emitStatus`
+  llama a `isDestroyed()` en cada sync.
+- Los canales `updater:*` los registra `main.js` (stubs de dev), **no**
+  `ipc-handlers.js`: al comparar contra preload hay que excluirlos o salen como
+  "sin handler" falsos.
+- Cuando toques el arnés, valídalo con un **control negativo**: vacía
+  `SECRET_FIELDS` y comprueba que se pone rojo. Un arnés de seguridad que no
+  falla cuando quitas la protección no está probando nada.
 
 ## `git add` de un archivo ya borrado falla; `git commit -- <rutas>` no
 
@@ -117,6 +125,49 @@ Y al sellar la clave maestra, va en **base64 dentro del texto cifrado**, no en
 crudo: el descifrado devuelve string utf-8 y 32 bytes aleatorios no son utf-8
 válido, así que un viaje de ida y vuelta en crudo la corrompe sin avisar
 (y el error aparece luego, al no poder descifrar ninguna key).
+
+## Cifrado por campo de `hosts` (la fuga que ya ocurrió)
+
+La especificación decía "las claves SSH cifradas, el resto en claro" y era
+falsa: un host con `authType: 'password'` guarda la contraseña SSH **dentro del
+payload de `hosts`**, así que viajó legible al servidor y hubo que purgarla en
+titan a mano. La lección general: antes de declarar una colección "no
+sensible", mira qué campos guarda de verdad, no cómo se llama.
+
+- La tabla es `SECRET_FIELDS` en `sync-service.js` (hoy `hosts` →
+  `password`, `passphrase`). **Un campo sensible nuevo en el formulario de host
+  no está protegido hasta que su nombre está ahí.**
+- El sobre va **dentro del JSON del payload**, no en las columnas de la fila,
+  porque el servidor rechaza `payload` y `ciphertext` a la vez. Por eso `hosts`
+  sigue siendo `enc: false` y no hizo falta migrar el esquema. Convertir
+  `hosts` en colección cifrada entera se descartó a propósito: un equipo recién
+  logueado y sin clave maestra tiene que **ver la lista de servidores** aunque
+  no pueda conectarse.
+- `_assertNoPlaintextSecrets` revienta la sincronización si un camino nuevo
+  deja un secreto en claro en el payload. Es intencionadamente un `throw`: es
+  preferible no sincronizar a filtrar.
+
+### Lo que no es obvio: la sombra miente sobre los secretos
+
+La sombra guarda el hash del item **local**, que incluye la contraseña. Dos
+consecuencias que hay que tener presentes si tocas `_push`/`_applyRecords`:
+
+- Si se sube un host sin su secreto (no había clave maestra), el hash local no
+  se mueve nunca más, así que **la contraseña no subiría jamás tras emparejar**.
+  Por eso la entrada de sombra lleva `secretsPending: true` y `_push` reenvía
+  cuando esa marca coincide con tener clave maestra.
+- Lo mismo al bajar: si conservamos un secreto local que el servidor no trae,
+  la fila remota está incompleta → `secretsPending`.
+- `secretsVersion` en `sync-state.json` existe solo para las instalaciones de
+  la época en claro: su sombra dice "limpio" y sin la migración la fila legible
+  del servidor no se reemplazaría nunca. Si algún día añades un campo a
+  `SECRET_FIELDS` y quieres que las filas ya subidas se re-sellen, **sube
+  `SECRETS_VERSION`**; es el único mecanismo que lo consigue.
+
+Sin clave maestra el campo se **omite** (no se sube vacío ni en claro) y al
+bajar no se machaca el valor local. `status()` expone `secretsWithheld` y
+`secretsBlocked` para que la interfaz pueda decirlo; `dev-frontend` tiene que
+saber que existen o no los pintará.
 
 ## Decisiones tomadas aquí que no se leen en el código
 
