@@ -19,9 +19,12 @@ const pairingCrypto = require('./pairing-crypto');
  * - Pull is delta-based on a server cursor and deletes are TOMBSTONES: a record
  *   with `deleted: true` must remove the local object, or objects the user
  *   deleted on another device come back from the dead.
- * - `keys` is end-to-end encrypted (enc: true). Everything else is plaintext
- *   JSON. Without a master key we refuse to upload `keys` at all and say so in
- *   the status, rather than leaking private keys to the server.
+ * - `keys` is end-to-end encrypted at ROW level (enc: true). Everything else
+ *   travels as plaintext JSON on purpose, EXCEPT the fields listed in
+ *   SECRET_FIELDS (host passwords and passphrases), which are sealed one by one
+ *   inside their own payload. Without a master key we refuse to upload `keys`
+ *   at all and we strip those fields, and say so in the status, rather than
+ *   leaking a single secret to the server.
  *
  * Change detection is a shadow copy: a hash per item as of the last successful
  * sync, kept in sync-state.json. An item whose hash moved is dirty; an item in
@@ -49,7 +52,59 @@ const COLLECTIONS = {
   keys: 'keys',
 };
 const ENCRYPTED_COLLECTIONS = new Set(['keys']);
+
+/**
+ * ####################################################################
+ * #  SECRETOS POR CAMPO — AMPLIA ESTA TABLA                          #
+ * ####################################################################
+ *
+ * Campos que NO pueden salir de esta maquina en claro, por coleccion. El resto
+ * del objeto viaja como JSON legible a proposito: un equipo recien logueado y
+ * todavia sin clave maestra tiene que poder VER la lista de servidores
+ * (etiqueta, host, usuario, grupo, tags) aunque no pueda conectarse a ellos.
+ *
+ * **Si añades un campo sensible al formulario de host (o a cualquier otra
+ * coleccion), su nombre va aqui en el mismo commit.** Lo que no este en esta
+ * tabla se sube en claro al servidor.
+ *
+ * Cada campo listado se sustituye, dentro del propio payload, por un sobre
+ * { enc, ciphertext, nonce } (AES-256-GCM, nonce nuevo por campo). El registro
+ * sigue siendo `enc: false` a nivel de fila con `ciphertext`/`nonce` nulos: el
+ * servidor rechaza payload y ciphertext a la vez, por eso el sobre va DENTRO
+ * del JSON y no hace falta migrar el esquema.
+ */
+const SECRET_FIELDS = {
+  hosts: ['password', 'passphrase'],
+};
+
+/** Marca del sobre por campo. Versionada: si cambia el formato, cambia esto. */
+const SECRET_ENVELOPE_MARK = 'aes-256-gcm/v1';
+
+/**
+ * Version del cifrado por campo grabada en sync-state.json. Si sube, la sombra
+ * de las colecciones con secretos se marca entera como pendiente y todo se
+ * vuelve a subir sellado. La 0 es la epoca en la que las contrasenas de host
+ * viajaban en claro: en esas instalaciones el hash local no se ha movido, asi
+ * que sin esto la fila en claro del servidor no se reemplazaria nunca.
+ */
+const SECRETS_VERSION = 1;
+
 const SETTINGS_ITEM_ID = 'settings';
+
+function secretFieldsOf(collection) {
+  return SECRET_FIELDS[collection] || [];
+}
+
+function isSecretEnvelope(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && value.enc === SECRET_ENVELOPE_MARK
+    && typeof value.ciphertext === 'string' && typeof value.nonce === 'string';
+}
+
+/** Solo se cifra lo que hay: un campo ausente o vacio no gana un sobre. */
+function isSealable(value) {
+  return typeof value === 'string' && value.length > 0;
+}
 
 function stableStringify(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -80,12 +135,15 @@ class SyncService {
       lastSyncAt: null,
       email: null,
       deviceName: null,
+      secretsVersion: SECRETS_VERSION,
       shadow: {},
     };
     this._loaded = false;
     this._syncing = false;
     this._error = null;
     this._pendingPairings = 0;
+    this._secretsWithheld = 0;
+    this._secretsBlocked = 0;
     this._loginPromise = null;
     this._loginAborted = false;
     this._autoTimer = null;
@@ -115,8 +173,10 @@ class SyncService {
         lastSyncAt: raw.lastSyncAt || null,
         email: raw.email || null,
         deviceName: raw.deviceName || null,
+        secretsVersion: Number(raw.secretsVersion) || 0,
         shadow: raw.shadow && typeof raw.shadow === 'object' ? raw.shadow : {},
       };
+      this._migrateSecrets();
     } catch (err) {
       if (err.code !== 'ENOENT') {
         console.error('[SyncService] sync-state.json ilegible, se empieza de cero:', err.message);
@@ -124,6 +184,23 @@ class SyncService {
     }
     this._loaded = true;
     return this.state;
+  }
+
+  /**
+   * Marca como pendientes los secretos de una sombra escrita por una version
+   * anterior. No borra la sombra: perder sus entradas resucitaria los objetos
+   * que el usuario borro aqui y aun no se han subido como lapida.
+   */
+  _migrateSecrets() {
+    if (this.state.secretsVersion >= SECRETS_VERSION) return;
+    for (const collection of Object.keys(SECRET_FIELDS)) {
+      const shadow = this.state.shadow[collection];
+      if (!shadow) continue;
+      for (const entry of Object.values(shadow)) {
+        if (entry && typeof entry === 'object') entry.secretsPending = true;
+      }
+    }
+    this.state.secretsVersion = SECRETS_VERSION;
   }
 
   async _save() {
@@ -222,6 +299,10 @@ class SyncService {
       pendingPairings: this._pendingPairings,
       syncing: this._syncing,
       error: this._error,
+      // Secretos por campo del ultimo sync: cuantos no se subieron por falta de
+      // clave maestra, y cuantos bajaron cifrados y no se pudieron abrir.
+      secretsWithheld: this._secretsWithheld,
+      secretsBlocked: this._secretsBlocked,
       // Extra, not in the base contract: the pairing this device started, so the
       // UI can show the six digits as soon as the other side answers.
       pairing,
@@ -338,6 +419,8 @@ class SyncService {
     this.state.lastSyncAt = null;
     await this._save();
     this._pendingPairings = 0;
+    this._secretsWithheld = 0;
+    this._secretsBlocked = 0;
     this._error = null;
     for (const claim of this._claims.values()) {
       if (claim.timer) clearTimeout(claim.timer);
@@ -375,6 +458,11 @@ class SyncService {
     await storeService.writeRaw(COLLECTIONS[serverCollection], items);
   }
 
+  /**
+   * @returns {Promise<{record: object, withheld: number}>} `withheld` cuenta los
+   * campos secretos que se han dejado FUERA del registro por no haber clave
+   * maestra. Nunca salen en claro: o van en un sobre, o no van.
+   */
   async _buildRecord(serverCollection, item, updatedAt) {
     const base = {
       collection: serverCollection,
@@ -384,9 +472,106 @@ class SyncService {
     };
     if (ENCRYPTED_COLLECTIONS.has(serverCollection)) {
       const { ciphertext, nonce } = await cryptoService.encryptRecord(item);
-      return { ...base, enc: true, payload: null, ciphertext, nonce };
+      return { record: { ...base, enc: true, payload: null, ciphertext, nonce }, withheld: 0 };
     }
-    return { ...base, enc: false, payload: item, ciphertext: null, nonce: null };
+    const { payload, withheld } = await this._sealSecretFields(serverCollection, item);
+    return {
+      record: { ...base, enc: false, payload, ciphertext: null, nonce: null },
+      withheld,
+    };
+  }
+
+  /**
+   * Sustituye cada campo secreto por su sobre cifrado. Sin clave maestra el
+   * campo se OMITE del payload: subirlo en claro no es una opcion, y fallar
+   * entero dejaria de sincronizar el resto del host (que si es publico).
+   */
+  async _sealSecretFields(serverCollection, item) {
+    const fields = secretFieldsOf(serverCollection);
+    if (!fields.length) return { payload: item, withheld: 0 };
+
+    const hasKey = await cryptoService.hasMasterKey();
+    let payload = item;
+    let withheld = 0;
+    const mutable = () => {
+      if (payload === item) payload = { ...item };
+      return payload;
+    };
+
+    for (const field of fields) {
+      const value = item[field];
+      if (isSecretEnvelope(value)) continue; // ya sellado (no deberia pasar en local)
+      if (!isSealable(value)) continue;      // ausente, vacio o no-texto: nada que ocultar
+      if (!hasKey) {
+        delete mutable()[field];
+        withheld++;
+        continue;
+      }
+      const { ciphertext, nonce } = await cryptoService.encryptRecord(value);
+      mutable()[field] = { enc: SECRET_ENVELOPE_MARK, ciphertext, nonce };
+    }
+
+    // Ultimo cortafuegos antes del cable: si algun camino futuro se salta lo de
+    // arriba, la sincronizacion revienta en vez de filtrar la contrasena.
+    this._assertNoPlaintextSecrets(serverCollection, payload);
+    return { payload, withheld };
+  }
+
+  _assertNoPlaintextSecrets(serverCollection, payload) {
+    for (const field of secretFieldsOf(serverCollection)) {
+      const value = payload ? payload[field] : undefined;
+      if (isSealable(value)) {
+        throw new Error(
+          `Se ha intentado subir ${serverCollection}.${field} en claro; sincronizacion abortada`
+        );
+      }
+    }
+  }
+
+  /**
+   * El camino inverso. `local` es el objeto que ya teniamos en disco, si habia:
+   * un equipo sin emparejar recibe el host sin sus secretos y NO debe machacar
+   * la contrasena que el usuario tenga guardada aqui.
+   *
+   * @returns {Promise<{item: object, blocked: number, kept: number}>}
+   *   `blocked` = sobres que no se pudieron abrir; `kept` = secretos locales
+   *   conservados porque el servidor no los trae (el servidor va por detras).
+   */
+  async _openSecretFields(serverCollection, incoming, local) {
+    const fields = secretFieldsOf(serverCollection);
+    if (!fields.length) return { item: incoming, blocked: 0, kept: 0 };
+
+    const hasKey = await cryptoService.hasMasterKey();
+    const item = { ...incoming };
+    let blocked = 0;
+    let kept = 0;
+
+    for (const field of fields) {
+      const value = item[field];
+      if (isSecretEnvelope(value)) {
+        if (hasKey) {
+          try {
+            item[field] = await cryptoService.decryptRecord(value.ciphertext, value.nonce);
+            continue;
+          } catch (err) {
+            console.error(
+              `[SyncService] No se pudo descifrar ${serverCollection}.${field} de ${incoming.id}:`,
+              err.message
+            );
+          }
+        }
+        delete item[field];
+        blocked++;
+      }
+      // Campo en claro que venga del servidor (cliente antiguo, o fila anterior
+      // a este cifrado) se acepta tal cual: ya estaba filtrado, y borrarlo solo
+      // rompe la conexion del usuario.
+      if (item[field] === undefined && local && isSealable(local[field])) {
+        item[field] = local[field];
+        kept++;
+      }
+    }
+    return { item, blocked, kept };
   }
 
   _buildTombstone(serverCollection, itemId, updatedAt) {
@@ -426,6 +611,7 @@ class SyncService {
   async _pull() {
     let applied = 0;
     let blockedKeys = 0;
+    let blockedSecrets = 0;
     let guard = 0;
     for (;;) {
       const res = await this._request('GET', `/v1/sync?since=${encodeURIComponent(this.state.cursor || 0)}`);
@@ -435,6 +621,7 @@ class SyncService {
         const outcome = await this._applyRecords(records);
         applied += outcome.applied;
         blockedKeys += outcome.blocked;
+        blockedSecrets += outcome.blockedSecrets;
       }
       if (res.data && res.data.cursor !== undefined && res.data.cursor !== null) {
         this.state.cursor = res.data.cursor;
@@ -443,7 +630,7 @@ class SyncService {
       if (!res.data || !res.data.has_more) break;
       if (++guard > 500) throw new Error('Demasiadas paginas al bajar cambios, se corta el bucle');
     }
-    return { applied, blockedKeys };
+    return { applied, blockedKeys, blockedSecrets };
   }
 
   async _applyRecords(records) {
@@ -458,6 +645,7 @@ class SyncService {
 
     let applied = 0;
     let blocked = 0;
+    let blockedSecrets = 0;
 
     for (const [collection, collectionRecords] of byCollection) {
       const items = await this._readLocal(collection);
@@ -487,9 +675,8 @@ class SyncService {
         }
         if (!decoded.item || typeof decoded.item !== 'object') continue;
 
-        const incoming = { ...decoded.item, id: itemId };
-        if (index !== -1) {
-          const local = items[index];
+        const local = index !== -1 ? items[index] : null;
+        if (local) {
           const shadowEntry = shadow[itemId];
           const locallyDirty = !shadowEntry || shadowEntry.hash !== hashItem(local);
           if (locallyDirty && isNewer(local.updatedAt, record.updated_at)) {
@@ -497,18 +684,33 @@ class SyncService {
             // phase will send it up.
             continue;
           }
-          items[index] = incoming;
-        } else {
-          items.push(incoming);
         }
+
+        // Los campos secretos se abren aqui, y lo que el servidor no traiga se
+        // rellena con lo que ya teniamos: sin clave maestra el host baja sin
+        // contrasena y no debe borrar la que este equipo tiene guardada.
+        const opened = await this._openSecretFields(
+          collection,
+          { ...decoded.item, id: itemId },
+          local
+        );
+        const incoming = opened.item;
+        blockedSecrets += opened.blocked;
+
+        if (index !== -1) items[index] = incoming;
+        else items.push(incoming);
         dirty = true;
         applied++;
         shadow[itemId] = { hash: hashItem(incoming), updated_at: record.updated_at };
+        // Guardamos un secreto que el servidor no tiene: la fila remota esta
+        // incompleta y hay que volver a subirla en cuanto haya clave maestra,
+        // aunque el hash local no se mueva.
+        if (opened.kept) shadow[itemId].secretsPending = true;
       }
 
       if (dirty) await this._writeLocal(collection, items);
     }
-    return { applied, blocked };
+    return { applied, blocked, blockedSecrets };
   }
 
   // ─── Push ───────────────────────────────────────────────
@@ -518,6 +720,7 @@ class SyncService {
     const now = new Date().toISOString();
     const records = [];
     const commit = []; // applied to the shadow only once the server accepts
+    let withheldSecrets = 0; // campos secretos omitidos por no haber clave maestra
 
     for (const collection of [...Object.keys(COLLECTIONS), 'settings']) {
       if (ENCRYPTED_COLLECTIONS.has(collection) && !hasMasterKey) {
@@ -533,10 +736,22 @@ class SyncService {
         seen.add(item.id);
         const hash = hashItem(item);
         const previous = shadow[item.id];
-        if (previous && previous.hash === hash) continue;
+        // `secretsPending` = la fila del servidor va sin secretos porque
+        // entonces no habia clave maestra. El hash local no se mueve, asi que
+        // sin esta condicion la contrasena no subiria NUNCA tras emparejar.
+        const resend = !!(previous && previous.secretsPending && hasMasterKey);
+        if (previous && previous.hash === hash && !resend) continue;
         const updatedAt = item.updatedAt || item.updated_at || now;
-        records.push(await this._buildRecord(collection, item, updatedAt));
-        commit.push({ collection, itemId: item.id, hash, updatedAt });
+        const built = await this._buildRecord(collection, item, updatedAt);
+        withheldSecrets += built.withheld;
+        records.push(built.record);
+        commit.push({
+          collection,
+          itemId: item.id,
+          hash,
+          updatedAt,
+          secretsPending: built.withheld > 0,
+        });
       }
 
       for (const itemId of Object.keys(shadow)) {
@@ -547,7 +762,7 @@ class SyncService {
       }
     }
 
-    if (!records.length) return { pushed: 0 };
+    if (!records.length) return { pushed: 0, withheldSecrets };
 
     let pushed = 0;
     for (let offset = 0; offset < records.length; offset += PUSH_BATCH) {
@@ -560,12 +775,16 @@ class SyncService {
       }
       for (const entry of commit.slice(offset, offset + PUSH_BATCH)) {
         const shadow = this.state.shadow[entry.collection] || (this.state.shadow[entry.collection] = {});
-        if (entry.deleted) delete shadow[entry.itemId];
-        else shadow[entry.itemId] = { hash: entry.hash, updated_at: entry.updatedAt };
+        if (entry.deleted) {
+          delete shadow[entry.itemId];
+        } else {
+          shadow[entry.itemId] = { hash: entry.hash, updated_at: entry.updatedAt };
+          if (entry.secretsPending) shadow[entry.itemId].secretsPending = true;
+        }
       }
       await this._save();
     }
-    return { pushed };
+    return { pushed, withheldSecrets };
   }
 
   // ─── The loop ───────────────────────────────────────────
@@ -594,16 +813,22 @@ class SyncService {
       const push = await this._push();
       // Whatever the push created is already ours; pull again so the cursor
       // covers it and any record another device wrote meanwhile.
-      const secondPull = push.pushed ? await this._pull() : { applied: 0, blockedKeys: 0 };
+      const secondPull = push.pushed
+        ? await this._pull()
+        : { applied: 0, blockedKeys: 0, blockedSecrets: 0 };
 
       this.state.lastSyncAt = new Date().toISOString();
       await this._save();
 
       const hasMasterKey = await cryptoService.hasMasterKey();
+      this._secretsWithheld = push.withheldSecrets || 0;
+      this._secretsBlocked = (pull.blockedSecrets || 0) + (secondPull.blockedSecrets || 0);
       if (!hasMasterKey) {
-        this._error = 'Sin clave maestra: las claves SSH no se sincronizan. Empareja este dispositivo.';
-      } else if (pull.blockedKeys || secondPull.blockedKeys) {
-        this._error = 'Hay claves SSH que no se pudieron descifrar con la clave maestra de este dispositivo.';
+        this._error = this._secretsWithheld
+          ? 'Sin clave maestra: ni las claves SSH ni las contrasenas de los hosts salen de este equipo. Empareja este dispositivo.'
+          : 'Sin clave maestra: las claves SSH no se sincronizan. Empareja este dispositivo.';
+      } else if (pull.blockedKeys || secondPull.blockedKeys || this._secretsBlocked) {
+        this._error = 'Hay datos cifrados que no se pudieron descifrar con la clave maestra de este dispositivo.';
       }
 
       this._refreshPendingPairings().catch(() => { /* best effort */ });
