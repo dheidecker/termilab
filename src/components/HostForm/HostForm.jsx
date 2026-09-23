@@ -4,7 +4,7 @@ import './HostForm.css';
 
 export default function HostForm() {
   const { state, actions } = useApp();
-  const { editingHost, groups, keys } = state;
+  const { editingHost, newHostDefaults, groups, keys } = state;
 
   const [form, setForm] = useState({
     label: '',
@@ -14,7 +14,7 @@ export default function HostForm() {
     authType: 'password',
     password: '',
     keyId: '',
-    groupId: '',
+    groupId: newHostDefaults?.groupId || '',
     tags: [],
   });
 

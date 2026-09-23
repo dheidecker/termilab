@@ -68,6 +68,8 @@ export default function HostList() {
 
   /* A group that was deleted (here or by sync) while we were inside it */
   const currentGroup = groupId ? groupMap[groupId] || null : null;
+  /* A host created while browsing a group starts in that group. */
+  const newHostDefaults = currentGroup ? { groupId: currentGroup.id } : null;
 
   /* ─── Filtering ─── */
   const q = search.trim().toLowerCase();
@@ -349,7 +351,7 @@ export default function HostList() {
         {/* Action row */}
         <div className="hv-actions">
           <div className="hv-split" ref={newMenuRef}>
-            <button className="hv-btn hv-btn-primary hv-split-main" onClick={() => openHostForm()}>
+            <button className="hv-btn hv-btn-primary hv-split-main" onClick={() => openHostForm(null, newHostDefaults)}>
               <ServerIcon />
               New host
             </button>
@@ -363,7 +365,7 @@ export default function HostList() {
             </button>
             {newMenuOpen && (
               <div className="hv-menu hv-split-menu">
-                <button className="hv-menu-item" onClick={() => { setNewMenuOpen(false); openHostForm(); }}>
+                <button className="hv-menu-item" onClick={() => { setNewMenuOpen(false); openHostForm(null, newHostDefaults); }}>
                   <ServerIcon /> New host
                 </button>
                 <button className="hv-menu-item" onClick={handleNewGroup}>
@@ -438,7 +440,7 @@ export default function HostList() {
             <div className="hv-empty-icon"><ServerIcon /></div>
             <h3>No hosts yet</h3>
             <p>Add your first server, or type <code>user@hostname</code> above to connect right away.</p>
-            <button className="hv-btn hv-btn-primary" onClick={() => openHostForm()}>
+            <button className="hv-btn hv-btn-primary" onClick={() => openHostForm(null, newHostDefaults)}>
               <PlusIcon /> New host
             </button>
           </div>

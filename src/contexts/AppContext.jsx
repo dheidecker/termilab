@@ -294,9 +294,9 @@ function baseReducer(state, action) {
 
     /* ── Host form ── */
     case 'OPEN_HOST_FORM':
-      return { ...state, hostFormOpen: true, editingHost: action.payload || null };
+      return { ...state, hostFormOpen: true, editingHost: action.payload || null, newHostDefaults: action.defaults || null };
     case 'CLOSE_HOST_FORM':
-      return { ...state, hostFormOpen: false, editingHost: null };
+      return { ...state, hostFormOpen: false, editingHost: null, newHostDefaults: null };
 
     /* ── Broadcast ── */
     case 'TOGGLE_BROADCAST':
@@ -741,7 +741,8 @@ export function AppProvider({ children }) {
     setActiveSection: useCallback((section) => dispatch({ type: 'SET_ACTIVE_SECTION', payload: section }), []),
 
     /* Host form */
-    openHostForm: useCallback((host) => dispatch({ type: 'OPEN_HOST_FORM', payload: host }), []),
+    /* `defaults` only applies to a new host, e.g. the group being browsed. */
+    openHostForm: useCallback((host, defaults) => dispatch({ type: 'OPEN_HOST_FORM', payload: host, defaults }), []),
     closeHostForm: useCallback(() => dispatch({ type: 'CLOSE_HOST_FORM' }), []),
 
     /* Broadcast */
