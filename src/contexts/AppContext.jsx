@@ -389,6 +389,25 @@ export function AppProvider({ children }) {
       dispatch({ type: 'DELETE_HOST', payload: id });
     }, []),
 
+    /* Keeps `merged` (the survivor, already combined by the caller) and deletes
+       the rest. Save first, delete after: if something fails halfway the worst
+       case is a duplicate that is still there, never a host that is gone. The
+       deletes propagate to every synced computer as tombstones. */
+    mergeHosts: useCallback(async (merged, otherIds) => {
+      if (hasApi()) {
+        const saved = await api().store.saveHost(merged);
+        dispatch({ type: 'UPDATE_HOST', payload: saved });
+        for (const id of otherIds) {
+          await api().store.deleteHost(id);
+          dispatch({ type: 'DELETE_HOST', payload: id });
+        }
+        return saved;
+      }
+      dispatch({ type: 'UPDATE_HOST', payload: merged });
+      for (const id of otherIds) dispatch({ type: 'DELETE_HOST', payload: id });
+      return merged;
+    }, []),
+
     /* Groups */
     saveGroup: useCallback(async (group) => {
       if (hasApi()) {
@@ -610,6 +629,21 @@ export function AppProvider({ children }) {
       const sync = syncApi();
       if (!sync?.syncNow) return noSync();
       return sync.syncNow();
+    }, []),
+
+    /* Account passphrase. Both resolve { unlocked, synced } and reject with the
+       main process's message (wrong passphrase, too short, vault already
+       exists…). The passphrase goes straight through: nothing here keeps it. */
+    syncSetupPassphrase: useCallback(async (passphrase) => {
+      const sync = syncApi();
+      if (!sync?.setupPassphrase) return noSync();
+      return sync.setupPassphrase(passphrase);
+    }, []),
+
+    syncUnlock: useCallback(async (passphrase) => {
+      const sync = syncApi();
+      if (!sync?.unlock) return noSync();
+      return sync.unlock(passphrase);
     }, []),
 
     syncDevices: useCallback(async () => {

@@ -459,3 +459,22 @@
   background: var(--overlay-strong);
   color: var(--text-secondary);
 }
+
+/* ─── Passphrase form ─── */
+.sync-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.sync-field input {
+  width: 100%;
+  max-width: 360px;
+}
+
+.sync-field-hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-primary);
+}

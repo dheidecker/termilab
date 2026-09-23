@@ -3,6 +3,7 @@ import { useApp } from '../../contexts/AppContext';
 import SyncDevices from './SyncDevices';
 import PairingClaim from './PairingClaim';
 import PairingApprovals from './PairingApprovals';
+import PassphraseCard from './PassphraseCard';
 import { errorMessage, formatRelative, formatAbsolute } from './helpers';
 import './Sync.css';
 
@@ -28,6 +29,7 @@ export default function SyncPanel() {
   const [busy, setBusy] = useState(null);        // 'sync' | 'logout' | null
   const [actionError, setActionError] = useState(null);
   const [lastResult, setLastResult] = useState(null);
+  const [showPairing, setShowPairing] = useState(false);
   /* Kept here on purpose: handling the last pairing unmounts the card that
      produced the message, and the user still has to read it. */
   const [pairingNotice, setPairingNotice] = useState(null);
@@ -103,6 +105,19 @@ export default function SyncPanel() {
   const handleRefresh = async () => {
     setActionError(null);
     await actions.refreshSyncStatus();
+  };
+
+  /* Setup and unlock both run a sync in the main process, which rewrites the
+     store files: reload them, like after Sync now. Errors propagate to the
+     card, which shows them next to the field. */
+  const handlePassphrase = async (mode, value) => {
+    const run = mode === 'setup' ? actions.syncSetupPassphrase : actions.syncUnlock;
+    const result = await run(value);
+    await actions.reloadStore().catch(() => {});
+    await actions.refreshSyncStatus();
+    if (mounted.current && result && result.synced === false) {
+      setPairingNotice('Unlocked. The first sync did not finish; it will retry on its own.');
+    }
   };
 
   const handleSyncNow = async () => {
@@ -212,8 +227,12 @@ export default function SyncPanel() {
   /* ── Signed in ── */
   const lastSync = formatRelative(status.lastSyncAt);
   const lastSyncTitle = formatAbsolute(status.lastSyncAt);
-  const needsPairing = !status.hasMasterKey;
-  const hasIncoming = status.hasMasterKey && status.pendingPairings > 0;
+  /* `unlocked` decides, not `hasMasterKey`: every install older than the
+     passphrase has a random key, which would make this computer look ready. */
+  const locked = !status.unlocked;
+  const passphraseMode = status.vaultExists ? 'unlock' : 'setup';
+  /* Only a computer holding the verified account key should hand it over. */
+  const hasIncoming = status.unlocked && status.pendingPairings > 0;
 
   return (
     <div className="sync-stack">
@@ -262,7 +281,8 @@ export default function SyncPanel() {
         <SecretsNotice
           withheld={status.secretsWithheld}
           blocked={status.secretsBlocked}
-          hasMasterKey={status.hasMasterKey}
+          undecryptable={status.undecryptableCount}
+          unlocked={status.unlocked}
         />
         {pairingNotice && (
           <div className="sync-banner sync-banner-ok">
@@ -276,13 +296,30 @@ export default function SyncPanel() {
         {status.error && <div className="sync-banner sync-banner-error">{status.error}</div>}
       </div>
 
-      {needsPairing && (
+      {locked && (
+        <PassphraseCard
+          key={passphraseMode}
+          mode={passphraseMode}
+          deviceName={status.deviceName}
+          onSubmit={(value) => handlePassphrase(passphraseMode, value)}
+        />
+      )}
+      {/* Pairing is the secondary way in, and only once the account has a
+          passphrase: the key it receives is checked against it. Behind a
+          button because mounting PairingClaim sends a pairing request. */}
+      {locked && status.vaultExists && (showPairing ? (
         <PairingClaim
           deviceName={status.deviceName}
           pairing={status.pairing}
           onPaired={setPairingNotice}
         />
-      )}
+      ) : (
+        <div className="sync-actions">
+          <button className="sync-btn sync-btn-ghost" onClick={() => setShowPairing(true)}>
+            Pair from another computer instead
+          </button>
+        </div>
+      ))}
       {hasIncoming && (
         <PairingApprovals count={status.pendingPairings} onHandled={setPairingNotice} />
       )}
@@ -294,40 +331,53 @@ export default function SyncPanel() {
 
 /**
  * Passwords and passphrases are encrypted field by field before they leave the
- * machine, so a computer without the master key syncs its hosts but not their
- * secrets — in both directions. Without this notice that reads as data loss,
- * and the user goes looking for a password that is right there, sealed.
- *
- * Counts are fields, not hosts: one host can hold a password and a passphrase.
+ * machine. Without this notice a host that arrived without its password reads
+ * as data loss, and the user goes looking for a password that is right there,
+ * sealed. One message per state, never two that contradict each other.
  */
-function SecretsNotice({ withheld, blocked, hasMasterKey }) {
-  if (!withheld && !blocked) return null;
+function SecretsNotice({ withheld, blocked, undecryptable, unlocked }) {
   const plural = (n) => (n === 1 ? '' : 's');
 
+  if (!unlocked) {
+    if (!withheld && !blocked) return null;
+    return (
+      <div className="sync-secrets">
+        {blocked > 0 && (
+          <span>
+            <strong>
+              {blocked} saved password{plural(blocked)} arrived from your other computers still
+              encrypted.
+            </strong>{' '}
+            The hosts are here; the passwords open once this computer is unlocked.
+          </span>
+        )}
+        {withheld > 0 && (
+          <span>
+            <strong>
+              {withheld} saved password{plural(withheld)} stayed on this computer.
+            </strong>{' '}
+            Termilab only backs them up encrypted, and this computer is not unlocked yet.
+          </span>
+        )}
+        {/* Not sync-text-dim: --text-tertiary lands at 3.5:1 on this background,
+            and this is the line that says what to do about it. */}
+        <span>Unlock it with the account passphrase below. Nothing was lost.</span>
+      </div>
+    );
+  }
+
+  const stuck = undecryptable || blocked;
+  if (!stuck) return null;
+  const it = stuck === 1;
   return (
     <div className="sync-secrets">
-      {blocked > 0 && (
-        <span>
-          <strong>
-            {blocked} saved password{plural(blocked)} arrived from your other computers still
-            encrypted.
-          </strong>{' '}
-          The hosts are here; their passwords cannot be opened without the master key. Nothing was
-          lost.
-        </span>
-      )}
-      {withheld > 0 && (
-        <span>
-          <strong>
-            {withheld} saved password{plural(withheld)} stayed on this computer.
-          </strong>{' '}
-          They are not backed up: without the master key Termilab cannot encrypt them, and it will
-          not upload them in the clear.
-        </span>
-      )}
-      {/* Not sync-text-dim: --text-tertiary lands at 3.5:1 on this background,
-          and this is the line that says what to do about it. */}
-      {!hasMasterKey && <span>Pair this computer to unlock them.</span>}
+      <span>
+        <strong>{stuck} item{plural(stuck)} can’t be opened here yet.</strong>{' '}
+        Another computer encrypted {it ? 'it' : 'them'} with its own old key, before this account
+        had a passphrase. {it ? 'It opens' : 'They open'} once that computer is updated to this
+        version and unlocked with the same passphrase. That computer still has the original, so
+        nothing was lost.
+      </span>
     </div>
   );
 }

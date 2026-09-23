@@ -352,6 +352,16 @@ function registerIpcHandlers(mainWindow) {
     return await syncService.syncNow();
   }));
 
+  // Boveda: la clave maestra sale del passphrase de la cuenta. El passphrase
+  // llega aqui y va directo al servicio; no se registra ni vuelve en el sobre.
+  ipcMain.handle('sync:setup-passphrase', wrapHandler(async (event, passphrase) => {
+    return await syncService.setupPassphrase(passphrase);
+  }));
+
+  ipcMain.handle('sync:unlock', wrapHandler(async (event, passphrase) => {
+    return await syncService.unlock(passphrase);
+  }));
+
   ipcMain.handle('sync:devices', wrapHandler(async () => {
     return await syncService.devices();
   }));

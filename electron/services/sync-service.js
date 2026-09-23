@@ -124,6 +124,46 @@ const SECRETS_VERSION = 1;
 
 const SETTINGS_ITEM_ID = 'settings';
 
+/**
+ * ####################################################################
+ * #  BOVEDA — LA CLAVE MAESTRA SALE DEL PASSPHRASE DE LA CUENTA      #
+ * ####################################################################
+ *
+ * El registro `{ v, salt, kdf, verifier }` viaja como un item de la coleccion
+ * `settings` con este item_id reservado (el servidor tiene lista blanca de
+ * colecciones y no se toca). NO es un ajuste de la app: se intercepta al bajar
+ * y vive en sync-state.json (`state.vault`), jamas en settings.json, y al subir
+ * solo sale por `_pushVault()`.
+ *
+ * "Desbloqueado" = hay clave instalada, se derivo para ESTA sal y abre ESTE
+ * verificador. Solo entonces se sella y se sube un secreto. Cualquier otra
+ * clave (la aleatoria de versiones antiguas, una recibida sin boveda, la de una
+ * boveda que perdio una carrera) sirve para LEER y para re-sellar, nunca para
+ * sellar.
+ */
+const VAULT_ITEM_ID = '__vault__';
+
+// Textos de error que la interfaz puede ensenar tal cual. NUNCA llevan el
+// passphrase ni la clave.
+const ERR_VAULT_EXISTS = 'Esta cuenta ya tiene passphrase: usa unlock para desbloquear este dispositivo';
+const ERR_NO_VAULT = 'Esta cuenta todavia no tiene passphrase: crea uno con setupPassphrase';
+const ERR_WRONG_PASSPHRASE = 'Passphrase incorrecto';
+const ERR_VAULT_RACE = 'Otro dispositivo ha creado el passphrase de esta cuenta a la vez: desbloquea este con unlock y el passphrase de aquel';
+const ERR_PAIR_KEY_MISMATCH = 'La clave recibida por emparejamiento no corresponde al passphrase de esta cuenta; no se ha instalado';
+const ERR_NOT_SIGNED_IN = 'No has iniciado sesion en la sincronizacion';
+const ERR_NO_KEYCHAIN = 'El almacen de claves del sistema no esta disponible: no se puede guardar la clave maestra';
+const ERR_PAIR_NEEDS_NETWORK = 'No se pudo comprobar la clave recibida contra la boveda de la cuenta: hace falta conexion con el servidor de sincronizacion para emparejar';
+
+/**
+ * Huella del conjunto de claves legacy, para `state.resealBaseline`. Es un hash
+ * de claves aleatorias de 256 bits: no permite recuperarlas.
+ */
+function legacyDigest(keys) {
+  const h = crypto.createHash('sha256');
+  for (const b64 of keys.map(k => k.toString('base64')).sort()) h.update(b64);
+  return h.digest('hex').slice(0, 32);
+}
+
 function secretFieldsOf(collection) {
   return SECRET_FIELDS[collection] || [];
 }
@@ -137,6 +177,11 @@ function isSecretEnvelope(value) {
 /** Solo se cifra lo que hay: un campo ausente o vacio no gana un sobre. */
 function isSealable(value) {
   return typeof value === 'string' && value.length > 0;
+}
+
+function sealEnvelope(key, plaintext) {
+  const { ciphertext, nonce } = cryptoService.encryptWith(key, plaintext);
+  return { enc: SECRET_ENVELOPE_MARK, ciphertext, nonce };
 }
 
 function stableStringify(value) {
@@ -170,6 +215,12 @@ class SyncService {
       deviceName: null,
       secretsVersion: SECRETS_VERSION,
       shadow: {},
+      vault: null,         // registro de boveda de la cuenta (nunca en settings.json)
+      undecryptable: {},   // 'coleccion/id' -> true: bajo cifrado y no se pudo abrir
+      // { salt, legacy }: se completo un pull desde el cursor 0 con la clave
+      // desbloqueada de esa sal mientras existian ESAS legacy. Sin esto, las
+      // legacy no se descartan (ver _prepareLegacyMigration).
+      resealBaseline: null,
     };
     this._loaded = false;
     this._syncing = false;
@@ -210,6 +261,9 @@ class SyncService {
         deviceName: raw.deviceName || null,
         secretsVersion: Number(raw.secretsVersion) || 0,
         shadow: raw.shadow && typeof raw.shadow === 'object' ? raw.shadow : {},
+        vault: cryptoService.parseVault(raw.vault),
+        undecryptable: raw.undecryptable && typeof raw.undecryptable === 'object' ? raw.undecryptable : {},
+        resealBaseline: raw.resealBaseline && typeof raw.resealBaseline === 'object' ? raw.resealBaseline : null,
       };
       this._migrateSecrets();
     } catch (err) {
@@ -312,6 +366,9 @@ class SyncService {
     this.state.email = null;
     this.state.cursor = 0;
     this.state.shadow = {};
+    this.state.vault = null;
+    this.state.undecryptable = {};
+    this.state.resealBaseline = null;
     try { await this._save(); } catch (_) { /* ignore */ }
     this._error = 'Sesion caducada o dispositivo revocado';
     this._emitStatus();
@@ -323,6 +380,7 @@ class SyncService {
     await this._load();
     const token = await cryptoService.getToken().catch(() => null);
     const hasMasterKey = await cryptoService.hasMasterKey().catch(() => false);
+    const unlocked = !!(await this._verifiedKey().catch(() => null));
     const pairing = this._currentClaimSummary();
     return {
       signedIn: !!token,
@@ -338,6 +396,15 @@ class SyncService {
       // clave maestra, y cuantos bajaron cifrados y no se pudieron abrir.
       secretsWithheld: this._secretsWithheld,
       secretsBlocked: this._secretsBlocked,
+      // Boveda. `hasMasterKey` solo dice que hay ALGUNA clave instalada; la que
+      // manda es `unlocked`: solo con ella salen secretos de este equipo.
+      vaultExists: !!this.state.vault,
+      unlocked,
+      // Objetos (no campos) que bajaron cifrados y ninguna clave de aqui abre.
+      undecryptableCount: Object.keys(this.state.undecryptable || {}).length,
+      // Cuales, como "coleccion/id". La interfaz los necesita para no ofrecer
+      // borrar un duplicado cuya unica copia legible la tiene otro equipo.
+      undecryptableIds: Object.keys(this.state.undecryptable || {}),
       // Extra, not in the base contract: the pairing this device started, so the
       // UI can show the six digits as soon as the other side answers.
       pairing,
@@ -419,13 +486,10 @@ class SyncService {
         this.state.email = poll.data.email || null;
         this.state.deviceName = deviceName;
         await this._save();
-        // A device with no master key yet generates one now, so a single-device
-        // user just works. Pairing later replaces it.
-        try {
-          await cryptoService.ensureMasterKey();
-        } catch (err) {
-          console.error('[SyncService] No se pudo crear la clave maestra:', err.message);
-        }
+        // NO se crea ninguna clave maestra aqui. Crearla al azar en cada equipo
+        // era el fallo: el segundo dispositivo sincronizaba al instante con
+        // otra clave. La clave sale del passphrase (setupPassphrase / unlock)
+        // o del emparejamiento; hasta entonces no sale ningun secreto.
         this._error = null;
         this._emitStatus();
         this.syncNow().catch(err => console.error('[SyncService] Sync inicial fallido:', err.message));
@@ -452,6 +516,11 @@ class SyncService {
     this.state.cursor = 0;
     this.state.shadow = {};
     this.state.lastSyncAt = null;
+    // La boveda es de la cuenta: otra cuenta en este equipo tendra la suya. La
+    // clave instalada se queda; si la cuenta es la misma, vuelve a verificar.
+    this.state.vault = null;
+    this.state.undecryptable = {};
+    this.state.resealBaseline = null;
     await this._save();
     this._pendingPairings = 0;
     this._secretsWithheld = 0;
@@ -475,7 +544,8 @@ class SyncService {
   async _readLocal(serverCollection) {
     if (serverCollection === 'settings') {
       const settings = await storeService.getSettings();
-      return [{ id: SETTINGS_ITEM_ID, ...settings }];
+      const { [VAULT_ITEM_ID]: _vault, ...clean } = settings || {};
+      return [{ id: SETTINGS_ITEM_ID, ...clean }];
     }
     const items = await storeService.readRaw(COLLECTIONS[serverCollection]);
     return Array.isArray(items) ? items : [];
@@ -485,7 +555,9 @@ class SyncService {
     if (serverCollection === 'settings') {
       const settings = items.find(i => i.id === SETTINGS_ITEM_ID);
       if (settings) {
-        const { id, ...rest } = settings;
+        // La boveda nunca es un ajuste: ni por item_id (se intercepta antes) ni
+        // colada como propiedad.
+        const { id, [VAULT_ITEM_ID]: _vault, ...rest } = settings;
         await storeService.saveSettings(rest);
       }
       return;
@@ -494,11 +566,14 @@ class SyncService {
   }
 
   /**
+   * @param {Buffer|null} key - la clave DESBLOQUEADA (pasa el verificador) o
+   *   null. Nunca una clave sin verificar: sellar con ella es justo el fallo que
+   *   deja ciphertext que el resto de dispositivos no puede abrir.
    * @returns {Promise<{record: object, withheld: number}>} `withheld` cuenta los
    * campos secretos que se han dejado FUERA del registro por no haber clave
-   * maestra. Nunca salen en claro: o van en un sobre, o no van.
+   * maestra desbloqueada. Nunca salen en claro: o van en un sobre, o no van.
    */
-  async _buildRecord(serverCollection, item, updatedAt) {
+  async _buildRecord(serverCollection, item, updatedAt, key) {
     const base = {
       collection: serverCollection,
       item_id: item.id,
@@ -506,10 +581,11 @@ class SyncService {
       updated_at: updatedAt,
     };
     if (ENCRYPTED_COLLECTIONS.has(serverCollection)) {
-      const { ciphertext, nonce } = await cryptoService.encryptRecord(item);
+      if (!key) throw new Error(`Sin clave maestra desbloqueada no se sube ${serverCollection}`);
+      const { ciphertext, nonce } = cryptoService.encryptWith(key, JSON.stringify(item));
       return { record: { ...base, enc: true, payload: null, ciphertext, nonce }, withheld: 0 };
     }
-    const { payload, withheld } = await this._sealSecretFields(serverCollection, item);
+    const { payload, withheld } = await this._sealSecretFields(serverCollection, item, key);
     return {
       record: { ...base, enc: false, payload, ciphertext: null, nonce: null },
       withheld,
@@ -517,15 +593,14 @@ class SyncService {
   }
 
   /**
-   * Sustituye cada campo secreto por su sobre cifrado. Sin clave maestra el
+   * Sustituye cada campo secreto por su sobre cifrado. Sin clave desbloqueada el
    * campo se OMITE del payload: subirlo en claro no es una opcion, y fallar
    * entero dejaria de sincronizar el resto del host (que si es publico).
    */
-  async _sealSecretFields(serverCollection, item) {
+  async _sealSecretFields(serverCollection, item, key) {
     const fields = secretFieldsOf(serverCollection);
     if (!fields.length) return { payload: item, withheld: 0 };
 
-    const hasKey = await cryptoService.hasMasterKey();
     let payload = item;
     let withheld = 0;
     const mutable = () => {
@@ -537,13 +612,12 @@ class SyncService {
       const value = item[field];
       if (isSecretEnvelope(value)) continue; // ya sellado (no deberia pasar en local)
       if (!isSealable(value)) continue;      // ausente, vacio o no-texto: nada que ocultar
-      if (!hasKey) {
+      if (!key) {
         delete mutable()[field];
         withheld++;
         continue;
       }
-      const { ciphertext, nonce } = await cryptoService.encryptRecord(value);
-      mutable()[field] = { enc: SECRET_ENVELOPE_MARK, ciphertext, nonce };
+      mutable()[field] = sealEnvelope(key, value);
     }
 
     // Ultimo cortafuegos antes del cable: si algun camino futuro se salta lo de
@@ -563,37 +637,139 @@ class SyncService {
     }
   }
 
+  // ─── Keys ───────────────────────────────────────────────
+
+  /**
+   * La clave con la que se puede SELLAR: instalada, derivada para la sal de la
+   * boveda vigente y capaz de abrir su verificador. Si la boveda cambio (otro
+   * dispositivo la creo a la vez y gano), deja de valer sola: el equipo queda
+   * bloqueado hasta `unlock`.
+   */
+  async _verifiedKey() {
+    await this._load();
+    const vault = this.state.vault;
+    if (!vault) return null;
+    const key = await cryptoService.getMasterKey();
+    if (!key) return null;
+    if ((await cryptoService.getVaultSalt()) !== vault.salt) return null;
+    return cryptoService.verifyVaultKey(key, vault) ? key : null;
+  }
+
+  /**
+   * Claves con las que se intenta ABRIR lo que baja: primero la desbloqueada, y
+   * detras la instalada sin verificar y las legacy que esperan a que se re-selle
+   * lo suyo. Leer con una clave vieja es inofensivo; sellar con ella, no.
+   */
+  async _keyContext() {
+    const verifiedKey = await this._verifiedKey().catch(() => null);
+    const installed = await cryptoService.getMasterKey().catch(() => null);
+    const legacy = await cryptoService.getLegacyKeys().catch(() => []);
+    const keys = [];
+    for (const k of [verifiedKey, installed, ...legacy]) {
+      if (k && !keys.some(o => o.equals(k))) keys.push(k);
+    }
+    return { verifiedKey, keys };
+  }
+
+  /**
+   * @returns {{plaintext: string, fallback: boolean}|null} `fallback` = se abrio
+   *   con una clave que NO es la desbloqueada, asi que la copia del servidor hay
+   *   que re-sellarla en cuanto la haya.
+   */
+  _tryOpen(ctx, ciphertext, nonce) {
+    for (const key of ctx.keys) {
+      try {
+        const plaintext = cryptoService.decryptWith(key, ciphertext, nonce);
+        return { plaintext, fallback: !(ctx.verifiedKey && key.equals(ctx.verifiedKey)) };
+      } catch (_) { /* la siguiente */ }
+    }
+    return null;
+  }
+
+  /**
+   * Marca para re-sellar todo lo que lleva secretos (sombra de keys y hosts),
+   * MENOS lo que baja sellado con una clave que aqui nadie tiene: eso lo
+   * re-sella el equipo que la tiene, no este (ver `_applyRecords`).
+   */
+  _markReseal() {
+    const undecryptable = this.state.undecryptable || {};
+    for (const collection of ['keys', ...Object.keys(SECRET_FIELDS)]) {
+      const shadow = this.state.shadow[collection];
+      if (!shadow) continue;
+      for (const [itemId, entry] of Object.entries(shadow)) {
+        if (!entry || typeof entry !== 'object') continue;
+        if (undecryptable[`${collection}/${itemId}`]) continue;
+        entry.reseal = true;
+      }
+    }
+  }
+
+  _hasPendingReseal() {
+    for (const shadow of Object.values(this.state.shadow || {})) {
+      for (const entry of Object.values(shadow || {})) {
+        if (entry && entry.reseal) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Las legacy se guardan en el llavero y la marca de re-sellado en
+   * sync-state.json: dos archivos, sin atomicidad entre ellos. Si la app se
+   * cerro entre las dos escrituras, el llavero tiene legacy y el estado no
+   * tiene ni cursor a 0 ni marcas. Por eso NO se confia en que las marcas
+   * existan: mientras haya legacy y no conste un pull completo desde 0 con la
+   * clave desbloqueada para ESAS legacy, se fuerza (cursor 0 + marcas).
+   *
+   * @returns {Promise<string|null>} la huella de las legacy, o null si no hay
+   *   migracion pendiente que atender en este sync.
+   */
+  async _prepareLegacyMigration() {
+    const legacy = await cryptoService.getLegacyKeys().catch(() => []);
+    if (!legacy.length) return null;
+    if (!(await this._verifiedKey())) return null;
+    const digest = legacyDigest(legacy);
+    const b = this.state.resealBaseline;
+    if (b && b.salt === this.state.vault.salt && b.legacy === digest) return digest;
+    this.state.resealBaseline = null;
+    this.state.cursor = 0;
+    this._markReseal();
+    await this._save();
+    return digest;
+  }
+
   /**
    * El camino inverso. `local` es el objeto que ya teniamos en disco, si habia:
    * un equipo sin emparejar recibe el host sin sus secretos y NO debe machacar
    * la contrasena que el usuario tenga guardada aqui.
    *
-   * @returns {Promise<{item: object, blocked: number, kept: number}>}
+   * @returns {Promise<{item: object, blocked: number, kept: number, reseal: boolean}>}
    *   `blocked` = sobres que no se pudieron abrir; `kept` = secretos locales
-   *   conservados porque el servidor no los trae (el servidor va por detras).
+   *   conservados porque el servidor no los trae (el servidor va por detras);
+   *   `reseal` = algun sobre se abrio con una clave que no es la desbloqueada.
    */
-  async _openSecretFields(serverCollection, incoming, local) {
+  async _openSecretFields(serverCollection, incoming, local, ctx) {
     const fields = secretFieldsOf(serverCollection);
-    if (!fields.length) return { item: incoming, blocked: 0, kept: 0 };
+    if (!fields.length) return { item: incoming, blocked: 0, kept: 0, reseal: false };
 
-    const hasKey = await cryptoService.hasMasterKey();
     const item = { ...incoming };
     let blocked = 0;
     let kept = 0;
+    let reseal = false;
 
     for (const field of fields) {
       const value = item[field];
       if (isSecretEnvelope(value)) {
-        if (hasKey) {
-          try {
-            item[field] = await cryptoService.decryptRecord(value.ciphertext, value.nonce);
-            continue;
-          } catch (err) {
-            console.error(
-              `[SyncService] No se pudo descifrar ${serverCollection}.${field} de ${incoming.id}:`,
-              err.message
-            );
-          }
+        const opened = this._tryOpen(ctx, value.ciphertext, value.nonce);
+        if (opened) {
+          item[field] = opened.plaintext;
+          if (opened.fallback) reseal = true;
+          continue;
+        }
+        if (ctx.keys.length) {
+          console.error(
+            `[SyncService] Ninguna clave de este equipo abre ${serverCollection}.${field} de ${incoming.id}`
+          );
         }
         delete item[field];
         blocked++;
@@ -606,7 +782,7 @@ class SyncService {
         kept++;
       }
     }
-    return { item, blocked, kept };
+    return { item, blocked, kept, reseal };
   }
 
   _buildTombstone(serverCollection, itemId, updatedAt) {
@@ -624,21 +800,78 @@ class SyncService {
     };
   }
 
-  async _decodeRecord(record) {
+  async _decodeRecord(record, ctx) {
     if (record.enc) {
-      const hasKey = await cryptoService.hasMasterKey();
-      if (!hasKey) return { blocked: true, item: null };
+      if (!ctx.keys.length) return { blocked: true, item: null };
+      const opened = this._tryOpen(ctx, record.ciphertext, record.nonce);
+      if (!opened) {
+        // Sellado con una clave que no tenemos. No se toca la copia local; se
+        // cuenta en `undecryptableCount` y se dice.
+        console.error(`[SyncService] Ninguna clave de este equipo abre ${record.collection}/${record.item_id}`);
+        return { blocked: true, item: null, undecryptable: true };
+      }
       try {
-        const item = await cryptoService.decryptJson(record.ciphertext, record.nonce);
-        return { blocked: false, item };
-      } catch (err) {
-        // Wrong master key (paired with a different one, most likely). Do not
-        // touch the local copy; say it loudly instead.
-        console.error(`[SyncService] No se pudo descifrar ${record.collection}/${record.item_id}:`, err.message);
+        return { blocked: false, item: JSON.parse(opened.plaintext), reseal: opened.fallback };
+      } catch (_) {
         return { blocked: true, item: null, undecryptable: true };
       }
     }
-    return { blocked: false, item: record.payload };
+    return { blocked: false, item: record.payload, reseal: false };
+  }
+
+  // ─── Vault record ───────────────────────────────────────
+
+  /**
+   * Un `settings/__vault__` que baja. Se queda en sync-state.json y en ningun
+   * otro sitio. Una lapida NO borra la boveda: sin ella este equipo dejaria de
+   * saber que clave es la buena, y lo seguro es seguir exigiendo esa.
+   */
+  _absorbVault(record) {
+    if (!record || record.deleted || record.enc) return;
+    const vault = cryptoService.parseVault(record.payload);
+    if (!vault) {
+      console.error('[SyncService] El servidor trae un registro de boveda invalido; se ignora');
+      return;
+    }
+    this.state.vault = vault;
+  }
+
+  async _pushVault(vault) {
+    const record = {
+      collection: 'settings',
+      item_id: VAULT_ITEM_ID,
+      enc: false,
+      payload: vault,
+      ciphertext: null,
+      nonce: null,
+      deleted: false,
+      updated_at: new Date().toISOString(),
+    };
+    // El cursor NO avanza aqui a proposito: el pull siguiente tiene que volver
+    // a ver la boveda que quedo en el servidor, sea la nuestra o la de otro.
+    const res = await this._request('POST', '/v1/sync', { body: { records: [record] } });
+    if (!res.ok) throw this._httpError(res, 'No se pudo subir la boveda');
+  }
+
+  /**
+   * Instala una clave que YA paso el verificador de `vault`. La anterior, si
+   * era otra, pasa a legacy: lo que sello no se queda huerfano, se abre con
+   * ella y se re-sella con la nueva en el sync siguiente (cursor a 0 y sombra
+   * marcada). La legacy se descarta solo cuando ese sync termina bien.
+   */
+  async _installVerifiedKey(key, vault) {
+    const previous = await cryptoService.getMasterKey();
+    const legacy = await cryptoService.getLegacyKeys();
+    if (previous && !previous.equals(key)) legacy.push(previous);
+    // Primero el estado y despues el llavero: un cierre entre medias deja un
+    // re-pull de mas, no legacy sin marcas. (El caso contrario lo cubre
+    // `_prepareLegacyMigration`, que no se fia de este orden.)
+    this.state.cursor = 0;
+    this.state.undecryptable = {};
+    this.state.resealBaseline = null;
+    this._markReseal();
+    await this._save();
+    await cryptoService.setMasterKey(key, { vaultSalt: vault.salt, legacyKeys: legacy });
   }
 
   // ─── Pull ───────────────────────────────────────────────
@@ -674,9 +907,20 @@ class SyncService {
       if (!record || !COLLECTIONS[record.collection] && record.collection !== 'settings') {
         continue; // unknown collection from a newer server: ignore, do not crash
       }
+      if (record.collection === 'settings' && record.item_id === VAULT_ITEM_ID) {
+        // La boveda no es un ajuste: se aparta aqui y no llega a settings.json.
+        this._absorbVault(record);
+        continue;
+      }
       if (!byCollection.has(record.collection)) byCollection.set(record.collection, []);
       byCollection.get(record.collection).push(record);
     }
+
+    // Despues de absorber la boveda de esta pagina: la clave que vale puede
+    // haber cambiado con ella.
+    const ctx = await this._keyContext();
+    if (!this.state.undecryptable) this.state.undecryptable = {};
+    const undecryptable = this.state.undecryptable;
 
     let applied = 0;
     let blocked = 0;
@@ -689,10 +933,12 @@ class SyncService {
 
       for (const record of collectionRecords) {
         const itemId = record.item_id;
+        const tag = `${collection}/${itemId}`;
         const index = items.findIndex(i => i && i.id === itemId);
 
         if (record.deleted) {
           // Tombstone. Honour it or objects deleted elsewhere come back.
+          delete undecryptable[tag];
           if (collection === 'settings') continue;
           if (index !== -1) {
             items.splice(index, 1);
@@ -703,9 +949,16 @@ class SyncService {
           continue;
         }
 
-        const decoded = await this._decodeRecord(record);
+        const decoded = await this._decodeRecord(record, ctx);
         if (decoded.blocked) {
           blocked++;
+          undecryptable[tag] = true;
+          // Nadie aqui abre la copia remota, que puede ser MAS NUEVA que la
+          // local: no se re-sella ni se sube desde este equipo.
+          if (shadow[itemId]) {
+            delete shadow[itemId].reseal;
+            delete shadow[itemId].secretsPending;
+          }
           continue;
         }
         if (!decoded.item || typeof decoded.item !== 'object') continue;
@@ -727,10 +980,13 @@ class SyncService {
         const opened = await this._openSecretFields(
           collection,
           { ...decoded.item, id: itemId },
-          local
+          local,
+          ctx
         );
         const incoming = opened.item;
         blockedSecrets += opened.blocked;
+        if (opened.blocked) undecryptable[tag] = true;
+        else delete undecryptable[tag];
 
         if (index !== -1) items[index] = incoming;
         else items.push(incoming);
@@ -740,7 +996,12 @@ class SyncService {
         // Guardamos un secreto que el servidor no tiene: la fila remota esta
         // incompleta y hay que volver a subirla en cuanto haya clave maestra,
         // aunque el hash local no se mueva.
-        if (opened.kept) shadow[itemId].secretsPending = true;
+        // Si algun sobre bajo ilegible, NO: la copia remota tiene un secreto que
+        // aqui no se puede leer (y quiza es mas nuevo); subir el local lo pisaria.
+        if (opened.kept && !opened.blocked) shadow[itemId].secretsPending = true;
+        // Abierto con una clave vieja: la copia del servidor sigue sellada con
+        // ella y los demas dispositivos no la pueden abrir. Se re-sella al subir.
+        if ((decoded.reseal || opened.reseal) && !opened.blocked) shadow[itemId].reseal = true;
       }
 
       if (dirty) await this._writeLocal(collection, items);
@@ -751,14 +1012,16 @@ class SyncService {
   // ─── Push ───────────────────────────────────────────────
 
   async _push() {
-    const hasMasterKey = await cryptoService.hasMasterKey();
+    // SOLO la clave desbloqueada sella. Sin ella: ni `keys` ni campos secretos.
+    const key = await this._verifiedKey();
+    const undecryptable = this.state.undecryptable || {};
     const now = new Date().toISOString();
     const records = [];
     const commit = []; // applied to the shadow only once the server accepts
     let withheldSecrets = 0; // campos secretos omitidos por no haber clave maestra
 
     for (const collection of [...Object.keys(COLLECTIONS), 'settings']) {
-      if (ENCRYPTED_COLLECTIONS.has(collection) && !hasMasterKey) {
+      if (ENCRYPTED_COLLECTIONS.has(collection) && !key) {
         // Never upload private keys in the clear. Skipping is the safe failure.
         continue;
       }
@@ -768,16 +1031,25 @@ class SyncService {
 
       for (const item of items) {
         if (!item || !item.id) continue;
+        if (collection === 'settings' && item.id === VAULT_ITEM_ID) continue;
         seen.add(item.id);
         const hash = hashItem(item);
         const previous = shadow[item.id];
         // `secretsPending` = la fila del servidor va sin secretos porque
-        // entonces no habia clave maestra. El hash local no se mueve, asi que
-        // sin esta condicion la contrasena no subiria NUNCA tras emparejar.
-        const resend = !!(previous && previous.secretsPending && hasMasterKey);
+        // entonces no habia clave maestra. `reseal` = va sellada con una clave
+        // que no es la de la cuenta. En los dos casos el hash local no se
+        // mueve, asi que sin esta condicion no se reenviaria NUNCA.
+        if (undecryptable[`${collection}/${item.id}`] && !(previous && previous.hash !== hash)) {
+          // La copia remota esta sellada con una clave que aqui no hay. Solo
+          // una edicion local real (el hash se movio desde el ultimo sync) la
+          // sustituye; re-sellar o reenviar, nunca.
+          if (previous) { delete previous.reseal; delete previous.secretsPending; }
+          continue;
+        }
+        const resend = !!(previous && (previous.secretsPending || previous.reseal) && key);
         if (previous && previous.hash === hash && !resend) continue;
         const updatedAt = item.updatedAt || item.updated_at || now;
-        const built = await this._buildRecord(collection, item, updatedAt);
+        const built = await this._buildRecord(collection, item, updatedAt, key);
         withheldSecrets += built.withheld;
         records.push(built.record);
         commit.push({
@@ -786,6 +1058,8 @@ class SyncService {
           hash,
           updatedAt,
           secretsPending: built.withheld > 0,
+          // Sin clave no se re-sella nada: la marca se conserva para despues.
+          reseal: !key && !!(previous && previous.reseal),
         });
       }
 
@@ -797,7 +1071,7 @@ class SyncService {
       }
     }
 
-    if (!records.length) return { pushed: 0, withheldSecrets };
+    if (!records.length) return { pushed: 0, withheldSecrets, sealedWith: key };
 
     let pushed = 0;
     for (let offset = 0; offset < records.length; offset += PUSH_BATCH) {
@@ -815,14 +1089,26 @@ class SyncService {
         } else {
           shadow[entry.itemId] = { hash: entry.hash, updated_at: entry.updatedAt };
           if (entry.secretsPending) shadow[entry.itemId].secretsPending = true;
+          if (entry.reseal) shadow[entry.itemId].reseal = true;
         }
       }
       await this._save();
     }
-    return { pushed, withheldSecrets };
+    return { pushed, withheldSecrets, sealedWith: key };
   }
 
   // ─── The loop ───────────────────────────────────────────
+
+  /**
+   * Todo lo que toca cursor, sombra o clave va en la MISMA cadena: sync,
+   * setupPassphrase, unlock y la instalacion de una clave emparejada. Encolar,
+   * no rechazar: el login lanza un sync en segundo plano y el usuario que pulsa
+   * algo justo despues no debe comerse un "ya hay uno en curso".
+   */
+  _enqueue(fn) {
+    this._chain = (this._chain || Promise.resolve()).then(fn, fn);
+    return this._chain;
+  }
 
   /**
    * Serialised: a second call while one is running queues behind it instead of
@@ -831,20 +1117,25 @@ class SyncService {
    * two loops writing the same collection file at once.
    */
   async syncNow() {
-    const run = () => this._runSync();
-    this._chain = (this._chain || Promise.resolve()).then(run, run);
-    return this._chain;
+    return this._enqueue(() => this._runSync());
   }
 
   async _runSync() {
     await this._load();
-    if (!(await this.isSignedIn())) throw new Error('No has iniciado sesion en la sincronizacion');
+    if (!(await this.isSignedIn())) throw new Error(ERR_NOT_SIGNED_IN);
 
     this._syncing = true;
     this._error = null;
     this._emitStatus();
     try {
+      const migration = await this._prepareLegacyMigration();
+      const fromZero = !this.state.cursor;
       const pull = await this._pull();
+      if (migration && fromZero && (await this._verifiedKey())
+          && legacyDigest(await cryptoService.getLegacyKeys()) === migration) {
+        this.state.resealBaseline = { salt: this.state.vault.salt, legacy: migration };
+        await this._save();
+      }
       const push = await this._push();
       // Whatever the push created is already ours; pull again so the cursor
       // covers it and any record another device wrote meanwhile.
@@ -855,16 +1146,25 @@ class SyncService {
       this.state.lastSyncAt = new Date().toISOString();
       await this._save();
 
-      const hasMasterKey = await cryptoService.hasMasterKey();
+      // Las legacy se olvidan SOLO si consta un pull completo desde 0 con la
+      // clave desbloqueada para exactamente estas legacy, y ya no queda nada
+      // marcado para re-sellar (todo subio). Que el push haya sellado algo no
+      // basta: tras un cierre a medias puede no haber nada marcado.
+      const legacyNow = await cryptoService.getLegacyKeys();
+      const baseline = this.state.resealBaseline;
+      if (legacyNow.length && push.sealedWith && baseline && this.state.vault
+          && baseline.salt === this.state.vault.salt && baseline.legacy === legacyDigest(legacyNow)
+          && !this._hasPendingReseal()) {
+        await cryptoService.clearLegacyKeys();
+        this.state.resealBaseline = null;
+        await this._save();
+      }
+
+      // "Sin desbloquear" y "hay cosas que no se abren" NO van a `_error`: la
+      // interfaz los lee de vaultExists / unlocked / undecryptableCount y tiene
+      // su propio aviso. `_error` es solo para fallos de verdad.
       this._secretsWithheld = push.withheldSecrets || 0;
       this._secretsBlocked = (pull.blockedSecrets || 0) + (secondPull.blockedSecrets || 0);
-      if (!hasMasterKey) {
-        this._error = this._secretsWithheld
-          ? 'Sin clave maestra: ni las claves SSH ni las contrasenas de los hosts salen de este equipo. Empareja este dispositivo.'
-          : 'Sin clave maestra: las claves SSH no se sincronizan. Empareja este dispositivo.';
-      } else if (pull.blockedKeys || secondPull.blockedKeys || this._secretsBlocked) {
-        this._error = 'Hay datos cifrados que no se pudieron descifrar con la clave maestra de este dispositivo.';
-      }
 
       this._refreshPendingPairings().catch(() => { /* best effort */ });
       return {
@@ -879,6 +1179,85 @@ class SyncService {
       this._syncing = false;
       this._emitStatus();
     }
+  }
+
+  // ─── Passphrase ─────────────────────────────────────────
+
+  /**
+   * Crea la boveda de la cuenta. Solo si NO existe: se baja primero, y si ya
+   * hay una, error y a `unlock`. Tras subirla se vuelve a bajar para ver cual
+   * quedo en el servidor: si otro dispositivo la creo a la vez y gano, este no
+   * instala nada y queda bloqueado (no divergente).
+   *
+   * El passphrase no se registra, no va en errores y no sale de este metodo mas
+   * que hacia scrypt.
+   */
+  async setupPassphrase(passphrase) {
+    cryptoService.validatePassphrase(passphrase);
+    return this._enqueue(() => this._doSetupPassphrase(passphrase));
+  }
+
+  async _doSetupPassphrase(passphrase) {
+    await this._requireReadyForKey();
+    await this._pull();
+    if (this.state.vault) throw new Error(ERR_VAULT_EXISTS);
+
+    const { vault, key } = await cryptoService.createVault(passphrase);
+    await this._pushVault(vault);
+    await this._pull();
+    if (!this.state.vault || this.state.vault.salt !== vault.salt) {
+      this._emitStatus();
+      throw new Error(ERR_VAULT_RACE);
+    }
+    await this._installVerifiedKey(key, vault);
+    return this._syncAfterUnlock();
+  }
+
+  /**
+   * Desbloquea este equipo con el passphrase de la cuenta. Si no abre el
+   * verificador: error y NADA cambia (ni clave, ni subida, ni legacy).
+   */
+  async unlock(passphrase) {
+    cryptoService.validatePassphrase(passphrase);
+    return this._enqueue(() => this._doUnlock(passphrase));
+  }
+
+  async _doUnlock(passphrase) {
+    await this._requireReadyForKey();
+    await this._pull();
+    const vault = this.state.vault;
+    if (!vault) throw new Error(ERR_NO_VAULT);
+
+    const key = await cryptoService.deriveVaultKey(passphrase, vault);
+    if (!cryptoService.verifyVaultKey(key, vault)) throw new Error(ERR_WRONG_PASSPHRASE);
+
+    const current = await this._verifiedKey();
+    if (!current || !current.equals(key)) await this._installVerifiedKey(key, vault);
+    return this._syncAfterUnlock();
+  }
+
+  async _requireReadyForKey() {
+    await this._load();
+    if (!(await this.isSignedIn())) throw new Error(ERR_NOT_SIGNED_IN);
+    if (!cryptoService.isEncryptionAvailable()) throw new Error(ERR_NO_KEYCHAIN);
+  }
+
+  /**
+   * La clave ya esta instalada: un fallo de red aqui no deshace el desbloqueo,
+   * se queda en `status.error` y el sync siguiente termina el re-sellado (las
+   * legacy siguen guardadas hasta entonces).
+   */
+  async _syncAfterUnlock() {
+    this._error = null;
+    let synced = true;
+    try {
+      await this._runSync();
+    } catch (err) {
+      synced = false;
+      console.error('[SyncService] Sync tras desbloquear fallido:', err.message);
+    }
+    this._emitStatus();
+    return { unlocked: !!(await this._verifiedKey()), synced };
   }
 
   /** Kicks off a first sync after boot and keeps a slow timer going. */
@@ -1058,20 +1437,64 @@ class SyncService {
 
     const sessionKey = pairingCrypto.deriveSessionKey(claim.kp.privateKey, claim.peerPub, claim.kp.pub);
     const masterKey = pairingCrypto.openMasterKey(sessionKey, claim.ciphertext, claim.nonce);
-    await cryptoService.setMasterKey(masterKey);
+    try {
+      await this._enqueue(() => this._installPairedKey(masterKey));
+    } catch (err) {
+      if (err.message === ERR_PAIR_KEY_MISMATCH) {
+        // Reintentar no lo arregla: el otro equipo tiene una clave que no es la
+        // de la cuenta. Se corta como un rechazo, que la interfaz ya pinta.
+        claim.state = 'rejected';
+        if (claim.timer) clearTimeout(claim.timer);
+        this._emitStatus();
+      }
+      throw err;
+    }
 
     claim.state = 'done';
     if (claim.timer) clearTimeout(claim.timer);
     this._claims.delete(pairingId);
-    // The encrypted keys we could not read before are readable now: resync from
-    // scratch so they land locally.
-    this.state.cursor = 0;
-    if (this.state.shadow.keys) delete this.state.shadow.keys;
-    await this._save();
     this._error = null;
     this._emitStatus();
     this.syncNow().catch(err => console.error('[SyncService] Sync tras emparejar fallido:', err.message));
     return { ok: true };
+  }
+
+  /**
+   * Instala la clave que llego por emparejamiento. Con boveda, tiene que abrir
+   * su verificador o se rechaza sin tocar nada: una clave que no es la de la
+   * cuenta es justo la que deja ciphertext huerfano. Sin boveda se instala
+   * como clave SIN verificar (lee, no sella) y la anterior pasa a legacy en vez
+   * de perderse. En los dos casos se rebaja todo desde el cursor 0 para abrir
+   * lo que antes no se podia.
+   */
+  async _installPairedKey(masterKey) {
+    await this._load();
+    let pulled = true;
+    try {
+      await this._pull();   // la boveda vigente, no la que habia en disco
+    } catch (err) {
+      pulled = false;
+      console.error('[SyncService] No se pudo refrescar la boveda antes de instalar la clave:', err.message);
+    }
+    const vault = this.state.vault;
+    // Sin red y sin boveda en disco no se sabe si la cuenta tiene boveda: no
+    // se instala nada sin verificar. El emparejamiento sigue 'listo' y se
+    // puede reclamar otra vez con conexion.
+    if (!vault && !pulled) throw new Error(ERR_PAIR_NEEDS_NETWORK);
+    if (vault) {
+      if (!cryptoService.verifyVaultKey(masterKey, vault)) throw new Error(ERR_PAIR_KEY_MISMATCH);
+      await this._installVerifiedKey(masterKey, vault);
+      return;
+    }
+    const previous = await cryptoService.getMasterKey();
+    const legacy = await cryptoService.getLegacyKeys();
+    if (previous && !previous.equals(masterKey)) legacy.push(previous);
+    this.state.cursor = 0;
+    this.state.undecryptable = {};
+    this.state.resealBaseline = null;
+    this._markReseal();
+    await this._save();
+    await cryptoService.setMasterKey(masterKey, { vaultSalt: null, legacyKeys: legacy });
   }
 
   _approvalDigits(approval) {

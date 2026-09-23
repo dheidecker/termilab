@@ -20,6 +20,15 @@ export function normalizeSyncStatus(raw) {
     lastSyncAt: s.lastSyncAt ?? null,
     cursor: s.cursor ?? null,
     hasMasterKey: !!s.hasMasterKey,
+    /* Account passphrase vault. `unlocked` is what the UI decides on: only an
+       unlocked computer can open and back up secrets. `hasMasterKey` only says
+       that some key is installed, and every older install has a random one. */
+    vaultExists: !!s.vaultExists,
+    unlocked: !!s.unlocked,
+    undecryptableCount: toCount(s.undecryptableCount),
+    undecryptableIds: Array.isArray(s.undecryptableIds)
+      ? s.undecryptableIds.filter(x => typeof x === 'string')
+      : [],
     pendingPairings: pending,
     syncing: !!s.syncing,
     error: readError(s.error),

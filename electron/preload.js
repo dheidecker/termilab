@@ -199,6 +199,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     login: () => invoke('sync:login'),
     logout: () => invoke('sync:logout'),
     syncNow: () => invoke('sync:now'),
+    // Boveda de la cuenta: crear el passphrase (solo si la cuenta no tiene) o
+    // desbloquear este equipo con el que ya existe. Ver status().unlocked.
+    setupPassphrase: (passphrase) => invoke('sync:setup-passphrase', passphrase),
+    unlock: (passphrase) => invoke('sync:unlock', passphrase),
     devices: () => invoke('sync:devices'),
     revokeDevice: (id) => invoke('sync:revoke-device', id),
     onStatus: (callback) => {

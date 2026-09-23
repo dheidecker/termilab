@@ -214,10 +214,9 @@ saber que existen o no los pintará.
 
 ## Decisiones tomadas aquí que no se leen en el código
 
-- **La clave maestra se genera sola en el primer login.** Si ese dispositivo
-  empareja después, la que llega **sustituye** a la local, y los registros
-  cifrados con la vieja quedan ilegibles: se saltan, se avisa en `status.error`
-  y **no se toca la copia local**. Nunca borrar lo local por no poder descifrar.
+- **La clave maestra ya NO se genera sola** (se quitó `ensureMasterKey`, 2026-09).
+  Generarla al azar en cada login era el bug de "saved password arrived still
+  encrypted": cada equipo sellaba con su propia clave. Ver "Bóveda" abajo.
 - **`logout()` conserva la clave maestra** (es del usuario, no de la sesión) y
   sí borra token, cursor y sombra.
 - `syncNow()` está **serializado en cadena**, no protegido con un "ya hay una
@@ -229,6 +228,45 @@ saber que existen o no los pintará.
   No lo reintroduzcas "por compatibilidad" ni dejes stubs de los canales `ai:*`.
 - Las API keys que quedaron en claro en `<userData>/data/settings.json` son una
   fuga real: se purgan al leer los ajustes, no se dejan "porque ya no se usan".
+
+## Bóveda: la clave maestra sale del passphrase (2026-09)
+
+`settings/__vault__` = `{v, salt, kdf:{scrypt,N,r,p}, verifier}`. Vive en
+`sync-state.json` (`state.vault`), se intercepta en `_applyRecords` y solo sube
+por `_pushVault`. **Desbloqueado = clave instalada + `vaultSalt` igual a la sal
+vigente + abre el verificador** (`_verifiedKey`). Solo esa clave sella; el resto
+(la aleatoria vieja, una emparejada sin bóveda, la de una bóveda que perdió una
+carrera) solo **lee**. Si tocas `_push`, la clave sale de `_verifiedKey()`, no
+de `getMasterKey()`: el arnés (T2/T7) se pone rojo si no.
+
+- Instalar una clave nueva (`_installVerifiedKey`) pasa la anterior a
+  `legacyKeys` del llavero, pone el cursor a 0 y marca la sombra con `reseal`.
+  Lo que se abre con una clave que no es la verificada se marca `reseal` y se
+  resube. Las legacy se borran solo al acabar un sync que selló con la
+  verificada. Un 503 a mitad (T4) las conserva.
+- Un control negativo que parecía cubierto no lo estaba: si el equipo viejo ya
+  había bajado copias locales, la migración funciona **sin** la legacy (resube
+  desde lo local) y el test no nota que la has tirado. T4 usa un equipo sin
+  copias locales a propósito.
+- **Llavero y `sync-state.json` son dos archivos sin atomicidad.** No confíes en
+  que las marcas `reseal` existan porque "se escribieron al instalar": las
+  legacy solo se borran si `state.resealBaseline` (sal + huella de las legacy)
+  prueba un pull completo desde 0 con la clave verificada y no queda ningún
+  `reseal`. `_prepareLegacyMigration` lo fuerza si falta. Test T9.
+- Lo que baja sellado con una clave que aquí no hay (`undecryptable`) **no se
+  re-sella ni se reenvía** desde este equipo: pisaría una copia remota quizá
+  más nueva. Solo una edición local real (hash movido) la sustituye. T10.
+- "Bloqueado" y "hay cosas ilegibles" no van a `_error`: la UI los lee de
+  `vaultExists`/`unlocked`/`undecryptableCount`. `_error` = fallos reales.
+- `crypto.scrypt` con N=2^17 necesita `maxmem` explícito (256 MiB). Sin él el
+  arnés revienta entero en la sección A, no en una comprobación.
+- El servidor es LWW sin condición: dos equipos pueden crear bóveda a la vez.
+  `setup` sube, rebaja y compara la sal; el que pierde no instala nada. Si se
+  entera después, `_verifiedKey` deja de valer y queda bloqueado.
+- Simular varios equipos en el arnés: `usarDispositivo(nombre)` cambia
+  `currentUserData` y resetea `cryptoService._cache/_dataDir`,
+  `storeService.dataDir/_initialized` y el estado del sync. Espera antes a
+  `syncService._chain` o un sync en segundo plano escribe en el equipo nuevo.
 
 ## Fronteras
 

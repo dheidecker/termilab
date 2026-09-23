@@ -141,9 +141,14 @@ export default function PairingClaim({ deviceName, pairing, onPaired }) {
 
       {!gaveUp && rejected && (
         <>
-          <div className="sync-banner sync-banner-error">
-            The other device rejected this request.
-          </div>
+          {/* A key that fails the account passphrase check also lands here,
+              with its own message in `error`; saying the other side declined
+              on top of it would be wrong. */}
+          {!error && (
+            <div className="sync-banner sync-banner-error">
+              The other device rejected this request.
+            </div>
+          )}
           <div className="sync-actions">
             <button className="sync-btn sync-btn-primary" onClick={startOver}>Ask again</button>
           </div>

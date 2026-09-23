@@ -17,6 +17,9 @@
  *  4. El EMPAREJAMIENTO EN DOS PASOS completo (/accept y luego /complete),
  *     mirando los cuerpos que salen: ningun material cifrado puede viajar
  *     antes de que el usuario confirme los seis digitos.
+ *  5. La BOVEDA: clave maestra derivada del passphrase de la cuenta, con
+ *     varios dispositivos simulados en el mismo proceso (cada uno con su
+ *     userData, su llavero y su almacen; ver `usarDispositivo`).
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -33,6 +36,32 @@ const { execFileSync } = require('child_process');
 const ROOT = path.join(__dirname, '..');
 const SECRET = 'p4ssw0rd-de-Derek-no-debe-salir';
 const PASSPHRASE = 'frase-de-la-clave-privada';
+// Passphrases de BOVEDA (los de la cuenta). T8 comprueba que ninguno aparece en
+// consola, en lo que se manda al renderer, en disco ni en el cable.
+const PASS_CUENTA = 'caballo-bateria-grapa-correcta';
+const PASS_T1 = 'la-misma-frase-en-los-dos-equipos';
+const PASS_T4 = 'frase-para-migrar-lo-legacy';
+const PASS_MAL = 'esta-no-es-la-frase-buena';
+const PASS_G = 'frase-del-que-pierde-la-carrera';
+const PASS_H = 'frase-del-que-gana-la-carrera';
+const PASSPHRASES_BOVEDA = [PASS_CUENTA, PASS_T1, PASS_T4, PASS_MAL, PASS_G, PASS_H];
+const clavesDerivadas = [];   // para T8: tampoco pueden salir
+
+// Todo lo que el proceso escribe por consola, para T8. Se sigue imprimiendo.
+const consola = [];
+for (const metodo of ['log', 'error', 'warn', 'info', 'debug']) {
+  const real = console[metodo].bind(console);
+  console[metodo] = (...args) => {
+    consola.push(args.map(a => {
+      if (a instanceof Error) return `${a.message}\n${a.stack}`;
+      if (typeof a === 'string') return a;
+      try { return JSON.stringify(a); } catch (_) { return String(a); }
+    }).join(' '));
+    real(...args);
+  };
+}
+const alRenderer = [];        // todo lo que main manda por webContents.send
+const cableTotal = [];        // todo cuerpo que recibe cualquier servidor falso (no se resetea)
 
 let failures = 0;
 const results = [];
@@ -65,6 +94,8 @@ function electronFiles() {
 // ─── 2. Stub de electron ────────────────────────────────────
 
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'termilab-arnes-'));
+// Mutable: `usarDispositivo` cambia de equipo simulado cambiando esto.
+let currentUserData = userData;
 const handlers = new Map();      // canal -> handler registrado por ipc-handlers
 let bridge = null;               // lo que preload expone como window.electronAPI
 
@@ -77,7 +108,7 @@ const emit = (channel, data) => {
 
 const electronStub = {
   app: {
-    getPath: () => userData,
+    getPath: () => currentUserData,
     getVersion: () => '0.0.0-test',
     getName: () => 'Termilab',
     on: () => {},
@@ -121,7 +152,7 @@ const electronStub = {
   dialog: { showOpenDialog: () => Promise.resolve({ canceled: true }) },
   BrowserWindow: class {
     constructor() {
-      this.webContents = { send: () => {}, on: () => {}, setWindowOpenHandler: () => {}, session: { on: () => {} } };
+      this.webContents = { send: (channel, data) => { alRenderer.push(JSON.stringify([channel, data])); }, on: () => {}, setWindowOpenHandler: () => {}, session: { on: () => {} } };
     }
     on() { return this; }
     once() { return this; }
@@ -153,18 +184,34 @@ function fakeServer() {
   const mitm = { pubNew: null, pubExisting: null };
   let cursor = 0;
   let pairSeq = 0;
+  // afterVaultPush: simula la carrera de T7. failSyncPost: el servidor se cae
+  // justo al subir (T4: migracion interrumpida).
+  // failSyncGet: sin red para bajar (T11: emparejar sin poder verificar).
+  const hooks = { afterVaultPush: null, failSyncPost: false, failSyncGet: false };
+
+  const store = record => {
+    const index = rows.findIndex(
+      r => r.record.collection === record.collection && r.record.item_id === record.item_id
+    );
+    const entry = { cursor: ++cursor, record };
+    if (index !== -1) rows.splice(index, 1);
+    rows.push(entry);
+  };
 
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', c => chunks.push(c));
     req.on('end', () => {
       const raw = Buffer.concat(chunks).toString('utf-8');
-      if (raw) bodies.push(raw);
+      if (raw) { bodies.push(raw); cableTotal.push(raw); }
       const url = new URL(req.url, 'http://localhost');
       requests.push({ method: req.method, path: url.pathname, raw });
       res.setHeader('content-type', 'application/json');
       const json = (code, data) => { res.statusCode = code; res.end(JSON.stringify(data)); };
 
+      if (req.method === 'POST' && url.pathname === '/v1/sync' && hooks.failSyncPost) {
+        return json(503, { error: 'servidor caido a proposito' });
+      }
       if (req.method === 'POST' && url.pathname === '/v1/sync') {
         const records = (JSON.parse(raw || '{}').records) || [];
         for (const record of records) {
@@ -173,17 +220,25 @@ function fakeServer() {
             res.end(JSON.stringify({ error: 'payload y ciphertext a la vez' }));
             return;
           }
-          const index = rows.findIndex(
-            r => r.record.collection === record.collection && r.record.item_id === record.item_id
-          );
-          const entry = { cursor: ++cursor, record };
-          if (index !== -1) rows.splice(index, 1);
-          rows.push(entry);
+          store(record);
         }
+        const conBoveda = records.some(r => r.collection === 'settings' && r.item_id === '__vault__');
         res.end(JSON.stringify({ applied: records.length, cursor }));
+        if (conBoveda && hooks.afterVaultPush) hooks.afterVaultPush();
         return;
       }
 
+      // Login por codigo de dispositivo: responde "listo" al primer sondeo.
+      if (req.method === 'POST' && url.pathname === '/auth/start') {
+        return json(200, { code: 'codigo-arnes', authorize_url: null });
+      }
+      if (req.method === 'GET' && url.pathname === '/auth/poll') {
+        return json(200, { status: 'listo', token: 'token-login', email: 'login@local' });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/sync' && hooks.failSyncGet) {
+        return json(503, { error: 'sin red a proposito' });
+      }
       if (req.method === 'GET' && url.pathname === '/v1/sync') {
         const since = Number(url.searchParams.get('since') || 0);
         const pending = rows.filter(r => r.cursor > since).sort((a, b) => a.cursor - b.cursor);
@@ -290,6 +345,11 @@ function fakeServer() {
     },
     /** El cuerpo entero que ha viajado, para buscar cadenas en claro. */
     allBodies: () => bodies.join('\n'),
+    /** Mete una fila como si la hubiera subido otro dispositivo (o una version vieja). */
+    inject: record => store(record),
+    hooks,
+    /** Cuerpos de POST /v1/sync desde el ultimo reset. */
+    syncPosts: () => requests.filter(r => r.method === 'POST' && r.path === '/v1/sync').map(r => r.raw),
     reset: () => { bodies.length = 0; requests.length = 0; },
     mitm,
     requests,
@@ -424,11 +484,16 @@ async function main() {
   };
 
   // ── A. La contrasena no sale en claro ─────────────────────
-  await cryptoService.setMasterKey(Buffer.alloc(32, 7));
+  // La clave sale del passphrase de la cuenta: una clave suelta (sin boveda que
+  // la verifique) ya no sella nada, asi que el escenario empieza creando la
+  // boveda. setupPassphrase hace el primer sync.
   await storeService.writeRaw('hosts', [hostConPassword, hostConClave]);
   await resetSync();
   api.reset();
-  await syncService.syncNow();
+  await syncService.setupPassphrase(PASS_CUENTA);
+  const CLAVE_CUENTA = await cryptoService.getMasterKey();
+  const SAL_CUENTA = await cryptoService.getVaultSalt();
+  clavesDerivadas.push(CLAVE_CUENTA);
 
   await check('el cuerpo subido no contiene la contrasena en claro', () => {
     const body = api.allBodies();
@@ -518,7 +583,9 @@ async function main() {
   await check('sin clave maestra el estado lo dice', async () => {
     const status = await syncService.status();
     assert.ok(status.secretsWithheld > 0, 'secretsWithheld deberia contar el campo omitido');
-    assert.ok(/clave maestra/i.test(status.error || ''), `error poco claro: ${status.error}`);
+    assert.deepStrictEqual([status.vaultExists, status.unlocked], [true, false]);
+    // "Bloqueado" lo dicen los campos; `error` es solo para fallos de verdad.
+    assert.strictEqual(status.error, null, `estar bloqueado no es un error: ${status.error}`);
   });
 
   await check('sin clave maestra el host local no pierde su contrasena al bajar', async () => {
@@ -536,12 +603,11 @@ async function main() {
     assert.ok(!('password' in ajeno), 'no deberia quedar un sobre ilegible en disco');
   });
 
-  await check('al emparejar despues, el secreto pendiente si sube', async () => {
-    await cryptoService.setMasterKey(Buffer.alloc(32, 7));
+  await check('al desbloquear despues, el secreto pendiente si sube', async () => {
     api.reset();
-    await syncService.syncNow();
+    await syncService.unlock(PASS_CUENTA);
     const payload = api.rowFor('hosts', 'host-4').payload;
-    assert.strictEqual(typeof payload.password, 'object', 'no reenvio el secreto tras emparejar');
+    assert.strictEqual(typeof payload.password, 'object', 'no reenvio el secreto tras desbloquear');
     assert.ok(!api.allBodies().includes('local-solo-mia'), 'y aun asi nunca en claro');
   });
 
@@ -583,7 +649,9 @@ async function main() {
   // Los sondeos se disparan a mano con `_fetchClaim` en vez de esperar al
   // temporizador de 2 s: es la misma funcion que usa `_pollClaim`.
   const pairingCrypto = require(path.join(ROOT, 'electron', 'services', 'pairing-crypto.js'));
-  const MASTER = Buffer.alloc(32, 42);
+  // La clave que se comparte es la de la cuenta: el que la recibe la verifica
+  // contra la boveda y rechazaria cualquier otra (ver T5).
+  const MASTER = CLAVE_CUENTA;
 
   const nuevoEscenario = async () => {
     syncService._claims.clear();
@@ -592,7 +660,7 @@ async function main() {
     api.reset();
     await cryptoService.clearAll();
     await cryptoService.setToken('token-de-prueba');
-    await cryptoService.setMasterKey(MASTER);
+    await cryptoService.setMasterKey(MASTER, { vaultSalt: SAL_CUENTA });
   };
 
   const flujo = {};
@@ -768,6 +836,461 @@ async function main() {
   // antes de que salga, deja un 'fetch failed' en consola que parece un fallo
   // del arnes y no lo es.
   await new Promise(r => setTimeout(r, 300));
+
+  // ── F. Boveda: la clave maestra sale del passphrase de la cuenta ─────────
+  //
+  // Varios dispositivos en un proceso: cada uno tiene su userData (y con el su
+  // llavero, su almacen y su sync-state). `usarDispositivo` espera a que acabe
+  // lo que hubiera en la cadena de sync y cambia todas las rutas cacheadas.
+  const dispositivos = new Map();
+  const usarDispositivo = async nombre => {
+    if (syncService._chain) { try { await syncService._chain; } catch (_) { /* ignore */ } }
+    let dir = dispositivos.get(nombre);
+    if (!dir) {
+      dir = fs.mkdtempSync(path.join(userData, `disp-${nombre}-`));
+      dispositivos.set(nombre, dir);
+    }
+    currentUserData = dir;
+    cryptoService._cache = null;
+    cryptoService._dataDir = null;
+    storeService.dataDir = path.join(dir, 'data');
+    storeService._initialized = false;
+    syncService.state = {
+      cursor: 0, lastSyncAt: null, email: null, deviceName: null,
+      secretsVersion: 1, shadow: {}, vault: null, undecryptable: {},
+    };
+    syncService._loaded = false;
+    syncService._chain = null;
+    syncService._error = null;
+    syncService._claims.clear();
+    syncService._approvals.clear();
+    if (!(await cryptoService.getToken())) await cryptoService.setToken(`token-${nombre}`);
+    return dir;
+  };
+
+  let srv = null;
+  const nuevoServidor = async () => {
+    if (syncService._chain) { try { await syncService._chain; } catch (_) { /* ignore */ } }
+    if (srv) await srv.close();
+    srv = fakeServer();
+    await srv.listen();
+    process.env.TERMILAB_SYNC_URL = srv.url();
+    return srv;
+  };
+
+  const filaBoveda = vault => ({
+    collection: 'settings', item_id: '__vault__', enc: false, payload: vault,
+    ciphertext: null, nonce: null, deleted: false, updated_at: new Date().toISOString(),
+  });
+  const MARCA_SOBRE = 'aes-256-gcm/v1';
+  const abreSobre = (key, sobre) => cryptoService.decryptWith(key, sobre.ciphertext, sobre.nonce);
+  const silenciaErrores = async fn => {
+    const real = console.error;
+    console.error = () => {};
+    try { return await fn(); } finally { console.error = real; }
+  };
+
+  // T3 ───────────────────────────────────────────────────────
+  await nuevoServidor();
+  await check('T3 tras el login no se crea ninguna clave maestra', async () => {
+    await usarDispositivo('login');
+    await cryptoService.clearAll();
+    assert.strictEqual(typeof cryptoService.ensureMasterKey, 'undefined',
+      'ensureMasterKey sigue existiendo: alguien puede volver a generar claves al azar');
+    await syncService.login();
+    await syncService._chain;   // el sync que lanza el login
+    assert.strictEqual(await cryptoService.getToken(), 'token-login', 'el login no guardo el token');
+    assert.strictEqual(await cryptoService.hasMasterKey(), false, 'EL LOGIN HA CREADO UNA CLAVE MAESTRA');
+    const disco = JSON.parse(fs.readFileSync(path.join(currentUserData, 'data', 'sync-secrets.json'), 'utf-8'));
+    assert.strictEqual(disco.masterKey, null, 'hay una clave maestra en el llavero tras el login');
+    const status = await syncService.status();
+    assert.strictEqual(status.unlocked, false);
+    assert.strictEqual(status.vaultExists, false);
+  });
+
+  // T1 + T6 ──────────────────────────────────────────────────
+  await nuevoServidor();
+  const SECRETO_A = 'contrasena-del-host-de-A';
+  const PRIVADA_A = '-----BEGIN OPENSSH PRIVATE KEY----- de A';
+  const t1 = {};
+  await check('T1 dos dispositivos con el mismo passphrase: misma clave, y B abre lo de A', async () => {
+    await usarDispositivo('A');
+    await storeService.writeRaw('hosts', [{ ...hostConPassword, id: 'host-A', password: SECRETO_A }]);
+    await storeService.writeRaw('keys', [{ id: 'key-A', name: 'A', privateKey: PRIVADA_A }]);
+    const r = await syncService.setupPassphrase(PASS_T1);
+    assert.deepStrictEqual(r, { unlocked: true, synced: true });
+    t1.claveA = await cryptoService.getMasterKey();
+    clavesDerivadas.push(t1.claveA);
+    const cable = srv.allBodies();
+    assert.ok(!cable.includes(SECRETO_A) && !cable.includes(PRIVADA_A), 'A subio un secreto en claro');
+    assert.ok(srv.rowFor('settings', '__vault__'), 'la boveda no viajo como settings/__vault__');
+    assert.strictEqual(srv.rowFor('keys', 'key-A').enc, true, 'la clave SSH de A no subio cifrada');
+
+    await usarDispositivo('B');
+    await syncService.syncNow();
+    let status = await syncService.status();
+    assert.strictEqual(status.hasMasterKey, false, 'B tiene clave sin haber metido el passphrase');
+    assert.strictEqual(status.vaultExists, true, 'B no vio la boveda');
+    assert.strictEqual(status.unlocked, false);
+    assert.strictEqual(status.undecryptableCount, 2, `B deberia contar 2 objetos cifrados, cuenta ${status.undecryptableCount}`);
+
+    await syncService.unlock(PASS_T1);
+    const claveB = await cryptoService.getMasterKey();
+    assert.ok(claveB && claveB.equals(t1.claveA), 'B derivo una clave distinta con el mismo passphrase');
+    const host = (await storeService.readRaw('hosts')).find(h => h.id === 'host-A');
+    assert.strictEqual(host && host.password, SECRETO_A, 'B no abrio la contrasena de A');
+    const key = (await storeService.readRaw('keys')).find(k => k.id === 'key-A');
+    assert.strictEqual(key && key.privateKey, PRIVADA_A, 'B no abrio la clave SSH de A');
+    status = await syncService.status();
+    assert.strictEqual(status.unlocked, true);
+    assert.strictEqual(status.undecryptableCount, 0, 'tras desbloquear sigue habiendo cosas sin abrir');
+  });
+
+  await check('T6 __vault__ nunca aparece en settings.json', async () => {
+    let revisados = 0;
+    for (const nombre of ['A', 'B']) {
+      const file = path.join(dispositivos.get(nombre), 'data', 'settings.json');
+      if (!fs.existsSync(file)) continue;
+      revisados++;
+      const texto = fs.readFileSync(file, 'utf-8');
+      const vault = srv.rowFor('settings', '__vault__').payload;
+      assert.ok(!texto.includes('__vault__'), `${nombre}: __vault__ dentro de settings.json`);
+      assert.ok(!texto.includes(vault.salt) && !texto.includes(vault.verifier.ciphertext),
+        `${nombre}: la boveda se colo en settings.json`);
+    }
+    // B bajo los ajustes de A, asi que su settings.json existe y es la prueba real.
+    assert.ok(revisados >= 1, 'ningun dispositivo escribio settings.json: la prueba no prueba nada');
+    const settingsRow = srv.rowFor('settings', 'settings');
+    assert.ok(settingsRow && !JSON.stringify(settingsRow).includes('__vault__'),
+      'la fila de ajustes que sube lleva la boveda dentro');
+  });
+
+  // T5 ───────────────────────────────────────────────────────
+  await check('T5 emparejar con una clave que no pasa el verificador se rechaza', async () => {
+    await usarDispositivo('P');
+    const OTRA = Buffer.alloc(32, 9);
+    await cryptoService.setMasterKey(OTRA);   // la "aprobadora" trae una clave ajena
+    const pedido = await syncService.pairingRequest();
+    await syncService.pairingPending();
+    await syncService.pairingApprove(pedido.pairingId);
+    await syncService.pairingConfirm(pedido.pairingId);
+
+    await cryptoService.clearAll();
+    await cryptoService.setToken('token-P');
+    await syncService._fetchClaim(pedido.pairingId);
+    await assert.rejects(
+      () => syncService.pairingClaim(pedido.pairingId),
+      err => /no corresponde al passphrase/.test(err.message),
+      'se acepto una clave que no abre la boveda'
+    );
+    assert.strictEqual(await cryptoService.hasMasterKey(), false, 'se instalo la clave rechazada');
+    const status = await syncService.status();
+    assert.strictEqual(status.unlocked, false);
+    assert.strictEqual(status.pairing && status.pairing.state, 'rejected');
+    syncService._claims.clear();
+    syncService._approvals.clear();
+  });
+
+  // T2 ───────────────────────────────────────────────────────
+  await check('T2 passphrase incorrecto: error, clave sin cambios, nada subido', async () => {
+    await usarDispositivo('W');
+    const LEGACY_W = Buffer.alloc(32, 5);
+    await cryptoService.setMasterKey(LEGACY_W);
+    await storeService.writeRaw('hosts', [{ ...hostConPassword, id: 'host-W', password: 'secreto-de-W' }]);
+    await silenciaErrores(() => syncService.syncNow());   // "ninguna clave abre..." es lo esperado
+    srv.reset();
+
+    // Por el puente de verdad, como lo llamara la interfaz.
+    await assert.rejects(() => bridge.sync.unlock(PASS_MAL), err => err.message === 'Passphrase incorrecto');
+    await assert.rejects(() => bridge.sync.unlock('corta'), /al menos 6 caracteres/);
+    await assert.rejects(() => bridge.sync.setupPassphrase('corta'), /al menos 6 caracteres/);
+    // El limite exacto: 5 no, 6 si. Contado en puntos de codigo, no en UTF-16.
+    assert.throws(() => cryptoService.validatePassphrase('12345'), /al menos 6 caracteres/);
+    assert.doesNotThrow(() => cryptoService.validatePassphrase('123456'));
+    assert.throws(() => cryptoService.validatePassphrase('\u{1F511}'.repeat(5)), /al menos 6 caracteres/);
+    await assert.rejects(() => bridge.sync.setupPassphrase(PASS_MAL), /ya tiene passphrase/);
+
+    assert.deepStrictEqual(srv.syncPosts(), [], 'se subio algo con un passphrase incorrecto');
+    const clave = await cryptoService.getMasterKey();
+    assert.ok(clave && clave.equals(LEGACY_W), 'la clave cambio tras un passphrase incorrecto');
+    assert.strictEqual(await cryptoService.getVaultSalt(), null);
+    assert.deepStrictEqual(await cryptoService.getLegacyKeys(), [], 'aparecieron claves legacy');
+    assert.strictEqual((await syncService.status()).unlocked, false);
+    const vault = srv.rowFor('settings', '__vault__').payload;
+    assert.ok(cryptoService.verifyVaultKey(t1.claveA, vault), 'la boveda de la cuenta cambio');
+    // R6: con la clave legacy tampoco se sella nada.
+    assert.ok(!srv.allBodies().includes(MARCA_SOBRE), 'se sello algo con una clave sin verificar');
+  });
+
+
+  // T10 ──────────────────────────────────────────────────────
+  await check('T10 lo que baja sellado con una clave ajena no se re-sella ni se sube desde aqui', async () => {
+    const AJENA = Buffer.alloc(32, 13);
+    const filaKey = {
+      collection: 'keys', item_id: 'key-ajena', enc: true, payload: null,
+      ...cryptoService.encryptWith(AJENA, JSON.stringify({ id: 'key-ajena', name: 'remota', privateKey: 'remota-nueva' })),
+      deleted: false, updated_at: '2030-01-01T00:00:00.000Z',
+    };
+    const filaHost = {
+      collection: 'hosts', item_id: 'host-ajeno', enc: false, ciphertext: null, nonce: null,
+      payload: {
+        ...hostConPassword, id: 'host-ajeno', label: 'Remota', updatedAt: '2030-01-01T00:00:00.000Z',
+        password: { enc: MARCA_SOBRE, ...cryptoService.encryptWith(AJENA, 'remota-nueva') },
+      },
+      deleted: false, updated_at: '2030-01-01T00:00:00.000Z',
+    };
+    srv.inject(filaKey);
+    srv.inject(filaHost);
+
+    await usarDispositivo('R');
+    await storeService.writeRaw('hosts', [{ ...hostConPassword, id: 'host-ajeno', password: 'local-vieja-de-R' }]);
+    await storeService.writeRaw('keys', [{ id: 'key-ajena', name: 'local', privateKey: 'local-vieja-de-R' }]);
+    await syncService.syncNow();
+    await silenciaErrores(() => syncService.unlock(PASS_T1));
+    await syncService.syncNow();
+
+    const host = srv.rowFor('hosts', 'host-ajeno');
+    assert.deepStrictEqual(host.payload.password, filaHost.payload.password,
+      'SE PISO la contrasena remota que este equipo no puede abrir');
+    const key = srv.rowFor('keys', 'key-ajena');
+    assert.deepStrictEqual([key.ciphertext, key.nonce], [filaKey.ciphertext, filaKey.nonce],
+      'SE PISO la clave SSH remota que este equipo no puede abrir');
+    assert.ok(!srv.allBodies().includes('local-vieja-de-R'), 'y encima en claro');
+    const status = await syncService.status();
+    assert.strictEqual(status.unlocked, true);
+    assert.strictEqual(status.undecryptableCount, 2, `deberia seguir avisando de 2, avisa de ${status.undecryptableCount}`);
+    assert.strictEqual(status.error, null, `lo ilegible lo cuenta undecryptableCount, no error: ${status.error}`);
+    const local = (await storeService.readRaw('hosts')).find(h => h.id === 'host-ajeno');
+    assert.strictEqual(local.password, 'local-vieja-de-R', 'se perdio la contrasena local');
+  });
+
+  // T11 ──────────────────────────────────────────────────────
+  await check('T11 emparejar sin red y sin boveda en disco no instala nada', async () => {
+    await usarDispositivo('Q');
+    await cryptoService.setMasterKey(t1.claveA, { vaultSalt: srv.rowFor('settings', '__vault__').payload.salt });
+    const pedido = await syncService.pairingRequest();
+    await syncService.pairingPending();
+    await syncService.pairingApprove(pedido.pairingId);
+    await syncService.pairingConfirm(pedido.pairingId);
+    await cryptoService.clearAll();
+    await cryptoService.setToken('token-Q');
+    assert.strictEqual(syncService.state.vault, null, 'el escenario necesita un equipo sin boveda en disco');
+    await syncService._fetchClaim(pedido.pairingId);
+
+    srv.hooks.failSyncGet = true;
+    try {
+      await silenciaErrores(() => assert.rejects(
+        () => syncService.pairingClaim(pedido.pairingId),
+        err => /hace falta conexion/.test(err.message),
+        'sin red se instalo (o se rechazo con otro motivo) una clave sin verificar'
+      ));
+    } finally { srv.hooks.failSyncGet = false; }
+    assert.strictEqual(await cryptoService.hasMasterKey(), false, 'SE INSTALO UNA CLAVE SIN VERIFICAR');
+    assert.strictEqual((await syncService.status()).pairing.state, 'listo', 'deberia poder reintentarse');
+
+    // Con red vuelve a intentarse y ahora si se verifica e instala.
+    await syncService.pairingClaim(pedido.pairingId);
+    const clave = await cryptoService.getMasterKey();
+    assert.ok(clave && clave.equals(t1.claveA));
+    assert.strictEqual((await syncService.status()).unlocked, true);
+  });
+
+  // T4 ───────────────────────────────────────────────────────
+  await nuevoServidor();
+  const LEGACY = Buffer.alloc(32, 4);
+  await check('T4 migracion: lo sellado con la clave legacy se re-sella y lo abre quien solo sabe el passphrase', async () => {
+    // Lo que dejo en el servidor una version anterior, con su clave aleatoria.
+    srv.inject({
+      collection: 'keys', item_id: 'key-legacy', enc: true, payload: null,
+      ...cryptoService.encryptWith(LEGACY, JSON.stringify({ id: 'key-legacy', name: 'vieja', privateKey: 'PRIVADA-LEGACY' })),
+      deleted: false, updated_at: '2026-01-01T00:00:00.000Z',
+    });
+    srv.inject({
+      collection: 'hosts', item_id: 'host-legacy', enc: false, ciphertext: null, nonce: null,
+      payload: {
+        ...hostConPassword, id: 'host-legacy', label: 'Vieja',
+        password: { enc: MARCA_SOBRE, ...cryptoService.encryptWith(LEGACY, 'pass-legacy') },
+      },
+      deleted: false, updated_at: '2026-01-01T00:00:00.000Z',
+    });
+
+    // E crea la boveda sin conocer la clave legacy: ve dos cosas que no abre.
+    await usarDispositivo('E4');
+    await silenciaErrores(() => syncService.setupPassphrase(PASS_T4));
+    assert.strictEqual((await syncService.status()).undecryptableCount, 2);
+
+    // C es el equipo viejo: tiene la clave legacy y NINGUNA copia local, asi
+    // que lo remoto solo se puede abrir con la legacy. Y el servidor se cae
+    // justo al subir: la legacy NO puede perderse hasta que lo re-sellado suba.
+    await usarDispositivo('C4');
+    await cryptoService.setMasterKey(LEGACY);
+    srv.hooks.failSyncPost = true;
+    const cortado = await silenciaErrores(() => syncService.unlock(PASS_T4));
+    srv.hooks.failSyncPost = false;
+    assert.deepStrictEqual(cortado, { unlocked: true, synced: false });
+    const claveCuenta = await cryptoService.getMasterKey();
+    clavesDerivadas.push(claveCuenta);
+    const legacyTrasCorte = await cryptoService.getLegacyKeys();
+    assert.ok(legacyTrasCorte.length === 1 && legacyTrasCorte[0].equals(LEGACY),
+      'la legacy se perdio antes de subir lo re-sellado');
+    assert.strictEqual(abreSobre(LEGACY, srv.rowFor('hosts', 'host-legacy').payload.password), 'pass-legacy',
+      'el servidor cambio pese a la caida');
+
+    // Vuelve el servidor: el sync siguiente termina la migracion.
+    await syncService.syncNow();
+    assert.deepStrictEqual(await cryptoService.getLegacyKeys(), [], 'la legacy no se descarto tras subir');
+
+    const keyRow = srv.rowFor('keys', 'key-legacy');
+    assert.strictEqual(JSON.parse(cryptoService.decryptWith(claveCuenta, keyRow.ciphertext, keyRow.nonce)).privateKey,
+      'PRIVADA-LEGACY', 'la clave SSH remota no quedo re-sellada con la de la cuenta');
+    assert.strictEqual(abreSobre(claveCuenta, srv.rowFor('hosts', 'host-legacy').payload.password), 'pass-legacy',
+      'la contrasena remota no quedo re-sellada con la de la cuenta');
+
+    // F no ha visto nunca la clave legacy: solo sabe el passphrase.
+    await usarDispositivo('F4');
+    await syncService.unlock(PASS_T4);
+    const host = (await storeService.readRaw('hosts')).find(h => h.id === 'host-legacy');
+    assert.strictEqual(host && host.password, 'pass-legacy', 'F no abre la contrasena migrada');
+    const key = (await storeService.readRaw('keys')).find(k => k.id === 'key-legacy');
+    assert.strictEqual(key && key.privateKey, 'PRIVADA-LEGACY', 'F no abre la clave SSH migrada');
+    assert.strictEqual((await syncService.status()).undecryptableCount, 0);
+
+    await usarDispositivo('E4');
+    await syncService.syncNow();
+    assert.strictEqual((await syncService.status()).undecryptableCount, 0, 'E sigue sin abrir lo migrado');
+  });
+
+
+  // T9 ───────────────────────────────────────────────────────
+  await check('T9 cierre entre llavero y estado: la legacy sobrevive y se re-sella en el siguiente sync', async () => {
+    await nuevoServidor();
+    const L9 = Buffer.alloc(32, 11);
+    srv.inject({
+      collection: 'keys', item_id: 'key-l9', enc: true, payload: null,
+      ...cryptoService.encryptWith(L9, JSON.stringify({ id: 'key-l9', name: 'vieja', privateKey: 'PRIVADA-L9' })),
+      deleted: false, updated_at: '2026-01-01T00:00:00.000Z',
+    });
+    srv.inject({
+      collection: 'hosts', item_id: 'host-l9', enc: false, ciphertext: null, nonce: null,
+      payload: { ...hostConPassword, id: 'host-l9', password: { enc: MARCA_SOBRE, ...cryptoService.encryptWith(L9, 'pass-l9') } },
+      deleted: false, updated_at: '2026-01-01T00:00:00.000Z',
+    });
+    await usarDispositivo('E9');
+    await silenciaErrores(() => syncService.setupPassphrase(PASS_T4));
+
+    // X9 ya habia sincronizado con su clave vieja: cursor al dia.
+    await usarDispositivo('X9');
+    await cryptoService.setMasterKey(L9);
+    await syncService.syncNow();
+    const vault = syncService.state.vault;
+    const K = await cryptoService.deriveVaultKey(PASS_T4, vault);
+    clavesDerivadas.push(K);
+    // El cierre: el llavero ya tiene la clave nueva y la legacy, y el estado se
+    // quedo como estaba (cursor al dia, nada marcado, ni copias locales).
+    await cryptoService.setMasterKey(K, { vaultSalt: vault.salt, legacyKeys: [L9] });
+    await storeService.writeRaw('hosts', []);
+    await storeService.writeRaw('keys', []);
+    syncService.state.shadow = {};
+    syncService.state.resealBaseline = null;
+    await syncService._save();
+    assert.ok(syncService.state.cursor > 0);
+
+    // Primer sync tras reabrir, y el servidor se cae al subir: la legacy sigue.
+    srv.hooks.failSyncPost = true;
+    await assert.rejects(() => syncService.syncNow());
+    srv.hooks.failSyncPost = false;
+    assert.strictEqual((await cryptoService.getLegacyKeys()).length, 1, 'LA LEGACY SE PERDIO SIN RE-SELLAR');
+
+    await syncService.syncNow();
+    assert.strictEqual(abreSobre(K, srv.rowFor('hosts', 'host-l9').payload.password), 'pass-l9',
+      'la contrasena remota no se re-sello con la clave de la cuenta');
+    const keyRow = srv.rowFor('keys', 'key-l9');
+    assert.strictEqual(JSON.parse(cryptoService.decryptWith(K, keyRow.ciphertext, keyRow.nonce)).privateKey, 'PRIVADA-L9',
+      'la clave SSH remota no se re-sello con la clave de la cuenta');
+    assert.deepStrictEqual(await cryptoService.getLegacyKeys(), [], 'la legacy no se descarto tras re-sellar');
+  });
+
+  // T7 ───────────────────────────────────────────────────────
+  await check('T7 boveda creada a la vez: el perdedor queda bloqueado, no divergente', async () => {
+    // a) Se entera al crearla: tras subir la suya, el servidor tiene la del otro.
+    await nuevoServidor();
+    const rival = await cryptoService.createVault(PASS_H);
+    clavesDerivadas.push(rival.key);
+    await usarDispositivo('G');
+    await storeService.writeRaw('hosts', [{ ...hostConPassword, id: 'host-G', password: 'secreto-de-G' }]);
+    srv.hooks.afterVaultPush = () => { srv.hooks.afterVaultPush = null; srv.inject(filaBoveda(rival.vault)); };
+    await assert.rejects(() => syncService.setupPassphrase(PASS_G), /a la vez/);
+    assert.strictEqual(await cryptoService.hasMasterKey(), false, 'el perdedor instalo su clave');
+    let status = await syncService.status();
+    assert.deepStrictEqual([status.vaultExists, status.unlocked], [true, false]);
+    assert.ok(!srv.allBodies().includes(MARCA_SOBRE), 'el perdedor sello secretos con su clave');
+    await syncService.unlock(PASS_H);
+    assert.strictEqual(abreSobre(rival.key, srv.rowFor('hosts', 'host-G').payload.password), 'secreto-de-G');
+
+    // b) Se entera despues: creyo ganar, y la boveda del otro llega en un sync.
+    await nuevoServidor();
+    const rival2 = await cryptoService.createVault(PASS_H);
+    clavesDerivadas.push(rival2.key);
+    await usarDispositivo('G2');
+    await storeService.writeRaw('hosts', [{ ...hostConPassword, id: 'host-G2', password: 'secreto-de-G2' }]);
+    await syncService.setupPassphrase(PASS_G);
+    const claveG = await cryptoService.getMasterKey();
+    clavesDerivadas.push(claveG);
+    srv.inject(filaBoveda(rival2.vault));
+    await storeService.writeRaw('hosts', [{
+      ...hostConPassword, id: 'host-G2', password: 'secreto-nuevo-G2', updatedAt: '2030-01-01T00:00:00.000Z',
+    }]);
+    srv.reset();
+    await syncService.syncNow();
+    status = await syncService.status();
+    assert.strictEqual(status.unlocked, false, 'sigue desbloqueado con una clave que no es la de la boveda vigente');
+    assert.deepStrictEqual([status.vaultExists, status.hasMasterKey], [true, true]);
+    assert.strictEqual(status.error, null, `quedar bloqueado no es un error: ${status.error}`);
+    const subido = srv.syncPosts().join('\n');
+    assert.ok(subido.length > 0, 'no subio el host editado');
+    assert.ok(!subido.includes(MARCA_SOBRE) && !subido.includes('"enc":true'),
+      'SELLO CON LA CLAVE DE UNA BOVEDA QUE YA NO ES LA VIGENTE');
+    assert.ok(!subido.includes('secreto-nuevo-G2'), 'subio el secreto en claro');
+
+    await syncService.unlock(PASS_H);
+    assert.strictEqual(abreSobre(rival2.key, srv.rowFor('hosts', 'host-G2').payload.password), 'secreto-nuevo-G2',
+      'tras desbloquear no se re-sello con la clave vigente');
+    assert.deepStrictEqual(await cryptoService.getLegacyKeys(), []);
+  });
+
+  if (syncService._chain) { try { await syncService._chain; } catch (_) { /* ignore */ } }
+  await new Promise(r => setTimeout(r, 100));
+
+  // T8 ───────────────────────────────────────────────────────
+  await check('T8 ni el passphrase ni la clave derivada salen por consola, renderer, disco o cable', () => {
+    const leeTodo = dir => {
+      let out = '';
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) out += leeTodo(full);
+        else out += `\n${fs.readFileSync(full, 'utf-8')}`;
+      }
+      return out;
+    };
+    const salidas = {
+      consola: consola.join('\n') + '\n' + results.join('\n'),
+      renderer: alRenderer.join('\n'),
+      disco: leeTodo(userData),
+      cable: cableTotal.join('\n'),
+    };
+    assert.ok(salidas.consola.length > 0 && salidas.renderer.length > 0, 'no se capturo nada: la prueba no prueba');
+    for (const [donde, texto] of Object.entries(salidas)) {
+      for (const pass of PASSPHRASES_BOVEDA) {
+        assert.ok(!texto.includes(pass), `un passphrase aparece en ${donde}`);
+      }
+      if (donde === 'disco') continue;   // el llavero falso del arnes guarda la clave "envuelta" en claro
+      for (const clave of clavesDerivadas) {
+        assert.ok(!texto.includes(clave.toString('base64')) && !texto.includes(clave.toString('hex')),
+          `una clave derivada aparece en ${donde}`);
+      }
+    }
+  });
+  if (srv) await srv.close();
 
   await api.close();
   Module._load = realLoad;
