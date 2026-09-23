@@ -1,19 +1,33 @@
-import React, { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef } from 'react';
 import { normalizeSyncStatus } from '../components/Sync/helpers';
 
 const AppContext = createContext(null);
 
 /* ── Mock data for browser dev without Electron ── */
+/* Enough of them to fill the Hosts grid, with one duplicate endpoint (4/14)
+   so the duplicate banner shows up in browser dev mode too. */
 const MOCK_HOSTS = [
-  { id: '1', label: 'Production Server', hostname: '192.168.1.100', port: 22, username: 'root', authType: 'password', groupId: 'g1', tags: ['prod'] },
-  { id: '2', label: 'Staging Server', hostname: '192.168.1.101', port: 22, username: 'deploy', authType: 'key', keyId: 'k1', groupId: 'g1', tags: ['staging'] },
-  { id: '3', label: 'Database Server', hostname: '10.0.0.50', port: 2222, username: 'admin', authType: 'password', groupId: 'g2', tags: ['db'] },
-  { id: '4', label: 'Dev Machine', hostname: 'dev.local', port: 22, username: 'derek', authType: 'key', keyId: 'k1', groupId: null, tags: [] },
+  { id: '1', label: 'Production Server', hostname: '192.168.1.100', port: 22, username: 'root', authType: 'password', groupId: 'g1', createdAt: '2026-06-08T09:00:00.000Z', tags: ['prod'] },
+  { id: '2', label: 'Staging Server', hostname: '192.168.1.101', port: 22, username: 'deploy', authType: 'key', keyId: 'k1', groupId: 'g1', createdAt: '2026-02-15T09:00:00.000Z', tags: ['staging'] },
+  { id: '3', label: 'Database Server', hostname: '10.0.0.50', port: 2222, username: 'admin', authType: 'password', groupId: 'g2', createdAt: '2026-07-22T09:00:00.000Z', tags: ['db'] },
+  { id: '4', label: 'Dev Machine', hostname: 'dev.local', port: 22, username: 'derek', authType: 'key', keyId: 'k1', groupId: null, createdAt: '2026-03-02T09:00:00.000Z', tags: [] },
+  { id: '5', label: 'Edge Proxy', hostname: '192.168.1.110', port: 22, username: 'root', authType: 'password', groupId: 'g1', createdAt: '2026-08-09T09:00:00.000Z', tags: ['prod'] },
+  { id: '6', label: 'Replica 1', hostname: '10.0.0.51', port: 22, username: 'postgres', authType: 'key', keyId: 'k1', groupId: 'g2', createdAt: '2026-04-16T09:00:00.000Z', tags: ['db'] },
+  { id: '7', label: 'Home NAS', hostname: 'nas.home.arpa', port: 22, username: 'admin', authType: 'password', groupId: 'g3', createdAt: '2026-09-23T09:00:00.000Z', tags: [] },
+  { id: '8', label: 'Raspberry Pi', hostname: '192.168.0.42', port: 22, username: 'pi', authType: 'password', groupId: 'g3', createdAt: '2026-05-03T09:00:00.000Z', tags: [] },
+  { id: '9', label: 'Build Runner', hostname: 'ci-runner-01.internal', port: 22, username: 'ci', authType: 'key', keyId: 'k1', groupId: null, createdAt: '2026-01-10T09:00:00.000Z', tags: ['ci'] },
+  { id: '10', label: 'Bastion', hostname: 'bastion.example.com', port: 2200, username: 'derek', authType: 'key', keyId: 'k1', groupId: null, createdAt: '2026-06-17T09:00:00.000Z', tags: [] },
+  { id: '11', label: 'Mail Relay', hostname: 'mx1.example.com', port: 22, username: 'root', authType: 'password', groupId: null, createdAt: '2026-02-24T09:00:00.000Z', tags: [] },
+  { id: '12', label: 'Monitoring', hostname: 'grafana.internal', port: 22, username: 'ops', authType: 'key', keyId: 'k1', groupId: null, createdAt: '2026-07-04T09:00:00.000Z', tags: ['ops'] },
+  { id: '13', label: 'Backup Box', hostname: 'backup.home.arpa', port: 22, username: 'borg', authType: 'key', keyId: 'k1', groupId: 'g3', createdAt: '2026-03-11T09:00:00.000Z', tags: [] },
+  { id: '14', label: 'dev.local', hostname: 'dev.local', port: 22, username: 'derek', authType: 'password', groupId: null, createdAt: '2026-08-18T09:00:00.000Z', tags: [] },
 ];
 
 const MOCK_GROUPS = [
   { id: 'g1', label: 'Web Servers', color: '#58a6ff' },
   { id: 'g2', label: 'Databases', color: '#3fb950' },
+  { id: 'g3', label: 'Home Lab', color: 'hsl(28, 70%, 55%)' },
+  { id: 'g4', label: 'Clients', color: 'hsl(280, 45%, 60%)' },
 ];
 
 const MOCK_SNIPPETS = [
@@ -26,7 +40,47 @@ const MOCK_KEYS = [
   { id: 'k1', label: 'Personal Key', type: 'ED25519', fingerprint: 'SHA256:xXxXxXxXxXxXxXxXxXxXxXxXx', publicKey: 'ssh-ed25519 AAAA...', createdAt: '2024-01-15' },
 ];
 
-const MOCK_PORT_FORWARDS = [];
+/* Current rule shape (see components/PortForwarding/rules.js). The status
+   map shows every card state in browser dev mode; 'pf4' has no host, like a
+   rule migrated from the old UI. */
+const MOCK_PORT_FORWARDS = [
+  { id: 'pf1', label: 'Postgres on db', type: 'local', hostId: '3', bindAddress: '127.0.0.1', localPort: 5433, destHost: 'localhost', destPort: 5432, createdAt: '2026-08-02T10:00:00.000Z' },
+  { id: 'pf2', label: 'Grafana', type: 'local', hostId: '12', bindAddress: '127.0.0.1', localPort: 3000, destHost: 'grafana.internal', destPort: 3000, createdAt: '2026-08-20T10:00:00.000Z' },
+  { id: 'pf3', label: 'Share dev server', type: 'remote', hostId: '10', bindAddress: '127.0.0.1', localPort: 9000, destHost: 'localhost', destPort: 5173, createdAt: '2026-09-01T10:00:00.000Z' },
+  { id: 'pf4', label: 'Old tunnel', type: 'local', hostId: null, bindAddress: '127.0.0.1', localPort: 8080, destHost: 'localhost', destPort: 80, createdAt: '2025-12-01T10:00:00.000Z' },
+  { id: 'pf5', label: 'Browse via bastion', type: 'dynamic', hostId: '10', bindAddress: '127.0.0.1', localPort: 1080, destHost: '', destPort: null, createdAt: '2026-09-10T10:00:00.000Z' },
+];
+const MOCK_PORT_FORWARD_STATUS = {
+  pf1: { state: 'running' },
+  pf2: { state: 'error', error: 'Port 3000 on 127.0.0.1 is already in use on this computer.' },
+  pf5: { state: 'starting' },
+};
+
+/* Known hosts and connection logs are local-only collections, loaded on
+   demand by their sections (not in INIT_DATA). Browser dev mode gets these. */
+const mockAgo = (days, h = 0, m = 0) => {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  d.setHours(h, m, 0, 0);
+  return d.toISOString();
+};
+const MOCK_KNOWN_HOSTS = [
+  { id: 'kh1', host: '192.168.1.100', port: 22, keyType: 'ssh-ed25519', key: '', fingerprint: 'SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8', addedAt: mockAgo(40, 9, 12) },
+  { id: 'kh2', host: '192.168.1.101', port: 22, keyType: 'ecdsa-sha2-nistp256', key: '', fingerprint: 'SHA256:p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM', addedAt: mockAgo(33, 17, 40) },
+  { id: 'kh3', host: '10.0.0.50', port: 2222, keyType: 'ssh-rsa', key: '', fingerprint: 'SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s', addedAt: mockAgo(20, 11, 5) },
+  { id: 'kh4', host: 'bastion.example.com', port: 2200, keyType: 'ssh-ed25519', key: '', fingerprint: 'SHA256:Ht8FUuJ3oyI9JwbZq6nH8Xv6Zo0zFfJmN0cS1Rw2kTg', addedAt: mockAgo(12, 8, 30) },
+  { id: 'kh5', host: 'github.com', port: 22, keyType: 'ssh-ed25519', key: '', fingerprint: 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU', addedAt: mockAgo(9, 14, 2) },
+  { id: 'kh6', host: 'nas.home.arpa', port: 22, keyType: 'ssh-ed25519', key: '', fingerprint: 'SHA256:Kq1d0kU7l3mFz6qk2dZ3Yb9cD1oH0y4c2m4Rj8bQx1E', addedAt: mockAgo(3, 20, 45) },
+  { id: 'kh7', host: 'dev.local', port: 22, keyType: 'ssh-ed25519', key: '', fingerprint: 'SHA256:4b9xQ7w1mYh2Vf3kZt8pR0sL6cN5dJ1eG2aU9oI3yT0', addedAt: mockAgo(1, 10, 0) },
+];
+const MOCK_CONNECTION_LOGS = [
+  { id: 'l1', type: 'ssh', hostId: '1', label: 'Production Server', hostname: '192.168.1.100', port: 22, username: 'root', os: 'ubuntu', email: 'derek@example.com', deviceName: 'derek-laptop', startedAt: mockAgo(9, 12, 30), endedAt: mockAgo(2, 14, 43) },
+  { id: 'l2', type: 'local', hostId: null, label: 'Local Terminal', email: 'derek@example.com', deviceName: 'derek-laptop', startedAt: mockAgo(3, 9, 5), endedAt: mockAgo(3, 9, 48) },
+  { id: 'l3', type: 'ssh', hostId: null, label: 'ops@203.0.113.7', hostname: '203.0.113.7', port: 2222, username: 'ops', os: 'debian', email: 'derek@example.com', deviceName: 'derek-laptop', startedAt: mockAgo(2, 16, 10), endedAt: mockAgo(2, 16, 52) },
+  { id: 'l4', type: 'ssh', hostId: '3', label: 'Database Server', hostname: '10.0.0.50', port: 2222, username: 'admin', os: 'rocky', email: 'derek@example.com', deviceName: 'derek-laptop', startedAt: mockAgo(1, 8, 0), endedAt: mockAgo(1, 11, 21) },
+  { id: 'l5', type: 'sftp', hostId: '4', label: 'Dev Machine', hostname: 'dev.local', port: 22, username: 'derek', email: '', deviceName: 'derek-desktop', startedAt: mockAgo(0, 10, 2), endedAt: mockAgo(0, 10, 15) },
+  { id: 'l6', type: 'ssh', hostId: '8', label: 'Raspberry Pi', hostname: '192.168.0.42', port: 22, username: 'pi', os: 'raspbian', email: 'derek@example.com', deviceName: 'derek-laptop', startedAt: mockAgo(0, 11, 30) },
+];
 
 const MOCK_SETTINGS = {
   terminal: { fontSize: 14, fontFamily: 'JetBrains Mono', cursorStyle: 'block', scrollback: 5000 },
@@ -53,11 +107,17 @@ const initialState = {
   snippets: [],
   keys: [],
   portForwards: [],
+  /* ruleId -> { state: 'starting'|'running'|'error', error? }. In memory in
+     main; a rule missing here is stopped. Never persisted. */
+  portForwardStatus: {},
   settings: MOCK_SETTINGS,
   activeSessions: {},     // sessionId -> { hostId, host, status }
   tabs: [],               // { id, type:'terminal'|'sftp', label, sessionId?, hostId? }
   activeTabId: null,
-  activeSection: 'hosts', // hosts | sftp | snippets | port-forwarding | keychain | settings
+  /* Last visible terminal tab that was active. The home tab (where Snippets
+     lives) is never a session, so "Run" targets this one. */
+  lastSessionTabId: null,
+  activeSection: 'hosts', // home tab section: hosts | keychain | port-forwarding | snippets | known-hosts | logs | settings
   loading: true,
   hostFormOpen: false,
   editingHost: null,
@@ -69,7 +129,27 @@ const initialState = {
 };
 
 /* ── Reducer ── */
+const isSessionTab = (t) => !!t && !t.hidden && (t.type === 'terminal' || t.type === 'local-terminal');
+
+/* Keeps lastSessionTabId pointing at an open session tab: follows activeTabId
+   when it lands on one, and falls back to the rightmost session tab (or null)
+   when the remembered one closes. */
+function trackLastSession(state) {
+  const active = state.tabs.find(t => t.id === state.activeTabId);
+  let next = state.lastSessionTabId;
+  if (isSessionTab(active)) next = active.id;
+  else if (next && !state.tabs.some(t => t.id === next)) {
+    next = [...state.tabs].reverse().find(isSessionTab)?.id ?? null;
+  }
+  return next === state.lastSessionTabId ? state : { ...state, lastSessionTabId: next };
+}
+
 function appReducer(state, action) {
+  const next = baseReducer(state, action);
+  return next === state ? state : trackLastSession(next);
+}
+
+function baseReducer(state, action) {
   switch (action.type) {
     /* ── Data loading ── */
     case 'SET_LOADING':
@@ -150,6 +230,17 @@ function appReducer(state, action) {
       return { ...state, portForwards: state.portForwards.map(p => p.id === action.payload.id ? action.payload : p) };
     case 'DELETE_PORT_FORWARD':
       return { ...state, portForwards: state.portForwards.filter(p => p.id !== action.payload) };
+    case 'SET_PORT_FORWARD_STATUS': {
+      /* One push: { ruleId, state, error? }. 'stopped' drops the entry. */
+      const { ruleId, state: st, error } = action.payload || {};
+      if (!ruleId) return state;
+      const next = { ...state.portForwardStatus };
+      if (!st || st === 'stopped') delete next[ruleId];
+      else next[ruleId] = error ? { state: st, error } : { state: st };
+      return { ...state, portForwardStatus: next };
+    }
+    case 'REPLACE_PORT_FORWARD_STATUS':
+      return { ...state, portForwardStatus: action.payload || {} };
 
     /* ── Settings ── */
     case 'SET_SETTINGS':
@@ -219,6 +310,9 @@ function appReducer(state, action) {
 /* ── Provider ── */
 export function AppProvider({ children }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
+  /* Latest state for async handlers that must not act on a stale closure. */
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   /* Load initial data */
   useEffect(() => {
@@ -268,6 +362,7 @@ export function AppProvider({ children }) {
             settings: MOCK_SETTINGS,
           },
         });
+        dispatch({ type: 'REPLACE_PORT_FORWARD_STATUS', payload: MOCK_PORT_FORWARD_STATUS });
       }
     }
     loadData();
@@ -364,6 +459,33 @@ export function AppProvider({ children }) {
       /* Call the remover, not the listener. Passing the listener back is
          harmless if the bridge ignores its arguments. */
       sync.removeStatusListener?.(listener);
+    };
+  }, []);
+
+  /**
+   * Port forwarding status. Main keeps running forwards in memory, keyed by
+   * rule id: pull the current list once, then follow the pushes. This is the
+   * only subscriber; components read state.portForwardStatus.
+   */
+  useEffect(() => {
+    const pf = window.electronAPI?.portForward;
+    if (!pf || typeof pf.onStatus !== 'function') return undefined;
+    let mounted = true;
+    const listener = pf.onStatus((payload) => dispatch({ type: 'SET_PORT_FORWARD_STATUS', payload }));
+    Promise.resolve()
+      .then(() => pf.status?.())
+      .then((list) => {
+        if (!mounted || !Array.isArray(list)) return;
+        const map = {};
+        for (const s of list) {
+          if (s && s.ruleId && s.state !== 'stopped') map[s.ruleId] = s.error ? { state: s.state, error: s.error } : { state: s.state };
+        }
+        dispatch({ type: 'REPLACE_PORT_FORWARD_STATUS', payload: map });
+      })
+      .catch(() => { /* keep whatever the pushes said */ });
+    return () => {
+      mounted = false;
+      pf.removeStatusListener?.(listener);
     };
   }, []);
 
@@ -482,36 +604,58 @@ export function AppProvider({ children }) {
       dispatch({ type: 'DELETE_KEY', payload: id });
     }, []),
 
-    /* Port Forwards */
+    /* Port Forwards. Rules carry no running flag: that is state.portForwardStatus. */
     savePortForward: useCallback(async (forward) => {
+      // eslint-disable-next-line no-unused-vars
+      const { active, ...rule } = forward;
       if (hasApi()) {
-        const saved = await api().store.savePortForward(forward);
-        if (forward.id) dispatch({ type: 'UPDATE_PORT_FORWARD', payload: saved });
+        const saved = await api().store.savePortForward(rule);
+        if (rule.id) dispatch({ type: 'UPDATE_PORT_FORWARD', payload: saved });
         else dispatch({ type: 'ADD_PORT_FORWARD', payload: saved });
         return saved;
       } else {
-        const saved = { ...forward, id: forward.id || crypto.randomUUID(), active: false };
-        if (forward.id) dispatch({ type: 'UPDATE_PORT_FORWARD', payload: saved });
+        const saved = { ...rule, id: rule.id || crypto.randomUUID(), createdAt: rule.createdAt || new Date().toISOString() };
+        if (rule.id) dispatch({ type: 'UPDATE_PORT_FORWARD', payload: saved });
         else dispatch({ type: 'ADD_PORT_FORWARD', payload: saved });
         return saved;
       }
     }, []),
 
+    /* Main stops a running rule before deleting it */
     deletePortForward: useCallback(async (id) => {
       if (hasApi()) await api().store.deletePortForward(id);
       dispatch({ type: 'DELETE_PORT_FORWARD', payload: id });
+      dispatch({ type: 'SET_PORT_FORWARD_STATUS', payload: { ruleId: id, state: 'stopped' } });
     }, []),
 
-    startPortForward: useCallback(async (forwardConfig) => {
-      if (hasApi()) {
-        await api().portForward.start(forwardConfig);
+    /* Only the rule id goes to main, which resolves host and credentials.
+       Never throws: a failure becomes state 'error' with main's message. */
+    startPortForward: useCallback(async (ruleId) => {
+      dispatch({ type: 'SET_PORT_FORWARD_STATUS', payload: { ruleId, state: 'starting' } });
+      if (!hasApi()) {
+        /* Browser dev mode: pretend, and fail the way main would without a host */
+        const rule = stateRef.current.portForwards.find(p => p.id === ruleId);
+        setTimeout(() => dispatch({
+          type: 'SET_PORT_FORWARD_STATUS',
+          payload: rule?.hostId
+            ? { ruleId, state: 'running' }
+            : { ruleId, state: 'error', error: 'Choose a host for this rule before starting it.' },
+        }), 700);
+        return;
+      }
+      try {
+        const result = await api().portForward.start(ruleId);
+        if (result?.state) dispatch({ type: 'SET_PORT_FORWARD_STATUS', payload: { ruleId, state: result.state } });
+      } catch (err) {
+        dispatch({ type: 'SET_PORT_FORWARD_STATUS', payload: { ruleId, state: 'error', error: err?.message || 'Could not start it' } });
       }
     }, []),
 
-    stopPortForward: useCallback(async (forwardId) => {
+    stopPortForward: useCallback(async (ruleId) => {
       if (hasApi()) {
-        await api().portForward.stop(forwardId);
+        try { await api().portForward.stop(ruleId); } catch (_) { /* nothing left to stop */ }
       }
+      dispatch({ type: 'SET_PORT_FORWARD_STATUS', payload: { ruleId, state: 'stopped' } });
     }, []),
 
     /* Settings */
@@ -541,6 +685,9 @@ export function AppProvider({ children }) {
             host: host.hostname,
             port: host.port || 22,
             username: host.username,
+            /* For the Logs section only: main keeps hostId if it is a saved host */
+            hostId: host.id,
+            label: host.label || host.hostname,
           };
           if (host.authType === 'password') config.password = host.password || '';
           if (host.authType === 'key' && host.keyId) config.keyId = host.keyId;
@@ -575,6 +722,17 @@ export function AppProvider({ children }) {
 
     /* Tabs */
     addTab: useCallback((tab) => dispatch({ type: 'ADD_TAB', payload: tab }), []),
+    /* The home tab is not in `tabs`: it is what shows when activeTabId is null. */
+    goHome: useCallback(() => dispatch({ type: 'SET_ACTIVE_TAB', payload: null }), []),
+    openLocalTerminal: useCallback(() => {
+      const tabId = crypto.randomUUID();
+      dispatch({ type: 'ADD_TAB', payload: {
+        id: tabId,
+        type: 'local-terminal',
+        label: 'Local Terminal',
+        sessionId: `local-${tabId}`,
+      }});
+    }, []),
     removeTab: useCallback((tabId) => dispatch({ type: 'REMOVE_TAB', payload: tabId }), []),
     setActiveTab: useCallback((tabId) => dispatch({ type: 'SET_ACTIVE_TAB', payload: tabId }), []),
     updateTab: useCallback((tab) => dispatch({ type: 'UPDATE_TAB', payload: tab }), []),
@@ -723,6 +881,35 @@ export function AppProvider({ children }) {
       });
     }, []),
 
+    /* ── Known hosts (local only; the section keeps the list in its own state) ── */
+    listKnownHosts: useCallback(async () => {
+      if (!hasApi()) return MOCK_KNOWN_HOSTS;
+      const kh = api().knownHosts;
+      if (!kh?.list) return [];
+      return (await kh.list()) || [];
+    }, []),
+    deleteKnownHost: useCallback(async (id) => {
+      if (!hasApi()) return true;
+      return api().knownHosts.delete(id);
+    }, []),
+    /* {imported, duplicates, skipped, reasons} — main reads ~/.ssh/known_hosts */
+    importKnownHosts: useCallback(async () => {
+      if (!hasApi()) return { imported: 0, duplicates: 0, skipped: 0, reasons: {} };
+      return api().knownHosts.importFromSsh();
+    }, []),
+
+    /* ── Connection logs (recorded in main; local only) ── */
+    listConnectionLogs: useCallback(async () => {
+      if (!hasApi()) return MOCK_CONNECTION_LOGS;
+      const logs = api().logs;
+      if (!logs?.list) return [];
+      return (await logs.list()) || [];
+    }, []),
+    clearConnectionLogs: useCallback(async () => {
+      if (!hasApi()) return true;
+      return api().logs.clear();
+    }, []),
+
     /* Open SFTP tab */
     openSFTPTab: useCallback(async (host) => {
       const tabId = crypto.randomUUID();
@@ -733,6 +920,9 @@ export function AppProvider({ children }) {
             host: host.hostname,
             port: host.port || 22,
             username: host.username,
+            hostId: host.id,
+            label: host.label || host.hostname,
+            purpose: 'sftp',
           };
           if (host.authType === 'password') config.password = host.password || '';
           if (host.authType === 'key' && host.keyId) config.keyId = host.keyId;
@@ -751,6 +941,88 @@ export function AppProvider({ children }) {
       return { tabId, sessionId };
     }, []),
   };
+
+  /**
+   * Remote OS detection (`ssh:os-detected`) -> `host.os`, for the distro logo
+   * on the host cards. Saved only when the value changed, and never for:
+   * - hosts that are not in the store (quick connect makes a throwaway id);
+   * - hosts sync could not open here (`undecryptableIds` has `hosts/<id>`).
+   *   Their password is sealed with another computer's key, and a local save
+   *   is a real edit that REPLACES that sealed remote copy, destroying the
+   *   only readable password. If we cannot tell, we do not save.
+   * The write is `store.setHostOs(hostId, os)`: main sets ONLY `os` on the
+   * host as it is on disk, under the store lock, and repeats the sealed check
+   * there. Never a full-object saveHost from here: a sync pull may have just
+   * rewritten hosts.json, and this renderer copy would overwrite it (password
+   * included) and push the stale version.
+   */
+  useEffect(() => {
+    const ssh = window.electronAPI?.ssh;
+    if (!ssh || typeof ssh.onOsDetected !== 'function') return undefined;
+    let alive = true;
+    const inFlight = new Set();
+
+    const isSealed = async (hostId) => {
+      const tag = `hosts/${hostId}`;
+      if ((stateRef.current.sync?.status?.undecryptableIds || []).includes(tag)) return true;
+      const sync = window.electronAPI?.sync;
+      /* No sync bridge: there is no remote copy to overwrite. */
+      if (!sync || typeof sync.status !== 'function') return false;
+      /* Ask main now rather than trust a status that may not have loaded yet.
+         A throw propagates and the caller skips the save. */
+      const s = await sync.status();
+      if (!s || !Array.isArray(s.undecryptableIds)) return true;
+      return s.undecryptableIds.includes(tag);
+    };
+
+    const handle = async (sessionId, os, attempt = 0) => {
+      if (!alive) return;
+      const session = stateRef.current.activeSessions[sessionId];
+      if (!session) {
+        /* The event can in theory beat ADD_SESSION; give it a moment. */
+        if (attempt < 10) setTimeout(() => handle(sessionId, os, attempt + 1), 300);
+        return;
+      }
+      const hostId = session.hostId;
+      if (!hostId || inFlight.has(hostId)) return;
+      const current = stateRef.current.hosts.find(h => h.id === hostId);
+      if (!current || current.os === os) return;
+      inFlight.add(hostId);
+      try {
+        if (await isSealed(hostId)) return;
+        if (!alive || typeof window.electronAPI?.store?.setHostOs !== 'function') return;
+        const saved = await window.electronAPI.store.setHostOs(hostId, os);
+        if (alive && saved && saved.id === hostId) dispatch({ type: 'UPDATE_HOST', payload: saved });
+      } catch (_) {
+        /* Cosmetic: a failed save just means no logo this time. */
+      } finally {
+        inFlight.delete(hostId);
+      }
+    };
+
+    const listener = ssh.onOsDetected((payload) => {
+      const sessionId = payload?.sessionId;
+      const os = payload?.os;
+      if (typeof sessionId !== 'string' || typeof os !== 'string' || !os) return;
+      handle(sessionId, os);
+    });
+
+    return () => {
+      alive = false;
+      ssh.removeOsDetectedListener?.(listener);
+    };
+  }, []);
+
+  /* A rule deleted elsewhere (a sync pull rewrites the collection) while it
+     runs here would keep its tunnel open with no card left to stop it. */
+  const { stopPortForward } = actions;
+  useEffect(() => {
+    if (state.loading) return;
+    const ids = new Set(state.portForwards.map(p => p.id));
+    for (const ruleId of Object.keys(state.portForwardStatus)) {
+      if (!ids.has(ruleId)) stopPortForward(ruleId);
+    }
+  }, [state.loading, state.portForwards, state.portForwardStatus, stopPortForward]);
 
   return (
     <AppContext.Provider value={{ state, dispatch, actions }}>

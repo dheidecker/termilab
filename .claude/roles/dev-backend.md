@@ -275,3 +275,115 @@ puente de preload y su consumidor en el renderer se rompen en momentos
 distintos: lo que `preload.js` no expone se evalúa a `undefined` en `src/` y el
 fallo aparece más tarde, al leer una propiedad del resultado. Si cambias el
 puente, dilo en la entrega para que lo arregle `dev-frontend`.
+
+## Known hosts y Logs (2026-09, rama `feat/ui-termius`)
+
+- **ssh2 `hostVerifier(key, verify)` asíncrono**: devolver `undefined` y llamar
+  `verify(bool)`. Mientras el usuario lee el diálogo (hasta 120 s) **el
+  `readyTimeout` de ssh2 sigue corriendo**: hay que `clearTimeout(client._readyTimeout)`
+  (campo privado, ssh2 1.17) además del timeout propio, y re-armar el propio al
+  contestar. `host-key-service.createVerifier` lo hace con `onPrompt/onSettled`;
+  K11 se pone rojo si lo quitas ("Connection timed out").
+- `verify(false)` llega como `'error'` "Host denied (verification failed)";
+  ssh-service lo reescribe a "Host key rejected" con `verifier.wasRejected()`.
+- **Arnés: un timer con `unref()` del que depende un `await` hace que Node salga
+  con código 0 y SIN imprimir nada.** Parece un verde. Mira la línea
+  "Todo en verde", no el `$?`.
+- Historial: las horas se estampan **síncronas** en `start()`/`end()`. Con
+  `startedAt` dentro de la inserción asíncrona (lookup de email/dispositivo),
+  1 de cada 3 corridas daba `startedAt > endedAt`. `before-quit` no se espera:
+  `closeAllSync()` escribe con `fs.*Sync`.
+- `known-hosts` y `connection-logs` **se sincronizan** desde 2026-09 (ver la
+  sección de abajo). Antes eran locales; ya no.
+- `ssh:connect` lleva ahora `hostId`, `label` y `purpose:'sftp'` (nada secreto);
+  main solo guarda `hostId` si existe en `hosts.json` (quick connect trae un uuid
+  tirado). SFTP abre shell igualmente: sale en Logs como `type:'sftp'`.
+- `ssh2.Server` + clave de `ssh-keygen` da pruebas de punta a punta sin red (K11).
+
+## Port forwarding (2026-09, rama `feat/ui-termius`)
+
+- **Por IPC solo viaja el id de regla.** `port-forward-service` lee regla, host
+  y credencial del almacén; "sellado" = `syncService.status().undecryptableIds`
+  (`hosts/<id>`, `keys/<keyId>`). Estado en memoria por ruleId, push en
+  `port-forward:status` `{ruleId, state, error?}`. `active` no se guarda nunca.
+- Migración de reglas **al leer**, no reescribiendo: reescribir es editar cada
+  regla y sync las subiría todas (P1 compara el archivo byte a byte).
+  `port-forward-rules.js` está duplicado en `src/components/PortForwarding/rules.js`.
+- **ssh2 `client.forwardOut` lanza síncrono** ("Not connected") si el cliente ya
+  murió y el listener aún acepta: no llega por el callback y tumba main. Va
+  envuelto en `_forwardOut`. Lo destapó el control negativo, no un test verde.
+- `stop()` durante el arranque: su teardown ve un server que aún no escucha, y
+  el `listen` termina después. Hay que volver a cerrar tras el listen (P6).
+- Arnés P: borra `SSH_AUTH_SOCK` o el cliente prueba tu agente real. El
+  `ssh2.Server` necesita `'tcpip'` (para -L/-D) y `'request'` `tcpip-forward`
+  (para -R). `store:delete-port-forward` para el túnel antes de borrar.
+
+## Sync de known_hosts y connection_logs (2026-09, arnés S1–S9)
+
+- `known_hosts` va cifrada por fila **por autenticidad**, no por secreto. Y por
+  eso sus **lápidas también van selladas** (`enc:true, deleted:true`,
+  `{id, deleted:true}` dentro): una lápida en claro la puede forjar el servidor,
+  borra la clave de confianza en todos los equipos y el siguiente MITM sale como
+  "unknown" en vez de "changed". Lápida sin sellar, ajena o que no es lápida →
+  no borra nada (`SEALED_TOMBSTONES`, `_checkSealedTombstone`). `keys` sigue con
+  lápidas en claro a propósito (clientes viejos).
+- `BOUND_ITEM_IDS`: el JSON descifrado de `known_hosts` debe traer
+  `id === item_id`, o el servidor reenvía el cifrado de otra entrada bajo otro
+  id. No se aplica a `keys`: filas antiguas no garantizan el id idéntico.
+- **El cursor de un cliente viejo pasó por encima de las filas nuevas** (v1.10.0
+  las ignora en `_applyRecords`, `sync-service.js:907-908` de `5ecfa09`). Al
+  actualizar no las vería nunca. `COLLECTIONS_VERSION` en `sync-state.json`: un
+  estado con versión menor vuelve a bajar desde 0 una vez. **Súbelo cada vez
+  que añadas una colección.** `_save` la escribe siempre (el arnés crea estados
+  sin ella). S9 carga el sync-service de `5ecfa09` con `Module._compile`.
+- Por lo mismo: **se despliega el servidor antes** que la app. Un servidor sin
+  la colección en la lista blanca da 400 al lote entero y el push no sube nada.
+  El falso del arnés lee la lista blanca de `server/api/src/server.js`.
+- `_applyRecords` escribe con `storeService.mutateRaw` (lock tomado durante
+  leer-modificar-escribir): logs y known hosts los escribe main solo, y un
+  `readRaw` … `writeRaw` pisaba lo que entrara entre medias. El lock no es
+  reentrante: dentro del callback no se llama a otro método del almacén.
+- Historial: cada escritura estampa `updatedAt`. Sin él, un re-pull desde 0
+  (instalar clave, actualizar) devolvía la copia sin `endedAt` y ganaba el LWW
+  (`isNewer(undefined, …)` es false). El tope de 1000 corta por `startedAt`,
+  no por orden en disco, para que todos los equipos tiren **las mismas**: lo que
+  cae sale como lápida en el mismo lote (1 por conexión nueva). Un primer merge
+  entre equipos puede tirar muchas de golpe; es correcto (S8 usa servidor
+  propio por eso).
+- Dos equipos con la misma clave → dos entradas; `dedupeEntries` deja el id
+  menor en todos. Claves distintas mismo host:port+tipo → vale cualquiera;
+  "changed" solo si ninguna casa, y la "anterior" que se enseña es la de
+  `addedAt` más reciente (igual en todos). Aceptar un changed borra todo el
+  host:port (replaceAll), que es más que "mismo tipo".
+- Riesgo que queda: el servidor puede **reenviar una versión vieja** sellada de
+  una entrada que se borró (resucitar una clave reemplazada). Sin versión
+  monotónica dentro del cifrado no se detecta.
+
+## Revisión 2026-09 (arnés K12–K16, P9)
+
+- **Cola de host-key**: una conexión con OTRA clave para el mismo host:port
+  espera en `_chains`. Mientras espera, `handle.cancel` es suyo (no de
+  `_join`): cancelar la resuelve `false` ya y su `run()` no pregunta ni
+  escribe. Sin eso, al contestar el primer diálogo salía un "changed" de una
+  conexión muerta y aceptarlo borraba todas las claves del host (K12). En cola
+  también pausa sus timeouts (`onPrompt`/`onSettled` van con puerta de una vez).
+- **`client.on('close')` en ssh-service**: lee `verifier.isPending()` ANTES de
+  `cancel()` (cancel resuelve asíncrono, `wasRejected()` aún es false) y
+  rechaza ya. `closed` impide re-armar el timeout; si quitas el rechazo y dejas
+  `closed`, `connect()` no se resuelve NUNCA (el arnés se colgó así). K13.
+- **`new-key-type`**: host:port conocido solo por otros tipos. Se pide a ssh2
+  `algorithms.serverHostKey` con los tipos conocidos primero
+  (`hostKeyAlgorithms`, nombres de `ssh2/lib/protocol/constants`; ssh2 lanza
+  con un nombre que no admite). `ssh-rsa` guardado = `rsa-sha2-512/256` +
+  `ssh-rsa`. Aceptar AGREGA (no replaceAll). K14a/K14b.
+- **OS detectado**: `store:set-host-os` escribe solo `os` sobre el host en
+  disco bajo el lock de hosts; `isSealed` corre DENTRO del lock (sync marca
+  `undecryptable` dentro de `mutateRaw`). Nunca un saveHost del objeto entero
+  del renderer. K15.
+- **Port forward**: `lost()` durante `starting` se apunta en
+  `entry.lostWhileStarting` y `_run` lanza tras el listen; si no, `running` con
+  un cliente muerto. `_createSSHClient` es `async` ahora. P9.
+- **Salir**: `before-quit` hace `preventDefault()` la primera vez, espera
+  `closeAllForQuit` (espera inserts en vuelo + lock, tope 2 s, luego sync) y
+  vuelve a `app.quit()`; `quitCleanupDone` evita el bucle. Con
+  `updater:install` no se retiene (el updater lleva su quit). K16.

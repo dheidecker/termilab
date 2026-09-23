@@ -44,7 +44,8 @@ const PASS_T4 = 'frase-para-migrar-lo-legacy';
 const PASS_MAL = 'esta-no-es-la-frase-buena';
 const PASS_G = 'frase-del-que-pierde-la-carrera';
 const PASS_H = 'frase-del-que-gana-la-carrera';
-const PASSPHRASES_BOVEDA = [PASS_CUENTA, PASS_T1, PASS_T4, PASS_MAL, PASS_G, PASS_H];
+const PASS_S = 'frase-de-los-known-hosts-sincronizados';
+const PASSPHRASES_BOVEDA = [PASS_CUENTA, PASS_T1, PASS_T4, PASS_MAL, PASS_G, PASS_H, PASS_S];
 const clavesDerivadas = [];   // para T8: tampoco pueden salir
 
 // Todo lo que el proceso escribe por consola, para T8. Se sigue imprimiendo.
@@ -174,6 +175,15 @@ Module._load = function (request, parent, isMain) {
 
 // ─── 3. Servidor de sync falso ──────────────────────────────
 
+/* La lista blanca del servidor REAL, leida de su fuente: el falso rechaza con
+   400 lo mismo que el real, asi que olvidar una coleccion alli pone esto rojo. */
+const COLECCIONES_SERVIDOR = (() => {
+  const src = fs.readFileSync(path.join(ROOT, 'server', 'api', 'src', 'server.js'), 'utf-8');
+  const m = src.match(/const COLLECTIONS = \[([^\]]*)\]/);
+  if (!m) throw new Error('no encuentro COLLECTIONS en server/api/src/server.js');
+  return new Set([...m[1].matchAll(/'([^']+)'/g)].map(x => x[1]));
+})();
+
 /** Guarda lo que le suben tal cual y lo devuelve por cursor, como el real. */
 function fakeServer() {
   const rows = [];             // { cursor, record }
@@ -214,6 +224,8 @@ function fakeServer() {
       }
       if (req.method === 'POST' && url.pathname === '/v1/sync') {
         const records = (JSON.parse(raw || '{}').records) || [];
+        const fuera = records.find(r => !COLECCIONES_SERVIDOR.has(r.collection) || !r.item_id);
+        if (fuera) return json(400, { error: `registro invalido: ${fuera.collection}` });
         for (const record of records) {
           if (record.payload !== null && record.ciphertext !== null) {
             res.statusCode = 400;
@@ -372,6 +384,1012 @@ function fakeServer() {
   };
 }
 
+// ─── K. Known hosts y logs ──────────────────────────────────
+
+/**
+ * Parser de known_hosts, huella en formato OpenSSH (contra `ssh-keygen -lf`),
+ * la decision del verificador con su dialogo (aceptar sin preguntar, preguntar,
+ * 'changed', caducidad, sin ventana, dos conexiones a la vez) y el historial.
+ * El verificador se prueba con una ventana falsa propia: lo que se manda al
+ * renderer se mira aqui, no en `alRenderer`.
+ */
+async function seccionKnownHosts() {
+  const kh = require(path.join(ROOT, 'electron', 'services', 'known-hosts.js'));
+  const hostKeyService = require(path.join(ROOT, 'electron', 'services', 'host-key-service.js'));
+  const logService = require(path.join(ROOT, 'electron', 'services', 'connection-log-service.js'));
+  const storeService = require(path.join(ROOT, 'electron', 'services', 'store-service.js'));
+
+  // Claves de verdad, hechas por ssh-keygen: la huella se compara con la suya.
+  const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'termilab-kh-'));
+  const claves = {};
+  let sinKeygen = null;
+  try {
+    for (const [nombre, tipo] of [['ed', 'ed25519'], ['ed2', 'ed25519'], ['rsa', 'rsa'], ['ec', 'ecdsa']]) {
+      const file = path.join(keyDir, nombre);
+      execFileSync('ssh-keygen', ['-q', '-t', tipo, '-N', '', '-C', `arnes-${nombre}`, '-f', file], { stdio: 'pipe' });
+      const pub = fs.readFileSync(`${file}.pub`, 'utf-8').trim().split(/\s+/);
+      const lf = execFileSync('ssh-keygen', ['-lf', `${file}.pub`], { encoding: 'utf-8' }).trim().split(/\s+/)[1];
+      claves[nombre] = { type: pub[0], b64: pub[1], blob: Buffer.from(pub[1], 'base64'), lf, file: `${file}.pub` };
+    }
+  } catch (err) {
+    sinKeygen = err.message;
+  }
+
+  await check('K1 huella SHA256 identica a `ssh-keygen -lf` (ed25519, rsa, ecdsa)', () => {
+    assert.ok(!sinKeygen, `ssh-keygen no disponible: ${sinKeygen}`);
+    for (const nombre of ['ed', 'rsa', 'ec']) {
+      const c = claves[nombre];
+      assert.strictEqual(kh.fingerprint(c.blob), c.lf, `${nombre}: huella distinta de ssh-keygen`);
+      assert.ok(!c.lf.endsWith('='), 'la huella de OpenSSH no lleva relleno');
+      assert.strictEqual(kh.blobKeyType(c.blob), c.type, `${nombre}: tipo mal leido del blob`);
+    }
+  });
+
+  await check('K2 parser de known_hosts: plano, [h]:p, lista con comas; fuera hashed, @cert-authority, @revoked, basura', () => {
+    assert.ok(!sinKeygen, 'sin claves');
+    const { ed, rsa, ec } = claves;
+    const texto = [
+      '# comentario',
+      '',
+      `Web.Example.com ${ed.type} ${ed.b64} comentario libre`,
+      `[bastion.example.com]:2200 ${rsa.type} ${rsa.b64}`,
+      `a.example,10.0.0.9,[10.0.0.9]:2222 ${ec.type} ${ec.b64}`,
+      `|1|F1E1KeoE/eEWhi10WpGv4OdiO6Y=|3988QV0VE8wmZL7suNrYQLITLCg= ${ed.type} ${ed.b64}`,
+      `@cert-authority *.example.com ${ed.type} ${ed.b64}`,
+      `@revoked web.example.com ${ed.type} ${ed.b64}`,
+      `*.wild.example ${ed.type} ${ed.b64}`,
+      `cert.example ssh-ed25519-cert-v01@openssh.com ${ed.b64}`,
+      'esto no es una linea valida',
+      `mal.example ${ed.type} !!!nobase64!!!`,
+      `tipo.cruzado ${rsa.type} ${ed.b64}`,
+    ].join('\n');
+    const r = kh.parseKnownHosts(texto);
+    const got = r.entries.map(e => `${e.host}:${e.port} ${e.keyType}`);
+    assert.deepStrictEqual(got, [
+      `web.example.com:22 ${ed.type}`,
+      `bastion.example.com:2200 ${rsa.type}`,
+      `a.example:22 ${ec.type}`,
+      `10.0.0.9:22 ${ec.type}`,
+      `10.0.0.9:2222 ${ec.type}`,
+    ]);
+    assert.strictEqual(r.entries[0].fingerprint, ed.lf, 'la huella importada no es la de ssh-keygen');
+    assert.strictEqual(r.entries[0].key, ed.b64);
+    assert.deepStrictEqual(r.reasons, { hashed: 1, unsupported: 4, malformed: 3 });
+    assert.strictEqual(r.skipped, 8);
+    assert.strictEqual(kh.displayHost('Web.Example.com', 22), 'web.example.com');
+    assert.strictEqual(kh.displayHost('10.0.0.9', 2222), '[10.0.0.9]:2222');
+  });
+
+  await check('K3 importar ~/.ssh/known_hosts por IPC: cuenta y no duplica', async () => {
+    assert.ok(!sinKeygen, 'sin claves');
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'termilab-home-'));
+    fs.mkdirSync(path.join(home, '.ssh'));
+    fs.writeFileSync(path.join(home, '.ssh', 'known_hosts'), [
+      `imp.example,[imp.example]:2022 ${claves.ed.type} ${claves.ed.b64}`,
+      `imp.example ${claves.rsa.type} ${claves.rsa.b64}`,
+      `|1|abc=|def= ${claves.ed.type} ${claves.ed.b64}`,
+      `@cert-authority * ${claves.ed.type} ${claves.ed.b64}`,
+    ].join('\n'));
+    const realHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const primera = await bridge.knownHosts.importFromSsh();
+      assert.strictEqual(primera.imported, 3, `importo ${primera.imported}, esperaba 3`);
+      assert.strictEqual(primera.skipped, 2);
+      assert.deepStrictEqual(primera.reasons, { hashed: 1, unsupported: 1, malformed: 0 });
+      const segunda = await bridge.knownHosts.importFromSsh();
+      assert.strictEqual(segunda.imported, 0, 'la segunda importacion duplico entradas');
+      assert.strictEqual(segunda.duplicates, 3);
+      const lista = await bridge.knownHosts.list();
+      assert.strictEqual(lista.length, 3);
+      assert.ok(lista.every(e => e.id && e.addedAt && e.fingerprint.startsWith('SHA256:')), 'entradas incompletas');
+      assert.ok(await bridge.knownHosts.delete(lista[0].id));
+      assert.strictEqual((await bridge.knownHosts.list()).length, 2);
+    } finally {
+      process.env.HOME = realHome;
+      await storeService.writeRaw('known-hosts', []);
+    }
+  });
+
+  // Ventana falsa: recoge lo que el verificador manda y deja contestar.
+  const enviados = [];
+  let vivo = true;
+  const ventana = {
+    isDestroyed: () => !vivo,
+    webContents: { send: (canal, datos) => enviados.push([canal, datos]), isDestroyed: () => !vivo },
+  };
+  const ventanaOriginal = hostKeyService.mainWindow;
+  hostKeyService.setMainWindow(ventana);
+  const prompts = () => enviados.filter(([c]) => c === 'ssh:host-key-prompt').map(([, d]) => d);
+  const cancels = () => enviados.filter(([c]) => c === 'ssh:host-key-prompt-cancel').map(([, d]) => d);
+  const esperaPrompt = async (n) => {
+    for (let i = 0; i < 200 && prompts().length < n; i++) await new Promise(r => setTimeout(r, 5));
+    assert.ok(prompts().length >= n, `no llego el aviso n.${n}`);
+    return prompts()[n - 1];
+  };
+
+  await check('K4 verificador: desconocido pregunta; aceptar guarda; la siguiente vez acepta sin preguntar', async () => {
+    assert.ok(!sinKeygen, 'sin claves');
+    enviados.length = 0;
+    const v = hostKeyService.verify('Srv.Example', 22, claves.ed.blob);
+    const p = await esperaPrompt(1);
+    assert.strictEqual(p.reason, 'unknown');
+    assert.strictEqual(p.host, 'srv.example');
+    assert.strictEqual(p.port, 22);
+    assert.strictEqual(p.keyType, 'ssh-ed25519');
+    assert.strictEqual(p.fingerprint, claves.ed.lf);
+    assert.ok(p.requestId && !('previousFingerprint' in p));
+    assert.strictEqual(await bridge.ssh.respondHostKey(p.requestId, true), true);
+    assert.strictEqual(await v, true, 'aceptado pero el verificador dijo que no');
+    const guardadas = await storeService.getKnownHosts();
+    assert.strictEqual(guardadas.length, 1);
+    assert.strictEqual(guardadas[0].fingerprint, claves.ed.lf);
+
+    enviados.length = 0;
+    assert.strictEqual(await hostKeyService.verify('srv.example', 22, claves.ed.blob), true);
+    assert.strictEqual(enviados.length, 0, 'con la clave conocida no debe preguntar nada');
+    // Otro puerto es otro host
+    const otro = hostKeyService.verify('srv.example', 2222, claves.ed.blob);
+    const p2 = await esperaPrompt(1);
+    assert.strictEqual(p2.reason, 'unknown', 'srv.example:2222 no es srv.example:22');
+    await bridge.ssh.respondHostKey(p2.requestId, false);
+    assert.strictEqual(await otro, false);
+  });
+
+  await check('K5 verificador: clave cambiada pregunta con "changed" y la huella vieja; rechazar no toca el almacen', async () => {
+    assert.ok(!sinKeygen, 'sin claves');
+    enviados.length = 0;
+    const v = hostKeyService.verify('srv.example', 22, claves.ed2.blob);
+    const p = await esperaPrompt(1);
+    assert.strictEqual(p.reason, 'changed');
+    assert.strictEqual(p.previousFingerprint, claves.ed.lf);
+    assert.strictEqual(p.fingerprint, claves.ed2.lf);
+    await bridge.ssh.respondHostKey(p.requestId, false);
+    assert.strictEqual(await v, false, 'rechazada pero paso');
+    const guardadas = await storeService.getKnownHosts();
+    assert.strictEqual(guardadas.length, 1);
+    assert.strictEqual(guardadas[0].fingerprint, claves.ed.lf, 'rechazar cambio la clave guardada');
+
+    // Aceptar el cambio sustituye (y se lleva los otros tipos de ese host:puerto)
+    await storeService.saveKnownHost({ host: 'srv.example', port: 22, keyType: claves.rsa.type, key: claves.rsa.b64, fingerprint: claves.rsa.lf });
+    enviados.length = 0;
+    const v2 = hostKeyService.verify('srv.example', 22, claves.ed2.blob);
+    const p2 = await esperaPrompt(1);
+    await bridge.ssh.respondHostKey(p2.requestId, true);
+    assert.strictEqual(await v2, true);
+    const tras = await storeService.getKnownHosts();
+    assert.deepStrictEqual(tras.map(e => e.fingerprint), [claves.ed2.lf], 'la identidad vieja sigue guardada');
+
+    // Un tipo distinto del conocido tampoco es "unknown": 'new-key-type' (ver K14)
+    enviados.length = 0;
+    const v3 = hostKeyService.verify('srv.example', 22, claves.ec.blob);
+    const p3 = await esperaPrompt(1);
+    assert.strictEqual(p3.reason, 'new-key-type');
+    assert.deepStrictEqual(p3.knownTypes, ['ssh-ed25519']);
+    await bridge.ssh.respondHostKey(p3.requestId, false);
+    assert.strictEqual(await v3, false);
+  });
+
+  await check('K6 verificador: sin respuesta caduca y rechaza (y cierra el dialogo)', async () => {
+    assert.ok(!sinKeygen, 'sin claves');
+    assert.strictEqual(hostKeyService.PROMPT_TIMEOUT_MS, 120000, 'la caducidad no es de 120 s');
+    const real = hostKeyService.timeoutMs;
+    hostKeyService.timeoutMs = 60;
+    enviados.length = 0;
+    try {
+      const t0 = Date.now();
+      const ok = await hostKeyService.verify('lento.example', 22, claves.rsa.blob);
+      assert.strictEqual(ok, false, 'sin respuesta acepto');
+      assert.ok(Date.now() - t0 >= 50, 'rechazo antes de caducar');
+      const p = prompts()[0];
+      assert.ok(p, 'no pregunto');
+      assert.deepStrictEqual(cancels().map(c => c.requestId), [p.requestId], 'no aviso al renderer de que caduco');
+      assert.strictEqual(await bridge.ssh.respondHostKey(p.requestId, true), false, 'una respuesta tardia no puede valer');
+      assert.ok(!(await storeService.getKnownHosts()).some(e => e.host === 'lento.example'), 'la respuesta tardia guardo la clave');
+    } finally {
+      hostKeyService.timeoutMs = real;
+    }
+  });
+
+  await check('K7 verificador: sin ventana rechaza; dos conexiones a la vez comparten un dialogo', async () => {
+    assert.ok(!sinKeygen, 'sin claves');
+    vivo = false;
+    enviados.length = 0;
+    assert.strictEqual(await hostKeyService.verify('nadie.example', 22, claves.rsa.blob), false, 'sin ventana acepto');
+    assert.strictEqual(enviados.length, 0);
+    vivo = true;
+
+    enviados.length = 0;
+    const a = hostKeyService.verify('par.example', 22, claves.rsa.blob);
+    const p = await esperaPrompt(1);
+    const b = hostKeyService.verify('par.example', 22, claves.rsa.blob);
+    await new Promise(r => setTimeout(r, 30));
+    assert.strictEqual(prompts().length, 1, 'la segunda conexion abrio otro dialogo');
+    await bridge.ssh.respondHostKey(p.requestId, true);
+    assert.deepStrictEqual(await Promise.all([a, b]), [true, true]);
+
+    // Una conexion que muere mientras pregunta cierra su dialogo
+    enviados.length = 0;
+    const handle = { cancel: () => {} };
+    const c = hostKeyService.verify('muere.example', 22, claves.rsa.blob, { handle });
+    const pc = await esperaPrompt(1);
+    handle.cancel();
+    assert.strictEqual(await c, false);
+    assert.deepStrictEqual(cancels().map(x => x.requestId), [pc.requestId]);
+  });
+
+  await check('K8 createVerifier habla el hostVerifier(key, verify) asincrono de ssh2', async () => {
+    assert.ok(!sinKeygen, 'sin claves');
+    enviados.length = 0;
+    const pausas = [];
+    const v = hostKeyService.createVerifier('par.example', 22, {
+      onPrompt: () => pausas.push('prompt'), onSettled: () => pausas.push('settled'),
+    });
+    const r1 = await new Promise(res => { assert.strictEqual(v.hostVerifier(claves.rsa.blob, res), undefined); });
+    assert.strictEqual(r1, true);
+    assert.deepStrictEqual(pausas, [], 'clave conocida: no hay nada que pausar');
+
+    const v2 = hostKeyService.createVerifier('par.example', 22, {
+      onPrompt: () => pausas.push('prompt'), onSettled: () => pausas.push('settled'),
+    });
+    const r2p = new Promise(res => v2.hostVerifier(claves.ed.blob, res));
+    const p = await esperaPrompt(1);
+    await bridge.ssh.respondHostKey(p.requestId, false);
+    assert.strictEqual(await r2p, false);
+    assert.ok(v2.wasRejected(), 'wasRejected() no lo sabe: el error no dira "Host key rejected"');
+    assert.deepStrictEqual(pausas, ['prompt', 'settled'], 'el timeout de la conexion no se pausa/reanuda');
+  });
+
+  await check('K12 una conexion en cola tras otro dialogo del mismo host:port se cancela: no pregunta ni escribe al llegarle el turno', async () => {
+    assert.ok(!sinKeygen, 'sin claves');
+    await storeService.writeRaw('known-hosts', []);
+    enviados.length = 0;
+    const a = hostKeyService.verify('cola.example', 22, claves.ed.blob);
+    const pa = await esperaPrompt(1);
+    const pausas = [];
+    const handle = { cancel: () => {} };
+    const b = hostKeyService.verify('cola.example', 22, claves.ed2.blob, {
+      handle, onPrompt: () => pausas.push('prompt'), onSettled: () => pausas.push('settled'),
+    });
+    await new Promise(r => setTimeout(r, 20));
+    assert.strictEqual(prompts().length, 1, 'la segunda clave abrio su dialogo sin esperar al primero');
+    assert.deepStrictEqual(pausas, ['prompt'], 'en cola no pausa el timeout de su conexion');
+    handle.cancel();                         // la conexion en cola muere
+    const rb = await Promise.race([b, new Promise(r => setTimeout(() => r('colgada'), 200))]);
+    assert.strictEqual(rb, false, `cancelar en cola no la resolvio (${rb})`);
+    assert.deepStrictEqual(pausas, ['prompt', 'settled']);
+    await bridge.ssh.respondHostKey(pa.requestId, true);
+    assert.strictEqual(await a, true);
+    await new Promise(r => setTimeout(r, 50));
+    assert.strictEqual(prompts().length, 1, 'la conexion muerta pregunto "changed" al llegarle el turno');
+    const kh = (await storeService.getKnownHosts()).filter(e => e.host === 'cola.example');
+    assert.deepStrictEqual(kh.map(e => e.fingerprint), [claves.ed.lf], 'la conexion muerta toco el almacen');
+
+    // Una en cola que sigue viva: al llegarle el turno se decide contra el almacen
+    enviados.length = 0;
+    const c = hostKeyService.verify('cola2.example', 22, claves.ed.blob);
+    const pc = await esperaPrompt(1);
+    const d = hostKeyService.verify('cola2.example', 22, claves.ed2.blob, { handle: { cancel: () => {} } });
+    await bridge.ssh.respondHostKey(pc.requestId, true);
+    const pd = await esperaPrompt(2);
+    assert.strictEqual(pd.reason, 'changed');
+    await bridge.ssh.respondHostKey(pd.requestId, false);
+    assert.deepStrictEqual(await Promise.all([c, d]), [true, false]);
+    await storeService.writeRaw('known-hosts', []);
+  });
+
+  await check('K14a clave de un TIPO nuevo para un host:port conocido: "new-key-type" con las huellas guardadas; aceptar AGREGA', async () => {
+    assert.ok(!sinKeygen, 'sin claves');
+    await storeService.writeRaw('known-hosts', []);
+    await storeService.saveKnownHost({ host: 'tipo.example', port: 22, keyType: claves.ed.type, key: claves.ed.b64, fingerprint: claves.ed.lf });
+    enviados.length = 0;
+    const v = hostKeyService.verify('tipo.example', 22, claves.ec.blob);
+    const p = await esperaPrompt(1);
+    assert.strictEqual(p.reason, 'new-key-type', `un tipo nuevo salio como "${p.reason}" (dialogo rutinario)`);
+    assert.deepStrictEqual(p.knownFingerprints, [{ keyType: 'ssh-ed25519', fingerprint: claves.ed.lf }]);
+    assert.strictEqual(p.fingerprint, claves.ec.lf);
+    await bridge.ssh.respondHostKey(p.requestId, true);
+    assert.strictEqual(await v, true);
+    const tras = (await storeService.getKnownHosts()).map(e => e.fingerprint).sort();
+    assert.deepStrictEqual(tras, [claves.ed.lf, claves.ec.lf].sort(), 'aceptar un tipo nuevo borro los otros');
+    enviados.length = 0;
+    assert.strictEqual(await hostKeyService.verify('tipo.example', 22, claves.ec.blob), true);
+    assert.strictEqual(await hostKeyService.verify('tipo.example', 22, claves.ed.blob), true);
+    assert.strictEqual(enviados.length, 0);
+    // Nada guardado para el host:port: sigue siendo "unknown", sin campos de otro caso
+    const w = hostKeyService.verify('nuevo.example', 22, claves.ec.blob);
+    const q = await esperaPrompt(1);
+    assert.strictEqual(q.reason, 'unknown');
+    assert.ok(!('knownFingerprints' in q) && !('knownTypes' in q));
+    await bridge.ssh.respondHostKey(q.requestId, false);
+    assert.strictEqual(await w, false);
+    await storeService.writeRaw('known-hosts', []);
+  });
+
+  hostKeyService.setMainWindow(ventanaOriginal);
+  await storeService.writeRaw('known-hosts', []);
+
+  await check('K9 historial: abre, cierra, sin secretos, tope de 1000 y cierre sincrono al salir', async () => {
+    await storeService.writeRaw('connection-logs', []);
+    await storeService.writeRaw('hosts', [{ id: 'h-log', label: 'Guardado', hostname: 'g.example', port: 22, username: 'derek' }]);
+    const a = logService.start({ type: 'ssh', hostId: 'h-log', label: 'Guardado', hostname: 'g.example', port: 22, username: 'derek', password: SECRET });
+    const b = logService.start({ type: 'ssh', hostId: 'tirado-quick-connect', label: 'x@y', hostname: 'y.example', port: 2222, username: 'x' });
+    const c = logService.start({ type: 'local' });
+    await logService.end(a);
+    await logService.end(a);            // idempotente
+    await logService.setOs(b, 'debian');
+    let lista = await bridge.logs.list();
+    const porId = Object.fromEntries(lista.map(e => [e.id, e]));
+    assert.ok(porId[a].endedAt && porId[a].startedAt <= porId[a].endedAt, 'no quedo la hora de fin');
+    assert.strictEqual(porId[a].hostId, 'h-log');
+    assert.strictEqual(porId[b].hostId, null, 'un host que no esta guardado no puede llevar hostId');
+    assert.strictEqual(porId[b].os, 'debian');
+    assert.strictEqual(porId[c].label, 'Local Terminal');
+    assert.strictEqual(porId[c].type, 'local');
+    assert.ok(!('hostname' in porId[c]));
+    assert.ok(porId[a].deviceName, 'sin nombre de dispositivo');
+    assert.ok(!JSON.stringify(lista).includes(SECRET), 'la contrasena acabo en el historial');
+    const permitidos = new Set(['id', 'type', 'hostId', 'label', 'hostname', 'port', 'username', 'os', 'email', 'deviceName', 'startedAt', 'endedAt', 'updatedAt']);
+    for (const e of lista) for (const k of Object.keys(e)) assert.ok(permitidos.has(k), `campo inesperado en el historial: ${k}`);
+
+    // Salir: lo abierto se cierra sin esperar a nada
+    assert.strictEqual(logService.closeAllSync(), 2);
+    lista = JSON.parse(fs.readFileSync(path.join(currentUserData, 'data', 'connection-logs.json'), 'utf-8'));
+    assert.ok(lista.every(e => e.endedAt), 'quedaron sesiones abiertas tras before-quit');
+    logService._closedForQuit = false;
+
+    // Tope: 1000, se cae lo mas viejo
+    const muchas = Array.from({ length: 1003 }, (_, i) => ({ id: `v${i}`, type: 'local', label: 'Local Terminal', startedAt: new Date(i * 1000).toISOString() }));
+    await storeService.writeRaw('connection-logs', muchas.slice(0, 1000));
+    for (const e of muchas.slice(1000)) await storeService.addConnectionLog(e, logService.MAX_ENTRIES);
+    lista = await bridge.logs.list();
+    assert.strictEqual(lista.length, 1000);
+    assert.strictEqual(lista[0].id, 'v3', 'no se cayo lo mas viejo');
+    assert.strictEqual(lista[999].id, 'v1002');
+
+    await bridge.logs.clear();
+    assert.deepStrictEqual(await bridge.logs.list(), []);
+    await storeService.writeRaw('hosts', []);
+  });
+
+  await check('K11 de punta a punta contra un servidor ssh2 local: rechazar corta, aceptar conecta, el timeout se pausa', async () => {
+    assert.ok(!sinKeygen, 'sin claves');
+    const { Server } = require('ssh2');
+    const sshService = require(path.join(ROOT, 'electron', 'services', 'ssh-service.js'));
+    const servidor = new Server({ hostKeys: [fs.readFileSync(claves.ed.file.replace(/\.pub$/, ''))] }, (cliente) => {
+      cliente.on('authentication', ctx => ctx.accept());
+      cliente.on('error', () => {});
+      cliente.on('ready', () => {
+        cliente.on('session', (aceptar) => {
+          const sesion = aceptar();
+          sesion.on('pty', (ok) => ok && ok());
+          sesion.on('shell', (ok) => { const st = ok(); st.write('hola\r\n'); });
+          sesion.on('exec', (ok) => { const st = ok(); st.exit(0); st.end(); });
+        });
+      });
+    });
+    await new Promise(r => servidor.listen(0, '127.0.0.1', r));
+    const puerto = servidor.address().port;
+
+    // Contesta sola cada aviso, tras `demora` ms, con `respuesta`.
+    let respuesta = false;
+    let demora = 20;
+    const vistos = [];
+    hostKeyService.setMainWindow({
+      isDestroyed: () => false,
+      webContents: {
+        isDestroyed: () => false,
+        send: (canal, datos) => {
+          if (canal !== 'ssh:host-key-prompt') return;
+          vistos.push(datos);
+          setTimeout(() => hostKeyService.respond(datos.requestId, respuesta), demora);
+        },
+      },
+    });
+    await storeService.writeRaw('known-hosts', []);
+    await storeService.writeRaw('connection-logs', []);
+    const cfg = { host: '127.0.0.1', port: puerto, username: 'derek', password: SECRET, label: 'local ssh2', timeout: 300 };
+    try {
+      await assert.rejects(sshService.connect(cfg), /Host key rejected/, 'rechazar la clave no dio "Host key rejected"');
+      assert.strictEqual(vistos.length, 1);
+      assert.strictEqual(vistos[0].fingerprint, claves.ed.lf, 'la huella del aviso no es la del servidor');
+      assert.strictEqual((await storeService.getKnownHosts()).length, 0);
+
+      // Acepta tarde (600 ms > timeout de 300 ms): la espera del usuario no cuenta.
+      respuesta = true;
+      demora = 600;
+      const sessionId = await sshService.connect(cfg);
+      assert.ok(sshService.isConnected(sessionId), 'aceptada pero sin sesion');
+      assert.strictEqual(vistos.length, 2);
+      const kh = await storeService.getKnownHosts();
+      assert.deepStrictEqual(kh.map(e => [e.host, e.port, e.fingerprint]), [['127.0.0.1', puerto, claves.ed.lf]]);
+      await sshService.disconnect(sessionId);
+
+      // Ya conocida: conecta sin preguntar
+      const otra = await sshService.connect(cfg);
+      assert.strictEqual(vistos.length, 2, 'con la clave guardada volvio a preguntar');
+      await sshService.disconnect(otra);
+      await new Promise(r => setTimeout(r, 100));
+      const logs = await storeService.getConnectionLogs();
+      assert.strictEqual(logs.length, 2, `el historial tiene ${logs.length} entradas, esperaba 2 (la rechazada no cuenta)`);
+      assert.ok(logs.every(e => e.endedAt && e.type === 'ssh' && e.port === puerto && e.username === 'derek'));
+      assert.ok(!JSON.stringify(logs).includes(SECRET), 'la contrasena acabo en el historial');
+    } finally {
+      await sshService.disconnectAll();
+      servidor.close();
+      hostKeyService.setMainWindow(ventanaOriginal);
+      await storeService.writeRaw('known-hosts', []);
+      await storeService.writeRaw('connection-logs', []);
+    }
+  });
+
+  await check('K13 el servidor corta con el dialogo abierto: falla ya, con la causa real (no "timed out" al rearmar el timeout)', async () => {
+    assert.ok(!sinKeygen, 'sin claves');
+    const { Server } = require('ssh2');
+    const sshService = require(path.join(ROOT, 'electron', 'services', 'ssh-service.js'));
+    const lados = [];
+    const servidor = new Server({ hostKeys: [fs.readFileSync(claves.ed.file.replace(/\.pub$/, ''))] }, (cliente) => {
+      lados.push(cliente);
+      cliente.on('error', () => {});
+    });
+    await new Promise(r => servidor.listen(0, '127.0.0.1', r));
+    const puerto = servidor.address().port;
+    const vistos = [];
+    const cerrados = [];
+    hostKeyService.setMainWindow({
+      isDestroyed: () => false,
+      webContents: {
+        isDestroyed: () => false,
+        send: (canal, datos) => {
+          if (canal === 'ssh:host-key-prompt') {
+            vistos.push(datos);
+            // Mientras el usuario lee: el servidor tira el socket
+            setTimeout(() => lados.at(-1)._sock.destroy(), 20);
+          }
+          if (canal === 'ssh:host-key-prompt-cancel') cerrados.push(datos);
+        },
+      },
+    });
+    await storeService.writeRaw('known-hosts', []);
+    try {
+      const t0 = Date.now();
+      const err = await Promise.race([
+        sshService.connect({ host: '127.0.0.1', port: puerto, username: 'derek', password: SECRET, label: 'corta', timeout: 1500 })
+          .then(() => null, e => e),
+        new Promise(r => setTimeout(() => r(new Error('colgada: connect no se resolvio nunca')), 4000)),
+      ]);
+      const ms = Date.now() - t0;
+      assert.ok(err, 'conecto con el socket cerrado');
+      assert.ok(!/colgada/.test(err.message), err.message);
+      assert.strictEqual(vistos.length, 1, 'no llego a preguntar');
+      assert.ok(!/timed out/i.test(err.message), `causa equivocada: ${err.message}`);
+      assert.match(err.message, /closed|reset/i);
+      assert.ok(ms < 1000, `tardo ${ms} ms en fallar (esperaba el timeout rearmado)`);
+      assert.deepStrictEqual(cerrados.map(c => c.requestId), [vistos[0].requestId], 'el dialogo no se cerro');
+      assert.strictEqual(await hostKeyService.respond(vistos[0].requestId, true), false, 'una respuesta tardia valio');
+      assert.strictEqual((await storeService.getKnownHosts()).length, 0, 'la conexion muerta guardo su clave');
+    } finally {
+      servidor.close();
+      hostKeyService.setMainWindow(ventanaOriginal);
+    }
+  });
+
+  await check('K14b se piden primero los tipos ya conocidos (serverHostKey): un servidor con ed25519+ecdsa conocido por ecdsa no pregunta (ssh y port forward)', async () => {
+    assert.ok(!sinKeygen, 'sin claves');
+    const { DEFAULT_SERVER_HOST_KEY: DEF, SUPPORTED_SERVER_HOST_KEY: SUP } = require('ssh2/lib/protocol/constants');
+    const e = (keyType) => ({ host: 'a.example', port: 22, keyType });
+    assert.strictEqual(kh.hostKeyAlgorithms([], 'a.example', 22, DEF, SUP), null, 'sin nada conocido no hay que tocar la lista');
+    assert.strictEqual(kh.hostKeyAlgorithms([e('sk-ssh-ed25519@openssh.com')], 'a.example', 22, DEF, SUP), null);
+    const ec = kh.hostKeyAlgorithms([e('ecdsa-sha2-nistp256')], 'A.example', 22, DEF, SUP);
+    assert.strictEqual(ec[0], 'ecdsa-sha2-nistp256');
+    assert.deepStrictEqual(ec.slice().sort(), DEF.slice().sort(), 'la lista no conserva el resto de algoritmos');
+    const rsa = kh.hostKeyAlgorithms([e('ssh-rsa'), e('ssh-ed25519')], 'a.example', 22, DEF, SUP);
+    assert.deepStrictEqual(rsa.slice(0, 4), ['rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa', 'ssh-ed25519']);
+    assert.ok(rsa.every(a => SUP.includes(a)), 'nombre que ssh2 no admite');
+    assert.strictEqual(kh.hostKeyAlgorithms([e('ssh-rsa')], 'a.example', 2222, DEF, SUP), null, 'otro puerto es otro host');
+
+    const { Server } = require('ssh2');
+    const sshService = require(path.join(ROOT, 'electron', 'services', 'ssh-service.js'));
+    const pf = require(path.join(ROOT, 'electron', 'services', 'port-forward-service.js'));
+    const privada = n => fs.readFileSync(claves[n].file.replace(/\.pub$/, ''));
+    const servidor = new Server({ hostKeys: [privada('ed'), privada('ec')] }, (cliente) => {
+      cliente.on('error', () => {});
+      cliente.on('authentication', ctx => ctx.accept());
+      cliente.on('ready', () => {
+        cliente.on('session', (aceptar) => {
+          const sesion = aceptar();
+          sesion.on('pty', (ok) => ok && ok());
+          sesion.on('shell', (ok) => { ok(); });
+          sesion.on('exec', (ok) => { const st = ok(); st.exit(0); st.end(); });
+        });
+      });
+    });
+    await new Promise(r => servidor.listen(0, '127.0.0.1', r));
+    const puerto = servidor.address().port;
+    const vistos = [];
+    hostKeyService.setMainWindow({
+      isDestroyed: () => false,
+      webContents: {
+        isDestroyed: () => false,
+        send: (canal, datos) => {
+          if (canal !== 'ssh:host-key-prompt') return;
+          vistos.push(datos);
+          setTimeout(() => hostKeyService.respond(datos.requestId, false), 5);
+        },
+      },
+    });
+    await storeService.writeRaw('known-hosts', []);
+    await storeService.saveKnownHost({ host: '127.0.0.1', port: puerto, keyType: claves.ec.type, key: claves.ec.b64, fingerprint: claves.ec.lf });
+    const agente = process.env.SSH_AUTH_SOCK;
+    delete process.env.SSH_AUTH_SOCK;
+    try {
+      const id = await sshService.connect({ host: '127.0.0.1', port: puerto, username: 'derek', password: SECRET, label: 'dos claves', timeout: 3000 });
+      assert.deepStrictEqual(vistos.map(v => v.reason), [], 'ssh-service: el servidor presento un tipo que no conocemos');
+      await sshService.disconnect(id);
+      const cliente = await pf._createSSHClient({ host: '127.0.0.1', port: puerto, username: 'derek', password: SECRET, label: 'dos claves', timeout: 3000 });
+      assert.deepStrictEqual(vistos.map(v => v.reason), [], 'port forward: el servidor presento un tipo que no conocemos');
+      cliente.end();
+    } finally {
+      if (agente !== undefined) process.env.SSH_AUTH_SOCK = agente;
+      await sshService.disconnectAll();
+      servidor.close();
+      hostKeyService.setMainWindow(ventanaOriginal);
+      await storeService.writeRaw('known-hosts', []);
+      await new Promise(r => setTimeout(r, 50));
+      await storeService.writeRaw('connection-logs', []);
+    }
+  });
+
+  await check('K15 OS detectado: main cambia SOLO `os` sobre lo que hay en disco (bajo lock), no-op si no cambia, nunca en un host sellado', async () => {
+    const syncService = require(path.join(ROOT, 'electron', 'services', 'sync-service.js'));
+    const hostsJson = path.join(currentUserData, 'data', 'hosts.json');
+    const SELLADO = { id: 'h-os-sellado', label: 'Sellado', hostname: 's.example', username: 'x', authType: 'password' };
+    await storeService.writeRaw('hosts', [{ id: 'h-os', label: 'Viejo', hostname: 'o.example', username: 'derek', authType: 'password', password: 'vieja' }, SELLADO]);
+    // Un pull de sync reescribe hosts.json; la copia del renderer sigue siendo la vieja
+    await storeService.writeRaw('hosts', [{ id: 'h-os', label: 'Nuevo', hostname: 'o.example', username: 'derek', authType: 'password', password: 'nueva' }, SELLADO]);
+    const r = await bridge.store.setHostOs('h-os', 'debian');
+    assert.ok(r && r.id === 'h-os' && r.os === 'debian', 'no devolvio el host actualizado');
+    const enDisco = JSON.parse(fs.readFileSync(hostsJson, 'utf-8')).find(h => h.id === 'h-os');
+    assert.strictEqual(enDisco.password, 'nueva', 'el guardado del OS piso la contrasena recien bajada');
+    assert.strictEqual(enDisco.label, 'Nuevo');
+    assert.strictEqual(enDisco.os, 'debian');
+    assert.ok(enDisco.updatedAt, 'sin updatedAt: sync no lo veria como edicion');
+    const antes = fs.readFileSync(hostsJson, 'utf-8');
+    assert.strictEqual(await bridge.store.setHostOs('h-os', 'debian'), null, 'mismo os: no es no-op');
+    assert.strictEqual(await bridge.store.setHostOs('no-existe', 'debian'), null, 'quick connect (id tirado) no es no-op');
+    await syncService._load();
+    const previo = syncService.state.undecryptable;
+    syncService.state.undecryptable = { 'hosts/h-os-sellado': true };
+    try {
+      assert.strictEqual(await bridge.store.setHostOs('h-os-sellado', 'ubuntu'), null, 'escribio en un host sellado');
+    } finally {
+      syncService.state.undecryptable = previo;
+    }
+    assert.strictEqual(fs.readFileSync(hostsJson, 'utf-8'), antes, 'hosts.json cambio sin motivo (mismo os o sellado)');
+    const ctx = fs.readFileSync(path.join(ROOT, 'src', 'contexts', 'AppContext.jsx'), 'utf-8');
+    assert.ok(/store\.setHostOs\(hostId, os\)/.test(ctx), 'el renderer no usa store.setHostOs');
+    assert.ok(!/saveHost\(\{\s*\.\.\.fresh,\s*os\s*\}\)/.test(ctx), 'el renderer sigue guardando el host entero con el os');
+    await storeService.writeRaw('hosts', []);
+  });
+
+  await check('K16 salir: el cierre del historial espera a lo que esta en vuelo, va bajo el lock y tiene tope duro', async () => {
+    const logsJson = path.join(currentUserData, 'data', 'connection-logs.json');
+    await storeService.writeRaw('connection-logs', []);
+    logService._closedForQuit = false;
+    const a = logService.start({ type: 'local' });
+    await logService._after(a);                       // A ya en disco, abierta
+    const b = logService.start({ type: 'ssh', hostname: 'b.example', port: 22, username: 'x', label: 'b' });   // B en vuelo
+    const n = await logService.closeAllForQuit(2000);
+    await new Promise(r => setTimeout(r, 50));
+    const porId = Object.fromEntries(JSON.parse(fs.readFileSync(logsJson, 'utf-8')).map(e => [e.id, e]));
+    assert.ok(porId[a] && porId[a].endedAt, 'A se quedo sin hora de fin');
+    assert.ok(porId[b], 'la entrada en vuelo se perdio');
+    assert.ok(porId[b].endedAt, 'la entrada en vuelo al salir se quedo sin hora de fin');
+    assert.strictEqual(n, 2);
+
+    // Con el lock tomado por otro (una escritura colgada), salir no se cuelga
+    logService._closedForQuit = false;
+    const c = logService.start({ type: 'local' });
+    await logService._after(c);
+    await storeService._acquireLock('connection-logs');
+    const t0 = Date.now();
+    try {
+      await logService.closeAllForQuit(200);
+    } finally {
+      storeService._releaseLock('connection-logs');
+    }
+    assert.ok(Date.now() - t0 < 1000, `salir espero ${Date.now() - t0} ms al lock`);
+    assert.ok(JSON.parse(fs.readFileSync(logsJson, 'utf-8')).find(e => e.id === c).endedAt, 'tras el tope no se estampo');
+
+    // main.js retiene el primer quit (preventDefault), una sola vez, y usa closeAllForQuit
+    const mainSrc = fs.readFileSync(path.join(ROOT, 'electron', 'main.js'), 'utf-8');
+    const bq = mainSrc.slice(mainSrc.indexOf("app.on('before-quit'"));
+    assert.ok(/if \(quitCleanupDone\) return;/.test(bq) && /quitCleanupDone = true;/.test(bq), 'before-quit sin guarda: bucle de quit');
+    assert.ok(/event\.preventDefault\(\)/.test(bq) && /closeAllForQuit\(/.test(bq) && /app\.quit\(\)/.test(bq), 'before-quit no espera al historial');
+    logService._closedForQuit = false;
+    await storeService.writeRaw('connection-logs', []);
+  });
+
+  await check('K10 known_hosts (cifrada) y connection_logs se sincronizan, en los dos lados', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'electron', 'services', 'sync-service.js'), 'utf-8');
+    assert.ok(/known_hosts: 'known-hosts'/.test(src), 'sync-service no mapea known_hosts');
+    assert.ok(/connection_logs: 'connection-logs'/.test(src), 'sync-service no mapea connection_logs');
+    assert.ok(/ENCRYPTED_COLLECTIONS = new Set\(\[[^\]]*'known_hosts'/.test(src), 'known_hosts no va cifrada por fila');
+    for (const col of ['known_hosts', 'connection_logs']) {
+      assert.ok(COLECCIONES_SERVIDOR.has(col), `el servidor no admite ${col}`);
+    }
+  });
+
+  fs.rmSync(keyDir, { recursive: true, force: true });
+}
+
+// ─── P. Port forwarding ─────────────────────────────────────
+
+/**
+ * Reglas con el modelo nuevo (migracion desde la forma vieja), start/stop por
+ * id de regla, y tuneles DE VERDAD contra un ssh2.Server local: -L y -D (SOCKS5
+ * CONNECT) hasta un servidor eco TCP, y -R con el servidor ssh abriendo el
+ * puerto. Las credenciales las resuelve main desde el hostId: el renderer
+ * nunca las manda.
+ */
+async function seccionPortForward() {
+  const net = require('net');
+  const { Server, utils } = require('ssh2');
+  const pf = require(path.join(ROOT, 'electron', 'services', 'port-forward-service.js'));
+  const hostKeyService = require(path.join(ROOT, 'electron', 'services', 'host-key-service.js'));
+  const storeService = require(path.join(ROOT, 'electron', 'services', 'store-service.js'));
+  const syncService = require(path.join(ROOT, 'electron', 'services', 'sync-service.js'));
+  const PF_PASS = 'contrasena-del-tunel-no-debe-salir';
+
+  const puertoLibre = () => new Promise((res, rej) => {
+    const s = net.createServer();
+    s.once('error', rej);
+    s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); });
+  });
+  // Lee exactamente n bytes de un socket (acumulando), con tope de tiempo.
+  const lector = (sock) => {
+    let buf = Buffer.alloc(0);
+    let espera = null;
+    sock.on('data', (d) => { buf = Buffer.concat([buf, d]); if (espera) espera(); });
+    return (n, ms = 3000) => new Promise((res, rej) => {
+      const t = setTimeout(() => { espera = null; rej(new Error(`esperaba ${n} bytes, llegaron ${buf.length}`)); }, ms);
+      const mira = () => {
+        if (buf.length < n) return;
+        clearTimeout(t);
+        espera = null;
+        const out = buf.subarray(0, n);
+        buf = buf.subarray(n);
+        res(out);
+      };
+      espera = mira;
+      mira();
+    });
+  };
+  const conecta = (port) => new Promise((res, rej) => {
+    const c = net.connect(port, '127.0.0.1');
+    c.once('connect', () => res(c));
+    c.once('error', rej);
+  });
+  const eco = async (port, texto) => {
+    const c = await conecta(port);
+    const leer = lector(c);
+    c.write(texto);
+    const vuelta = (await leer(Buffer.byteLength(texto))).toString();
+    c.destroy();
+    return vuelta;
+  };
+
+  // Servidor eco (el "db:5432" del otro lado del tunel)
+  const servidorEco = net.createServer(s => { s.on('error', () => {}); s.pipe(s); });
+  await new Promise(r => servidorEco.listen(0, '127.0.0.1', r));
+  const puertoEco = servidorEco.address().port;
+
+  // Servidor ssh2 con password + clave publica y reenvio -L/-D (direct-tcpip) y -R (tcpip-forward)
+  const clave = utils.generateKeyPairSync('ed25519');
+  const pubPermitida = utils.parseKey(clave.public);
+  const hostKey = utils.generateKeyPairSync('ed25519').private;
+  let conexionesSsh = 0;
+  const escuchasRemotas = [];
+  const clientesSsh = [];
+  const servidor = new Server({ hostKeys: [hostKey] }, (cliente) => {
+    conexionesSsh++;
+    clientesSsh.push(cliente);
+    cliente.on('error', () => {});
+    cliente.on('authentication', (ctx) => {
+      if (ctx.method === 'password' && ctx.password === PF_PASS) return ctx.accept();
+      if (ctx.method === 'publickey' && ctx.key.algo === pubPermitida.type
+          && ctx.key.data.equals(pubPermitida.getPublicSSH())) {
+        if (!ctx.signature) return ctx.accept();
+        if (pubPermitida.verify(ctx.blob, ctx.signature, ctx.hashAlgo) === true) return ctx.accept();
+      }
+      ctx.reject(['password', 'publickey']);
+    });
+    cliente.on('ready', () => {
+      cliente.on('tcpip', (accept, reject, info) => {
+        const sock = net.connect(info.destPort, info.destIP);
+        sock.once('connect', () => { const ch = accept(); ch.pipe(sock).pipe(ch); ch.on('error', () => {}); });
+        sock.once('error', () => reject());
+      });
+      cliente.on('request', (accept, reject, name, info) => {
+        if (name === 'tcpip-forward') {
+          const l = net.createServer((sock) => {
+            sock.on('error', () => {});
+            cliente.forwardOut(info.bindAddr, info.bindPort, sock.remoteAddress, sock.remotePort, (err, ch) => {
+              if (err) return sock.destroy();
+              sock.pipe(ch).pipe(sock);
+              ch.on('error', () => {});
+            });
+          });
+          l.once('error', () => reject && reject());
+          l.listen(info.bindPort, info.bindAddr, () => { escuchasRemotas.push(l); accept && accept(); });
+        } else if (name === 'cancel-tcpip-forward') {
+          for (const l of escuchasRemotas.splice(0)) l.close();
+          accept && accept();
+        } else if (reject) {
+          reject();
+        }
+      });
+    });
+  });
+  await new Promise(r => servidor.listen(0, '127.0.0.1', r));
+  const puertoSsh = servidor.address().port;
+
+  // Acepta sola la clave de host (lo de K11 ya prueba el dialogo)
+  const ventanaHk = hostKeyService.mainWindow;
+  hostKeyService.setMainWindow({
+    isDestroyed: () => false,
+    webContents: {
+      isDestroyed: () => false,
+      send: (canal, datos) => { if (canal === 'ssh:host-key-prompt') setTimeout(() => hostKeyService.respond(datos.requestId, true), 5); },
+    },
+  });
+  // Recoge los push de estado
+  const eventos = [];
+  const ventanaPf = pf.mainWindow;
+  pf.setMainWindow({
+    isDestroyed: () => false,
+    webContents: { send: (canal, datos) => { if (canal === 'port-forward:status') eventos.push(datos); } },
+  });
+  const agente = process.env.SSH_AUTH_SOCK;
+  delete process.env.SSH_AUTH_SOCK;
+
+  const HOST_PASS = { id: 'h-pf', label: 'Tunel', hostname: '127.0.0.1', port: puertoSsh, username: 'derek', authType: 'password', password: PF_PASS };
+  const HOST_KEY = { id: 'h-pf-key', label: 'Tunel con clave', hostname: '127.0.0.1', port: puertoSsh, username: 'derek', authType: 'key', keyId: 'k-pf' };
+  const HOST_SELLADO = { id: 'h-sellado', label: 'Sellado', hostname: '127.0.0.1', port: puertoSsh, username: 'derek', authType: 'password' };
+  const HOST_SIN = { id: 'h-sin', label: 'Sin contrasena', hostname: '127.0.0.1', port: puertoSsh, username: 'derek', authType: 'password' };
+  await storeService.writeRaw('hosts', [HOST_PASS, HOST_KEY, HOST_SELLADO, HOST_SIN]);
+  await storeService.writeRaw('keys', [{ id: 'k-pf', label: 'pf', privateKey: clave.private }]);
+  await storeService.writeRaw('known-hosts', []);
+  const estados = (id) => eventos.filter(e => e.ruleId === id).map(e => e.state);
+
+  try {
+    await check('P1 reglas viejas migran al leer (sourcePort -> localPort, sin hostId, sin active) y guardar quita active', async () => {
+      const viejas = [
+        { id: 'old-1', label: 'DB', type: 'local', sourcePort: 8080, destHost: 'db', destPort: 5432, active: true, sessionId: 'abc' },
+        { id: 'old-2', label: '', type: 'dynamic', sourcePort: '1080', destHost: 'localhost', active: false },
+        null,
+        { id: 'old-3', type: 'raro', sourcePort: 99999 },
+      ];
+      await storeService.writeRaw('port-forwards', viejas);
+      const antes = fs.readFileSync(path.join(currentUserData, 'data', 'port-forwards.json'), 'utf-8');
+      const lista = await bridge.store.getPortForwards();
+      assert.strictEqual(lista.length, 3, 'una entrada basura no se descarto');
+      assert.deepStrictEqual(lista[0], { id: 'old-1', label: 'DB', type: 'local', hostId: null, bindAddress: '127.0.0.1', localPort: 8080, destHost: 'db', destPort: 5432 });
+      assert.deepStrictEqual(lista[1], { id: 'old-2', label: 'Dynamic forward', type: 'dynamic', hostId: null, bindAddress: '127.0.0.1', localPort: 1080, destHost: '', destPort: null });
+      assert.strictEqual(lista[2].type, 'local', 'tipo desconocido no cae en local');
+      assert.strictEqual(lista[2].localPort, null, 'un puerto fuera de rango no se anula');
+      assert.strictEqual(fs.readFileSync(path.join(currentUserData, 'data', 'port-forwards.json'), 'utf-8'), antes,
+        'leer reescribio el archivo (sync lo subiria todo como editado)');
+      const guardada = await bridge.store.savePortForward({ id: 'old-1', hostId: 'h-pf', active: true });
+      assert.ok(!('active' in guardada) && !('sourcePort' in guardada), 'guardar dejo active/sourcePort');
+      const enDisco = JSON.parse(fs.readFileSync(path.join(currentUserData, 'data', 'port-forwards.json'), 'utf-8'))
+        .find(r => r && r.id === 'old-1');
+      assert.ok(!('active' in enDisco) && !('sessionId' in enDisco), 'active llego al disco');
+      assert.strictEqual(enDisco.localPort, 8080);
+      assert.strictEqual(enDisco.hostId, 'h-pf');
+      const nueva = await bridge.store.savePortForward({ label: 'x', type: 'local', hostId: 'h-pf', localPort: 1, destHost: 'a', destPort: 2, active: true });
+      assert.ok(nueva.id && nueva.createdAt && !('active' in nueva));
+      await storeService.writeRaw('port-forwards', []);
+    });
+
+    await check('P2 -L de punta a punta: start(ruleId) -> running, eco por el tunel, 2o start no-op, stop(ruleId) cierra el puerto', async () => {
+      const puerto = await puertoLibre();
+      await storeService.writeRaw('port-forwards', [{ id: 'r-local', label: 'DB', type: 'local', hostId: 'h-pf', bindAddress: '127.0.0.1', localPort: puerto, destHost: '127.0.0.1', destPort: puertoEco }]);
+      eventos.length = 0;
+      const antes = conexionesSsh;
+      const r = await bridge.portForward.start('r-local');
+      assert.strictEqual(r.state, 'running');
+      assert.strictEqual(r.boundPort, puerto);
+      assert.deepStrictEqual(estados('r-local'), ['starting', 'running']);
+      assert.deepStrictEqual((await bridge.portForward.status()).map(s => [s.ruleId, s.state]), [['r-local', 'running']]);
+      assert.strictEqual(await eco(puerto, 'hola por el tunel -L'), 'hola por el tunel -L');
+      assert.strictEqual(await eco(puerto, 'otra vez'), 'otra vez', 'la segunda conexion por el tunel no paso');
+
+      const r2 = await bridge.portForward.start('r-local');
+      assert.strictEqual(r2.state, 'running');
+      assert.strictEqual(conexionesSsh, antes + 1, 'el segundo start abrio otra conexion ssh');
+      assert.deepStrictEqual(estados('r-local'), ['starting', 'running'], 'el segundo start emitio estados');
+      // Dos start a la vez: una sola conexion
+      await bridge.portForward.stop('r-local');
+      const [a, b] = await Promise.all([bridge.portForward.start('r-local'), bridge.portForward.start('r-local')]);
+      assert.deepStrictEqual([a.state, b.state], ['running', 'running']);
+      assert.strictEqual(conexionesSsh, antes + 2, 'dos start simultaneos abrieron dos conexiones');
+
+      assert.strictEqual(await bridge.portForward.stop('r-local'), true);
+      await assert.rejects(conecta(puerto), /ECONNREFUSED/, 'tras stop(ruleId) el puerto sigue escuchando');
+      assert.deepStrictEqual(await bridge.portForward.status(), []);
+      assert.strictEqual(estados('r-local').at(-1), 'stopped');
+      assert.strictEqual(await bridge.portForward.stop('r-local'), false, 'parar dos veces no es no-op');
+      assert.ok(!alRenderer.join('\n').includes(PF_PASS), 'la contrasena llego al renderer');
+    });
+
+    await check('P3 -D SOCKS5 CONNECT hasta el eco por el mismo servidor, con host de clave SSH (keyId)', async () => {
+      const puerto = await puertoLibre();
+      await storeService.writeRaw('port-forwards', [{ id: 'r-dyn', label: 'SOCKS', type: 'dynamic', hostId: 'h-pf-key', localPort: puerto }]);
+      const r = await bridge.portForward.start('r-dyn');
+      assert.strictEqual(r.state, 'running');
+      const c = await conecta(puerto);
+      const leer = lector(c);
+      c.write(Buffer.from([0x05, 0x01, 0x00]));
+      assert.deepStrictEqual([...(await leer(2))], [0x05, 0x00], 'saludo SOCKS5 incorrecto');
+      c.write(Buffer.from([0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, puertoEco >> 8, puertoEco & 0xff]));
+      const resp = await leer(10);
+      assert.strictEqual(resp[1], 0x00, `CONNECT fallo con codigo ${resp[1]}`);
+      c.write('por socks5');
+      assert.strictEqual((await leer(10)).toString(), 'por socks5');
+      c.destroy();
+      // Nombre de dominio (ATYP 3) en un solo paquete con el saludo
+      const d = await conecta(puerto);
+      const leerD = lector(d);
+      const nombre = Buffer.from('localhost');
+      d.write(Buffer.concat([Buffer.from([0x05, 0x01, 0x00, 0x05, 0x01, 0x00, 0x03, nombre.length]), nombre, Buffer.from([puertoEco >> 8, puertoEco & 0xff])]));
+      await leerD(2);
+      assert.strictEqual((await leerD(10))[1], 0x00, 'CONNECT por nombre fallo');
+      d.write('dominio');
+      assert.strictEqual((await leerD(7)).toString(), 'dominio');
+      d.destroy();
+      await bridge.portForward.stop('r-dyn');
+      await assert.rejects(conecta(puerto), /ECONNREFUSED/);
+    });
+
+    await check('P4 -R: el servidor abre el puerto y lo trae hasta el eco de este equipo; stop lo cierra alli', async () => {
+      const puertoServidor = await puertoLibre();
+      await storeService.writeRaw('port-forwards', [{ id: 'r-rem', label: 'Remoto', type: 'remote', hostId: 'h-pf', bindAddress: '127.0.0.1', localPort: puertoServidor, destHost: '127.0.0.1', destPort: puertoEco }]);
+      const r = await bridge.portForward.start('r-rem');
+      assert.strictEqual(r.state, 'running');
+      assert.strictEqual(await eco(puertoServidor, 'de vuelta por -R'), 'de vuelta por -R');
+      await bridge.portForward.stop('r-rem');
+      await new Promise(res => setTimeout(res, 50));
+      await assert.rejects(conecta(puertoServidor), /ECONNREFUSED/, 'el servidor sigue escuchando tras stop');
+    });
+
+    await check('P5 sin hostId / host sellado / sin contrasena / puerto ocupado: error claro, estado error, sin intentar ssh', async () => {
+      const ocupado = net.createServer();
+      await new Promise(r => ocupado.listen(0, '127.0.0.1', r));
+      const puertoOcupado = ocupado.address().port;
+      await storeService.writeRaw('port-forwards', [
+        { id: 'e-sin-host', type: 'local', localPort: 18080, destHost: 'db', destPort: 5432 },
+        { id: 'e-sellado', type: 'local', hostId: 'h-sellado', localPort: 18081, destHost: 'db', destPort: 5432 },
+        { id: 'e-sin-pass', type: 'local', hostId: 'h-sin', localPort: 18082, destHost: 'db', destPort: 5432 },
+        { id: 'e-borrado', type: 'local', hostId: 'h-no-existe', localPort: 18083, destHost: 'db', destPort: 5432 },
+        { id: 'e-ocupado', type: 'local', hostId: 'h-pf', localPort: puertoOcupado, destHost: '127.0.0.1', destPort: puertoEco },
+      ]);
+      await syncService._load();
+      const previo = syncService.state.undecryptable;
+      syncService.state.undecryptable = { 'hosts/h-sellado': true };
+      eventos.length = 0;
+      const antes = conexionesSsh;
+      try {
+        await assert.rejects(bridge.portForward.start('e-sin-host'), /Choose a host/);
+        await assert.rejects(bridge.portForward.start('e-sellado'), /saved on another computer and cannot be decrypted here/);
+        await assert.rejects(bridge.portForward.start('e-sin-pass'), /has no saved password/);
+        await assert.rejects(bridge.portForward.start('e-borrado'), /no longer exists/);
+        await assert.rejects(bridge.portForward.start('no-hay-regla'), /no longer exists/);
+        await assert.rejects(bridge.portForward.start({ type: 'local', host: 'x' }), /rule id/, 'la forma vieja (objeto) no se rechaza');
+      } finally {
+        syncService.state.undecryptable = previo;
+      }
+      assert.strictEqual(conexionesSsh, antes, 'intento conectar por ssh sin credenciales validas');
+      await assert.rejects(bridge.portForward.start('e-ocupado'), /already in use/);
+      await new Promise(r => setTimeout(r, 50));
+      const st = Object.fromEntries((await bridge.portForward.status()).map(s => [s.ruleId, s]));
+      assert.deepStrictEqual(Object.keys(st).sort(), ['e-borrado', 'e-ocupado', 'e-sellado', 'e-sin-host', 'e-sin-pass', 'no-hay-regla']);
+      assert.ok(Object.values(st).every(s => s.state === 'error' && s.error), 'un fallo no quedo como error con mensaje');
+      assert.ok(eventos.filter(e => e.state === 'error').every(e => e.error), 'push de error sin mensaje');
+      assert.deepStrictEqual(estados('e-sellado'), ['starting', 'error']);
+      // Parar un error lo limpia
+      for (const id of Object.keys(st)) await bridge.portForward.stop(id);
+      assert.deepStrictEqual(await bridge.portForward.status(), []);
+      ocupado.close();
+    });
+
+    await check('P6 borrar una regla en marcha la para; un stop durante el arranque no deja el puerto abierto', async () => {
+      const puerto = await puertoLibre();
+      await storeService.writeRaw('port-forwards', [{ id: 'r-del', type: 'local', hostId: 'h-pf', localPort: puerto, destHost: '127.0.0.1', destPort: puertoEco }]);
+      await bridge.portForward.start('r-del');
+      assert.strictEqual(await bridge.store.deletePortForward('r-del'), true);
+      await assert.rejects(conecta(puerto), /ECONNREFUSED/, 'borrar la regla dejo el tunel abierto');
+      assert.deepStrictEqual(await bridge.portForward.status(), []);
+
+      const puerto2 = await puertoLibre();
+      await storeService.writeRaw('port-forwards', [{ id: 'r-cancel', type: 'local', hostId: 'h-pf', localPort: puerto2, destHost: '127.0.0.1', destPort: puertoEco }]);
+      const arranque = bridge.portForward.start('r-cancel');
+      await new Promise(r => setTimeout(r, 5));
+      await bridge.portForward.stop('r-cancel');
+      const fin = await arranque;
+      assert.strictEqual(fin.state, 'stopped');
+      await new Promise(r => setTimeout(r, 100));
+      await assert.rejects(conecta(puerto2), /ECONNREFUSED/, 'un stop durante el arranque dejo el puerto escuchando');
+      assert.deepStrictEqual(await bridge.portForward.status(), []);
+    });
+
+    await check('P8 si el servidor corta la conexion ssh con el tunel en marcha: estado error con mensaje y el puerto se cierra', async () => {
+      const puerto = await puertoLibre();
+      await storeService.writeRaw('port-forwards', [{ id: 'r-cae', type: 'local', hostId: 'h-pf', localPort: puerto, destHost: '127.0.0.1', destPort: puertoEco }]);
+      eventos.length = 0;
+      clientesSsh.length = 0;
+      await bridge.portForward.start('r-cae');
+      assert.strictEqual(clientesSsh.length, 1);
+      clientesSsh[0].end();
+      for (let i = 0; i < 100 && !estados('r-cae').includes('error'); i++) await new Promise(r => setTimeout(r, 10));
+      const ultimo = eventos.filter(e => e.ruleId === 'r-cae').at(-1);
+      assert.strictEqual(ultimo && ultimo.state, 'error', `tras el corte el estado es ${ultimo && ultimo.state}`);
+      assert.match(ultimo.error, /closed|error/i);
+      await new Promise(r => setTimeout(r, 50));
+      await assert.rejects(conecta(puerto), /ECONNREFUSED/, 'el puerto sigue abierto con la conexion ssh muerta');
+      const st = await bridge.portForward.status();
+      assert.deepStrictEqual(st.map(x => [x.ruleId, x.state]), [['r-cae', 'error']]);
+      await bridge.portForward.stop('r-cae');
+    });
+
+    await check('P9 si la conexion ssh muere entre ready y el listener: error y puerto cerrado, no "running" con un cliente muerto', async () => {
+      const puerto = await puertoLibre();
+      await storeService.writeRaw('port-forwards', [{ id: 'r-muere', type: 'local', hostId: 'h-pf', localPort: puerto, destHost: '127.0.0.1', destPort: puertoEco }]);
+      eventos.length = 0;
+      const real = pf._listenLocal;
+      // El cliente muere justo antes de levantar el listener
+      pf._listenLocal = function (entry, client, rule) {
+        return new Promise((res) => { client.once('close', res); client.end(); })
+          .then(() => real.call(this, entry, client, rule));
+      };
+      try {
+        await assert.rejects(bridge.portForward.start('r-muere'), /closed|error/i, 'con el cliente muerto el tunel arranco');
+      } finally {
+        pf._listenLocal = real;
+      }
+      assert.deepStrictEqual(estados('r-muere'), ['starting', 'error']);
+      await new Promise(r => setTimeout(r, 50));
+      await assert.rejects(conecta(puerto), /ECONNREFUSED/, 'el listener quedo abierto');
+      assert.deepStrictEqual((await bridge.portForward.status()).map(x => [x.ruleId, x.state]), [['r-muere', 'error']]);
+      await bridge.portForward.stop('r-muere');
+    });
+
+    await check('P7 preload: port-forward:status con onStatus/removeStatusListener que solo quita el suyo', () => {
+      const a = [], b = [];
+      const lA = bridge.portForward.onStatus(d => a.push(d));
+      const lB = bridge.portForward.onStatus(d => b.push(d));
+      emit('port-forward:status', { ruleId: 'x', state: 'running' });
+      bridge.portForward.removeStatusListener(lB);
+      emit('port-forward:status', { ruleId: 'x', state: 'stopped' });
+      assert.deepStrictEqual([a.length, b.length], [2, 1]);
+      assert.deepStrictEqual(a[0], { ruleId: 'x', state: 'running' });
+      bridge.portForward.removeStatusListener(lA);
+    });
+  } finally {
+    await pf.stopAll();
+    if (agente !== undefined) process.env.SSH_AUTH_SOCK = agente;
+    pf.setMainWindow(ventanaPf);
+    hostKeyService.setMainWindow(ventanaHk);
+    for (const l of escuchasRemotas.splice(0)) l.close();
+    servidor.close();
+    servidorEco.close();
+    await storeService.writeRaw('port-forwards', []);
+    await storeService.writeRaw('hosts', []);
+    await storeService.writeRaw('keys', []);
+    await storeService.writeRaw('known-hosts', []);
+  }
+}
+
 // ─── 4. Escenarios ──────────────────────────────────────────
 
 async function main() {
@@ -442,6 +1460,14 @@ async function main() {
       assert.strictEqual(a.length, 2, `${chan}: sin argumento no limpio`);
     }
   });
+
+  // ── K. Known hosts + historial de conexiones ─────────────
+  // Todo local (ninguna de las dos colecciones esta en sync-service). Se prueba
+  // antes que el sync para que el almacen sea el del primer dispositivo.
+  await seccionKnownHosts();
+
+  // ── P. Port forwarding ────────────────────────────────────
+  await seccionPortForward();
 
   const cryptoService = require(path.join(ROOT, 'electron', 'services', 'crypto-service.js'));
   const storeService = require(path.join(ROOT, 'electron', 'services', 'store-service.js'));
@@ -1256,6 +2282,259 @@ async function main() {
     assert.strictEqual(abreSobre(rival2.key, srv.rowFor('hosts', 'host-G2').payload.password), 'secreto-nuevo-G2',
       'tras desbloquear no se re-sello con la clave vigente');
     assert.deepStrictEqual(await cryptoService.getLegacyKeys(), []);
+  });
+
+  // ── S. known_hosts (cifrada) y connection_logs se sincronizan ─────────────
+  //
+  // known_hosts va sellada por AUTENTICIDAD: si el servidor pudiera escribir
+  // una fila que los equipos aceptan, plantaria una clave de host falsa en
+  // todos. Por eso tambien sus lapidas van selladas.
+  const knownHosts = require(path.join(ROOT, 'electron', 'services', 'known-hosts.js'));
+  const hostKeyService = require(path.join(ROOT, 'electron', 'services', 'host-key-service.js'));
+  const logService = require(path.join(ROOT, 'electron', 'services', 'connection-log-service.js'));
+  const blobDe = relleno => {
+    const tipo = Buffer.from('ssh-ed25519');
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(tipo.length);
+    const clen = Buffer.alloc(4);
+    clen.writeUInt32BE(32);
+    return Buffer.concat([len, tipo, clen, Buffer.alloc(32, relleno)]);
+  };
+  const aceptar = async (host, port, blob, opts) => {
+    const info = knownHosts.keyInfo(blob);
+    return storeService.saveKnownHost({ host, port, ...info }, opts);
+  };
+  const deHost = async host => (await storeService.readRaw('known-hosts')).filter(e => e.host === host);
+  // Lo que no puede aparecer en ningun cuerpo que sube: host, clave, huella.
+  const enClaro = (texto, host, blob) => {
+    const info = knownHosts.keyInfo(blob);
+    return [host, info.key, info.fingerprint, info.fingerprint.replace(/^SHA256:/, '')]
+      .filter(x => texto.includes(x));
+  };
+  const flipByte = b64 => { const b = Buffer.from(b64, 'base64'); b[b.length - 1] ^= 0x55; return b.toString('base64'); };
+
+  const KH = 'kh-secreto.example';
+  const s = {};
+  await nuevoServidor();
+  await check('S1 un known host sube sellado: ni host, ni clave, ni huella en el cable', async () => {
+    await usarDispositivo('SA');
+    s.a = await aceptar(KH, 2222, blobDe(1));
+    await syncService.setupPassphrase(PASS_S);
+    clavesDerivadas.push(await cryptoService.getMasterKey());
+    const fila = srv.rowFor('known_hosts', s.a.id);
+    assert.ok(fila, 'el known host no subio');
+    assert.strictEqual(fila.enc, true, 'known_hosts no subio cifrada por fila');
+    assert.strictEqual(fila.payload, null);
+    assert.deepStrictEqual(enClaro(srv.allBodies(), KH, blobDe(1)), [], 'el known host viajo en claro');
+  });
+
+  await check('S2 sin desbloquear: lo remoto no se aplica (cuenta como ilegible) y lo local no sube', async () => {
+    await usarDispositivo('SB');
+    s.b = await aceptar('solo-en-b.example', 22, blobDe(2));
+    await syncService.syncNow();
+    const status = await syncService.status();
+    assert.strictEqual(status.unlocked, false);
+    assert.ok(status.undecryptableIds.includes(`known_hosts/${s.a.id}`),
+      `el known host de A no cuenta como ilegible: ${status.undecryptableIds}`);
+    assert.strictEqual((await deHost(KH)).length, 0, 'B aplico un known host que no puede abrir');
+    assert.strictEqual(srv.rowFor('known_hosts', s.b.id), null, 'B subio un known host sin estar desbloqueado');
+    assert.ok(!srv.allBodies().includes('solo-en-b.example'), 'el known host de B salio en claro');
+  });
+
+  await check('S3 B desbloquea: baja y abre el de A, y sube el suyo sellado', async () => {
+    await syncService.unlock(PASS_S);
+    const deA = await deHost(KH);
+    assert.strictEqual(deA.length, 1, 'B no tiene el known host de A');
+    assert.strictEqual(deA[0].key, knownHosts.keyInfo(blobDe(1)).key);
+    assert.strictEqual(deA[0].port, 2222);
+    assert.strictEqual(await hostKeyService.verify(KH, 2222, blobDe(1)), true,
+      'B no confia en la clave que acepto A');
+    const filaB = srv.rowFor('known_hosts', s.b.id);
+    assert.ok(filaB && filaB.enc === true, 'tras desbloquear, el known host de B no subio sellado');
+    assert.deepStrictEqual((await syncService.status()).undecryptableIds.filter(x => x.startsWith('known_hosts/')), []);
+  });
+
+  await check('S4 lo que el servidor falsifique no toca la copia local (manipulado, reenviado, lapida en claro o ajena)', async () => {
+    const original = srv.rowFor('known_hosts', s.a.id);
+    const filaB = srv.rowFor('known_hosts', s.b.id);
+    const intentos = [
+      ['cifrado manipulado', { ...original, ciphertext: flipByte(original.ciphertext) }],
+      ['cifrado de OTRA entrada bajo este id', { ...filaB, item_id: s.a.id }],
+      ['lapida en claro', { collection: 'known_hosts', item_id: s.a.id, enc: false, payload: null, ciphertext: null, nonce: null, deleted: true, updated_at: '2030-01-01T00:00:00.000Z' }],
+      ['lapida sellada con otra clave', {
+        collection: 'known_hosts', item_id: s.a.id, enc: true, payload: null, deleted: true, updated_at: '2030-01-01T00:00:00.000Z',
+        ...cryptoService.encryptWith(Buffer.alloc(32, 7), JSON.stringify({ id: s.a.id, deleted: true })),
+      }],
+      ['lapida sellada que es la fila viva', { ...original, deleted: true }],
+    ];
+    for (const [que, fila] of intentos) {
+      srv.inject(fila);
+      srv.reset();
+      await silenciaErrores(() => syncService.syncNow());
+      const local = await deHost(KH);
+      assert.strictEqual(local.length, 1, `${que}: la entrada local desaparecio`);
+      assert.strictEqual(local[0].id, s.a.id, `${que}: la entrada local cambio de id`);
+      assert.strictEqual(local[0].key, knownHosts.keyInfo(blobDe(1)).key, `${que}: la clave local cambio`);
+      assert.ok(!srv.syncPosts().some(b => b.includes(s.a.id)), `${que}: se reenvio la entrada desde aqui`);
+    }
+    assert.strictEqual(await hostKeyService.verify(KH, 2222, blobDe(1)), true);
+  });
+
+  // Dos equipos limpios en otro servidor para los conflictos y el historial.
+  await nuevoServidor();
+  const CONF = 'conflicto.example';
+  const IGUAL = 'igual.example';
+  const ventanaHk = hostKeyService.mainWindow;
+  hostKeyService.setMainWindow(null);   // un aviso sin ventana RECHAZA: sin esperas de 120 s
+  const turnos = async (...nombres) => {
+    for (const n of nombres) { await usarDispositivo(n); await syncService.syncNow(); }
+  };
+  await check('S5 dos equipos aceptan claves distintas del mismo host:port: vale cualquiera, "changed" igual en los dos, y reemplazar borra ambas en todos', async () => {
+    await usarDispositivo('SC');
+    await syncService.setupPassphrase(PASS_S);
+    await aceptar(CONF, 22, blobDe(3));
+    await usarDispositivo('SD');
+    await syncService.unlock(PASS_S);
+    await aceptar(CONF, 22, blobDe(4));
+    await turnos('SC', 'SD', 'SC');
+
+    const previas = [];
+    for (const n of ['SC', 'SD']) {
+      await usarDispositivo(n);
+      const mias = await deHost(CONF);
+      assert.strictEqual(mias.length, 2, `${n} deberia tener las dos claves, tiene ${mias.length}`);
+      assert.strictEqual(await hostKeyService.verify(CONF, 22, blobDe(3)), true, `${n}: rechaza la clave de SC`);
+      assert.strictEqual(await hostKeyService.verify(CONF, 22, blobDe(4)), true, `${n}: rechaza la clave de SD`);
+      const d = knownHosts.decide(await storeService.getKnownHosts(), CONF, 22, blobDe(5));
+      assert.strictEqual(d.reason, 'changed', `${n}: una tercera clave no se presenta como cambiada`);
+      previas.push(d.previousFingerprint);
+      assert.strictEqual(await hostKeyService.verify(CONF, 22, blobDe(5)), false, `${n}: acepto una clave desconocida sin preguntar`);
+    }
+    assert.strictEqual(previas[0], previas[1], 'los dos equipos ensenan una "clave anterior" distinta');
+
+    // SC acepta la nueva (lo que hace respond() con reason 'changed').
+    await usarDispositivo('SC');
+    await aceptar(CONF, 22, blobDe(5), { replaceAll: true });
+    srv.reset();
+    await syncService.syncNow();
+    const lapidas = srv.syncPosts().flatMap(b => JSON.parse(b).records).filter(r => r.collection === 'known_hosts' && r.deleted);
+    assert.strictEqual(lapidas.length, 2, `deberian salir 2 lapidas, salen ${lapidas.length}`);
+    assert.ok(lapidas.every(r => r.enc === true && r.ciphertext && r.payload === null), 'una lapida de known_hosts salio sin sellar');
+    await turnos('SD');
+    const enD = await deHost(CONF);
+    assert.deepStrictEqual(enD.map(e => e.key), [knownHosts.keyInfo(blobDe(5)).key], 'SD no se quedo solo con la clave nueva');
+    assert.strictEqual(await hostKeyService.verify(CONF, 22, blobDe(3)), false, 'SD sigue confiando en la clave reemplazada');
+  });
+
+  await check('S6 la misma clave aceptada en dos equipos converge a una sola entrada (el id menor)', async () => {
+    await usarDispositivo('SC');
+    const c = await aceptar(IGUAL, 22, blobDe(6));
+    await usarDispositivo('SD');
+    const d = await aceptar(IGUAL, 22, blobDe(6));
+    await turnos('SC', 'SD', 'SC', 'SD');
+    const esperado = [c.id, d.id].sort()[0];
+    for (const n of ['SC', 'SD']) {
+      await usarDispositivo(n);
+      assert.deepStrictEqual((await deHost(IGUAL)).map(e => e.id), [esperado], `${n} no convergio`);
+    }
+    const vivas = srv.rows.filter(r => r.record.collection === 'known_hosts' && !r.record.deleted
+      && [c.id, d.id].includes(r.record.item_id));
+    assert.deepStrictEqual(vivas.map(r => r.record.item_id), [esperado], 'en el servidor queda mas de una');
+    const cable = srv.allBodies();
+    for (const [h, b] of [[CONF, 3], [CONF, 4], [CONF, 5], [IGUAL, 6]]) {
+      assert.deepStrictEqual(enClaro(cable, h, blobDe(b)), [], `algo de ${h} viajo en claro`);
+    }
+  });
+  hostKeyService.setMainWindow(ventanaHk);
+
+  await check('S7 historial: el inicio y el fin llegan al servidor, y otro equipo los ve', async () => {
+    await usarDispositivo('SC');
+    const id = logService.start({ type: 'ssh', label: 'Log', hostname: 'log.example', port: 22, username: 'derek' });
+    await logService._after(id);
+    await syncService.syncNow();
+    let fila = srv.rowFor('connection_logs', id);
+    assert.ok(fila && fila.enc === false && fila.payload.startedAt, 'el inicio no subio');
+    assert.ok(!fila.payload.endedAt);
+    await logService.end(id);
+    await syncService.syncNow();
+    fila = srv.rowFor('connection_logs', id);
+    assert.ok(fila.payload.endedAt, 'el fin no subio (el hash no se movio)');
+    await turnos('SD');
+    const enD = (await storeService.readRaw('connection-logs')).find(e => e.id === id);
+    assert.ok(enD && enD.endedAt === fila.payload.endedAt, 'SD no tiene la entrada cerrada');
+
+    // Un re-pull desde 0 (instalar clave, actualizar la app) con el fin aun sin
+    // subir: la copia vieja del servidor no puede pisar el fin local.
+    await usarDispositivo('SC');
+    const id2 = logService.start({ type: 'local' });
+    await logService._after(id2);
+    await syncService.syncNow();
+    await logService.end(id2);
+    syncService.state.cursor = 0;
+    await syncService.syncNow();
+    const local = (await storeService.readRaw('connection-logs')).find(e => e.id === id2);
+    assert.ok(local && local.endedAt, 'el re-pull desde 0 borro la hora de fin local');
+    assert.ok(srv.rowFor('connection_logs', id2).payload.endedAt, 'el fin no llego al servidor tras el re-pull');
+  });
+
+  await check('S9 cliente v1.10.0: ignora known_hosts/connection_logs sin error, y al actualizar se re-baja desde 0', async () => {
+    // El sync-service publicado en v1.10.0 (commit del bump de version).
+    const fuente = execFileSync('git', ['show', '5ecfa09:electron/services/sync-service.js'], { cwd: ROOT, encoding: 'utf-8' });
+    assert.ok(/unknown collection from a newer server: ignore/.test(fuente), 'no es el sync-service esperado');
+    const falso = path.join(ROOT, 'electron', 'services', 'sync-service.v1.10.0.js');   // no existe en disco
+    const m = new Module(falso, module);
+    m.filename = falso;
+    m.paths = Module._nodeModulePaths(path.dirname(falso));
+    m._compile(fuente, falso);
+    const viejo = m.exports;
+    assert.notStrictEqual(viejo, syncService);
+
+    const dir = await usarDispositivo('SL');
+    await silenciaErrores(() => viejo.syncNow());
+    const st = await viejo.status();
+    assert.strictEqual(st.error, null, `el cliente viejo da error: ${st.error}`);
+    for (const f of ['known-hosts.json', 'connection-logs.json']) {
+      assert.ok(!fs.existsSync(path.join(dir, 'data', f)), `el cliente viejo escribio ${f}`);
+    }
+    assert.ok(!st.undecryptableIds.some(x => /^(known_hosts|connection_logs)\//.test(x)),
+      'el cliente viejo cuenta los known hosts como ilegibles');
+    const maxNueva = Math.max(...srv.rows.filter(r => ['known_hosts', 'connection_logs'].includes(r.record.collection)).map(r => r.cursor));
+    assert.ok(viejo.state.cursor >= maxNueva, 'la prueba no prueba: el cursor viejo no paso por encima de las filas nuevas');
+
+    // Se actualiza la app en ese equipo: el cursor viejo no cubre las colecciones nuevas.
+    syncService._loaded = false;
+    syncService._chain = null;
+    await syncService.syncNow();
+    const logs = await storeService.readRaw('connection-logs');
+    assert.ok(logs.length > 0, 'tras actualizar no bajo el historial que el cliente viejo salto');
+    const st2 = await syncService.status();
+    assert.ok(st2.undecryptableIds.some(x => x.startsWith('known_hosts/')),
+      'tras actualizar, los known hosts (sin desbloquear) no cuentan como ilegibles');
+    await syncService.unlock(PASS_S);
+    assert.ok((await deHost(CONF)).length === 1 && (await deHost(IGUAL)).length === 1,
+      'tras desbloquear no estan los known hosts que el cliente viejo salto');
+  });
+
+  // Servidor propio: con el historial de SC/SD delante, el primer pull ya pasa
+  // del tope y el recorte (correcto) se lleva mas de una.
+  await nuevoServidor();
+  await check('S8 tope de 1000: cada entrada nueva cuesta una lapida en el mismo lote, no una rafaga', async () => {
+    await usarDispositivo('SE');
+    await cryptoService.setToken('token-SE');
+    const viejas = Array.from({ length: 1000 }, (_, i) => ({
+      id: `tope-${String(i).padStart(4, '0')}`, type: 'local', label: 'Local Terminal',
+      startedAt: new Date(Date.UTC(2020, 0, 1) + i * 1000).toISOString(),
+    }));
+    await storeService.writeRaw('connection-logs', viejas);
+    await syncService.syncNow();
+    srv.reset();
+    await storeService.addConnectionLog({ id: 'tope-nueva', type: 'local', label: 'Local Terminal', startedAt: new Date().toISOString() }, logService.MAX_ENTRIES);
+    await syncService.syncNow();
+    const posts = srv.syncPosts();
+    const subidas = posts.flatMap(b => JSON.parse(b).records);
+    assert.strictEqual(posts.length, 1, `el recorte hizo ${posts.length} peticiones`);
+    assert.deepStrictEqual(subidas.map(r => [r.item_id, r.deleted]).sort(),
+      [['tope-0000', true], ['tope-nueva', false]], `subio ${subidas.length} registros`);
   });
 
   if (syncService._chain) { try { await syncService._chain; } catch (_) { /* ignore */ } }

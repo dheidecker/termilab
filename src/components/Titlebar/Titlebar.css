@@ -4,10 +4,9 @@
   height: var(--titlebar-height);
   min-height: var(--titlebar-height);
   background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
+  border-bottom: 1px solid var(--border-secondary);
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding: 0;
   -webkit-app-region: drag;
   position: relative;
@@ -17,34 +16,36 @@
 .titlebar-left {
   display: flex;
   align-items: center;
-  padding-left: 12px;
-  gap: 8px;
+  padding: 0 4px 0 8px;
+  flex-shrink: 0;
   -webkit-app-region: no-drag;
 }
 
 /* macOS draws its close/minimise/zoom buttons over the top-left of the window,
-   so the title has to start after them or they overlap it. */
+   so the hamburger has to start after them or they overlap it. */
 .titlebar-mac .titlebar-left {
   padding-left: 78px;
 }
 
-.titlebar-icon {
+.titlebar-menu-btn {
+  width: 32px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+  transition: background var(--transition-base), color var(--transition-base);
+}
+
+.titlebar-menu-btn:hover {
+  background: var(--hover-overlay);
+  color: var(--text-primary);
+}
+
+.titlebar-menu-btn svg {
   width: 18px;
   height: 18px;
-  color: var(--accent);
-}
-
-.titlebar-title {
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  color: var(--text-secondary);
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-}
-
-.titlebar-center {
-  flex: 1;
-  text-align: center;
 }
 
 .titlebar-controls {

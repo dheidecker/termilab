@@ -1,4 +1,6 @@
-/* App.css — Main application layout */
+/* App.css — Main application layout
+   Title bar (hamburger + tabs) on top. Below it either the home tab
+   (sidebar + section) or the active session, full width. */
 
 .app {
   display: flex;
@@ -14,33 +16,36 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  position: relative;
 }
 
-.app-main {
+.app-home {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.app-section {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  min-width: 0;
   overflow: hidden;
   background: var(--bg-primary);
 }
 
-.app-content {
+/* Keychain, Port Forwarding and Snippets were built as a 280px side panel;
+   a centred column keeps their stretched buttons and rows readable. */
+.app-section-column {
   flex: 1;
-  display: flex;
   min-height: 0;
-  overflow: hidden;
-  position: relative;
-}
-
-.app-panel {
-  width: var(--panel-width);
-  min-width: var(--panel-width);
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border-primary);
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 16px 16px 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
 
 .app-view {
@@ -70,4 +75,3 @@
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
-

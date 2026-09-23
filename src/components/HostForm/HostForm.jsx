@@ -88,8 +88,13 @@ export default function HostForm() {
 
   const handleSave = async () => {
     if (!validate()) return;
+    /* Start from the freshest copy of the host so fields this form does not
+       edit (os, createdAt, ...) survive: UPDATE_HOST replaces the whole object. */
+    const current = editingHost?.id
+      ? (state.hosts.find(h => h.id === editingHost.id) || { id: editingHost.id })
+      : {};
     const host = {
-      ...(editingHost?.id ? { id: editingHost.id } : {}),
+      ...current,
       label: form.label.trim() || form.hostname,
       hostname: form.hostname.trim(),
       port: parseInt(form.port, 10),

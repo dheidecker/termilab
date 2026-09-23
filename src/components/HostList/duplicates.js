@@ -23,7 +23,7 @@ export function hasCredential(host) {
 
 /* Keep the one that can actually connect, then the organised one, then the
    oldest — the oldest is the one other computers have known longest. */
-function rankForKeeping(a, b) {
+export function rankForKeeping(a, b) {
   return (Number(hasCredential(b)) - Number(hasCredential(a)))
     || (Number(!!b.groupId) - Number(!!a.groupId))
     || String(a.createdAt || '').localeCompare(String(b.createdAt || ''));

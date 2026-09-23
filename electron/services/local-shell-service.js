@@ -1,5 +1,6 @@
 const os = require('os');
 const crypto = require('crypto');
+const connectionLogService = require('./connection-log-service');
 
 let pty;
 try {
@@ -14,6 +15,8 @@ class LocalShellService {
   constructor() {
     /** @type {Map<string, import('node-pty').IPty>} */
     this.shells = new Map();
+    /** sessionId -> connection-log entry id */
+    this.logIds = new Map();
     /** @type {import('electron').BrowserWindow | null} */
     this.mainWindow = null;
   }
@@ -96,6 +99,9 @@ class LocalShellService {
       });
 
       this.shells.set(sessionId, ptyProcess);
+      /* Logs section: start/end only, never what was typed or printed */
+      const logId = connectionLogService.start({ type: 'local' });
+      this.logIds.set(sessionId, logId);
 
       ptyProcess.onData((data) => {
         this._send('local:data', sessionId, data);
@@ -104,6 +110,7 @@ class LocalShellService {
       ptyProcess.onExit(({ exitCode, signal }) => {
         this._send('local:close', sessionId, exitCode, signal);
         this.shells.delete(sessionId);
+        this._endLog(sessionId);
       });
 
       return sessionId;
@@ -160,7 +167,15 @@ class LocalShellService {
       console.error(`[LocalShellService] Error killing session ${sessionId}:`, err.message);
     } finally {
       this.shells.delete(sessionId);
+      this._endLog(sessionId);
     }
+  }
+
+  _endLog(sessionId) {
+    const logId = this.logIds.get(sessionId);
+    if (!logId) return;
+    this.logIds.delete(sessionId);
+    connectionLogService.end(logId);
   }
 
   /**

@@ -58,29 +58,17 @@ export default function Snippets() {
     }
   };
 
+  /* Snippets live on the home tab, so no session is active here: run in the
+     last session tab the user was on (tracked by AppContext). */
+  const target = state.tabs.find(t => t.id === state.lastSessionTabId) || null;
+  const runHint = !target
+    ? 'No open sessions. Open a terminal to run snippets.'
+    : !target.sessionId
+      ? `"${target.label}" is not connected yet.`
+      : `Runs in "${target.label}"`;
+
   const handleRun = (command) => {
-    /* Find a terminal tab to send the command to */
-    const activeTab = state.tabs.find(t => t.id === state.activeTabId);
-    /* Prefer the active tab if it's a terminal, otherwise find any open terminal */
-    let target = null;
-    if (activeTab?.sessionId && (activeTab.type === 'terminal' || activeTab.type === 'local-terminal' || activeTab.type === 'ssh')) {
-      target = activeTab;
-    } else {
-      target = state.tabs.find(t => t.sessionId && (t.type === 'terminal' || t.type === 'local-terminal' || t.type === 'ssh'));
-    }
-    if (!target) {
-      /* No terminal open — open one and queue the command */
-      const tabId = crypto.randomUUID();
-      const sessionId = `local-${tabId}`;
-      actions.addTab({ id: tabId, type: 'local-terminal', label: 'Local Terminal', sessionId });
-      /* Give the terminal time to spawn, then send */
-      setTimeout(() => {
-        try {
-          window.electronAPI?.localShell?.write(sessionId, command + '\n');
-        } catch (e) { /* ignore */ }
-      }, 1500);
-      return;
-    }
+    if (!target?.sessionId) return;
     const hasElectron = typeof window !== 'undefined' && !!window.electronAPI;
     if (hasElectron) {
       if (target.type === 'local-terminal') {
@@ -157,7 +145,12 @@ export default function Snippets() {
                     </svg>
                     {copied === snippet.command ? 'Copied!' : 'Copy'}
                   </button>
-                  <button className="snippet-action-btn run" onClick={(e) => { e.stopPropagation(); handleRun(snippet.command); }}>
+                  <button
+                    className="snippet-action-btn run"
+                    disabled={!target?.sessionId}
+                    title={runHint}
+                    onClick={(e) => { e.stopPropagation(); handleRun(snippet.command); }}
+                  >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <polygon points="5 3 19 12 5 21 5 3" />
                     </svg>
@@ -177,6 +170,9 @@ export default function Snippets() {
                     </svg>
                   </button>
                 </div>
+              )}
+              {activeId === snippet.id && (
+                <div className={`snippet-run-target ${target?.sessionId ? '' : 'none'}`}>{runHint}</div>
               )}
             </div>
           ))

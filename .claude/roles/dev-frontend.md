@@ -190,3 +190,75 @@ backup antiguo con `ai` entra en el estado de React. Parece una fuga y no lo es:
 `store-service.saveSettings()` hace `delete merged.ai` sin condiciones antes de
 escribir. El bloque vive en memoria hasta recargar la app, no se persiste ni se
 reexporta. Si vas a "arreglar" el import, ten claro que arreglas eso.
+
+## Layout tipo Termius (rama `feat/ui-termius`)
+
+- **La pestaña home no está en `state.tabs`**: es lo que se ve cuando
+  `activeTabId` no corresponde a ninguna pestaña (`goHome()` lo pone a `null`).
+  `homeActive = !tabs.some(t => t.id === activeTabId)` vive en `App` y en
+  `TabBar`; si cambias uno, cambia el otro.
+- Home (sidebar + sección) y sesiones están **montadas a la vez** y se alternan
+  con `display`: búsqueda y grupo abierto en Hosts sobreviven al cambiar de
+  pestaña; al cambiar de sección del sidebar se pierden (se desmonta).
+- Keychain/Port Forwarding/Snippets nacieron como panel de 280px; van dentro de
+  `.app-section-column` (max 760px) o sus botones `width:100%` se estiran.
+- `parseQuickConnect` devuelve `null` sin `@`: la barra de Hosts es búsqueda y
+  quick connect a la vez; "web" no debe conectar a root@web.
+
+### Capturas con interacción (Linux)
+
+Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar:
+`npm run build`, servir `dist/` con `python3 -m http.server`, Chrome headless con
+`--remote-debugging-port`, y CDP con el `WebSocket` global de Node 24
+(`Runtime.evaluate` → `.click()`, `Input.dispatchMouseEvent` → hover,
+`Page.captureScreenshot`). `vite` a secas no sirve: arranca Electron. Tema claro:
+`data-theme='light'` en `<html>` más el `--accent` sombreado a mano.
+
+## Known Hosts, Logs y el diálogo de clave de host (2026-09)
+
+- `HostKeyPrompt` (montado en `App`) es el **único** suscriptor de
+  `ssh:host-key-prompt`/`-cancel`; no está en `ssh.removeAllListeners`. Si un
+  recargado completo del renderer ocurre con un aviso abierto, el aviso se
+  pierde y main rechaza a los 120 s (la pestaña se queda en "Connecting").
+- Para `changed` el foco va a **Cancel** y el botón rojo dice "Replace key &
+  connect": es requisito, no estilo.
+- Known hosts y logs **no** viven en el estado de `AppContext`: cada sección los
+  pide al montar (`listKnownHosts`, `listConnectionLogs`). Logs recarga cuando
+  cambia el nº de sesiones/pestañas (main escribe en diferido).
+- `displayHost` está duplicado en `KnownHosts/format.js` y
+  `electron/services/known-hosts.js`. El color de host salió de `HostList` a
+  `HostList/hostColor.js` (lo usan Hosts y Logs).
+- Captura del diálogo: en modo mock no hay `electronAPI`, así que no puede venir
+  de main; se renderiza `HostKeyDialog` con `react-dom/server` y se inyecta por
+  CDP en la página de `dist/`. Ojo: heredoc sin comillas + backticks de JS =
+  sustitución de comandos de bash; usa `<<'EOF'`.
+
+## Port forwarding y ViewOptions (2026-09)
+
+- `state.portForwardStatus` (ruleId → {state, error}) tiene **un** suscriptor,
+  en `AppContext`. Las reglas no llevan `active`; `startPortForward(ruleId)`
+  nunca lanza (el fallo queda como `error`). Un efecto para lo que siga en
+  marcha si su regla desaparece (un pull de sync la borró).
+- `src/components/PortForwarding/rules.js` es copia de
+  `electron/services/port-forward-rules.js`: se cambian juntas.
+- **Choque de nombres de clase**: `pf-card-${state}` daba `pf-card-error`, que
+  ya era la línea de texto del error (y en lista `display:none` escondía la
+  tarjeta entera). El estado va en `pf-state-*`.
+- `.hv-menu { left: 0 }` de HostList.css se carga **después** del CSS del
+  componente (orden de import): a igual especificidad gana y el menú se sale
+  por la derecha. Por eso `.hv-menu.vo-menu`.
+- `ViewOptions` (View/Tags/Sort) se usa en Hosts, Port Forwarding y Known
+  Hosts. Hosts mantiene la clave vieja `termilab.hosts.view`; el filtro de tags
+  no se persiste. Menús: mousedown fuera, Esc devuelve el foco al botón.
+
+## Revisión 2026-09 (host key y OS)
+
+- `HostKeyPrompt`: `reason` puede ser `'new-key-type'` (host conocido solo por
+  otros tipos de clave). Se pinta como `'changed'`: aviso, foco en Cancel,
+  botón rojo "Add key & connect", y las huellas guardadas de
+  `knownFingerprints` [{keyType, fingerprint}]. Aceptar agrega, no reemplaza.
+  `'unknown'` ya no trae `knownTypes`.
+- El OS detectado se guarda con `store.setHostOs(hostId, os)` (main escribe
+  solo `os` bajo lock y devuelve el host o null). No vuelvas a
+  `saveHost({...fresh, os})`: pisaba lo que un pull de sync acababa de
+  escribir (contraseña incluida) y lo subía. El arnés K15 mira el fuente.

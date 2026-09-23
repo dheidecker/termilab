@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import TabBar from '../TabBar/TabBar';
+import { MenuIcon } from '../Icons/icons';
 import './Titlebar.css';
 
 const api = () => window.electronAPI;
@@ -9,7 +11,7 @@ const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
    once. We hide ours and leave room on the left for the system's. */
 const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
 
-export default function Titlebar() {
+export default function Titlebar({ sidebarCollapsed = false, onToggleSidebar }) {
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
@@ -31,14 +33,19 @@ export default function Titlebar() {
   return (
     <div className={`titlebar${isMac ? ' titlebar-mac' : ''}`}>
       <div className="titlebar-left">
-        <svg className="titlebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="4 17 10 11 4 5" />
-          <line x1="12" y1="19" x2="20" y2="19" />
-        </svg>
-        <span className="titlebar-title">Termilab</span>
+        <button
+          className="titlebar-menu-btn"
+          onClick={onToggleSidebar}
+          aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-expanded={!sidebarCollapsed}
+          title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          <MenuIcon />
+        </button>
       </div>
 
-      <div className="titlebar-center" />
+      {/* Tabs live in the title bar; the empty space after them still drags the window */}
+      <TabBar />
 
       {!isMac && <div className="titlebar-controls">
         <button className="titlebar-btn" onClick={handleMinimize} aria-label="Minimize">

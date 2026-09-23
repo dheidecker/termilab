@@ -1,68 +1,34 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../../contexts/AppContext';
+import { VaultIcon, ServerIcon, TerminalIcon, FolderIcon, PlusIcon, CloseIcon, BroadcastIcon } from '../Icons/icons';
 import './TabBar.css';
 
-/* Tab type icons */
-const TerminalIcon = () => (
-  <svg className="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="4 17 10 11 4 5" />
-    <line x1="12" y1="19" x2="20" y2="19" />
-  </svg>
-);
-
-const SSHIcon = () => (
-  <svg className="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="2" y="3" width="20" height="7" rx="1.5" />
-    <rect x="2" y="14" width="20" height="7" rx="1.5" />
-    <circle cx="6" cy="6.5" r="1" fill="currentColor" stroke="none" />
-    <circle cx="6" cy="17.5" r="1" fill="currentColor" stroke="none" />
-  </svg>
-);
-
-const SFTPIcon = () => (
-  <svg className="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2v11z" />
-  </svg>
-);
-
 function getTabIcon(tab) {
-  if (tab.type === 'sftp') return <SFTPIcon />;
-  if (tab.type === 'local-terminal') return <TerminalIcon />;
-  if (tab.type === 'settings') return (
-    <svg className="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="3"/>
-      <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
-    </svg>
-  );
-  return <SSHIcon />;
+  if (tab.type === 'sftp') return <FolderIcon className="tab-icon" />;
+  if (tab.type === 'local-terminal') return <TerminalIcon className="tab-icon" />;
+  return <ServerIcon className="tab-icon" />;
 }
 
+/**
+ * The tab strip, drawn inside the title bar. The first tab is the permanent
+ * home tab (Hosts, Keychain, … — whatever the sidebar picks); it is not in
+ * `state.tabs` and is active whenever `activeTabId` is null. Session tabs
+ * follow, then "+" for a new local terminal.
+ */
 export default function TabBar() {
   const { state, actions } = useApp();
   const { tabs, activeTabId, broadcast } = state;
-  const [showAddMenu, setShowAddMenu] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
-  const addRef = useRef(null);
 
-  /* Close menus on outside click */
+  const visibleTabs = tabs.filter(t => !t.hidden);
+  const homeActive = !tabs.some(t => t.id === activeTabId);
+
+  /* Close the context menu on outside click */
   useEffect(() => {
-    const handler = (e) => {
-      setContextMenu(null);
-      if (addRef.current && !addRef.current.contains(e.target)) {
-        setShowAddMenu(false);
-      }
-    };
+    const handler = () => setContextMenu(null);
     document.addEventListener('click', handler);
     return () => document.removeEventListener('click', handler);
   }, []);
-
-  /* Middle-click to close */
-  const handleMouseDown = (e, tabId) => {
-    if (e.button === 1) {
-      e.preventDefault();
-      handleCloseTab(tabId);
-    }
-  };
 
   const handleCloseTab = useCallback(async (tabId) => {
     const tab = tabs.find(t => t.id === tabId);
@@ -83,21 +49,17 @@ export default function TabBar() {
     actions.removeTab(tabId);
   }, [tabs, actions]);
 
-  const handleContextMenu = (e, tab) => {
-    e.preventDefault();
-    setContextMenu({ x: e.clientX, y: e.clientY, tab });
+  /* Middle-click to close */
+  const handleMouseDown = (e, tabId) => {
+    if (e.button === 1) {
+      e.preventDefault();
+      handleCloseTab(tabId);
+    }
   };
 
-  const openLocalTerminal = () => {
-    const tabId = crypto.randomUUID();
-    const sessionId = `local-${tabId}`;
-    actions.addTab({
-      id: tabId,
-      type: 'local-terminal',
-      label: 'Local Terminal',
-      sessionId,
-    });
-    setShowAddMenu(false);
+  const handleContextMenu = (e, tab) => {
+    e.preventDefault();
+    setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 170), y: e.clientY, tab });
   };
 
   const closeOtherTabs = () => {
@@ -111,24 +73,26 @@ export default function TabBar() {
 
   return (
     <div className="tab-bar">
-      {/* Broadcast active indicator */}
-      {broadcast && (
-        <div className="broadcast-indicator">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9" />
-            <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4" />
-            <circle cx="12" cy="12" r="2" />
-            <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4" />
-            <path d="M19.1 4.9C23 8.8 23 15.2 19.1 19.1" />
-          </svg>
-          <span>BROADCAST</span>
+      <div className="tab-bar-tabs" role="tablist">
+        <div
+          className={`tab tab-home ${homeActive ? 'active' : ''}`}
+          role="tab"
+          aria-selected={homeActive}
+          tabIndex={0}
+          onClick={actions.goHome}
+          onKeyDown={(e) => { if (e.key === 'Enter') actions.goHome(); }}
+        >
+          <VaultIcon className="tab-icon" />
+          <span className="tab-label">Hosts</span>
         </div>
-      )}
-      <div className="tab-bar-tabs">
-        {tabs.filter(t => !t.hidden).map(tab => (
+
+        {visibleTabs.map(tab => (
           <div
             key={tab.id}
             className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.notify ? 'notify' : ''}`}
+            role="tab"
+            aria-selected={tab.id === activeTabId}
+            title={tab.label}
             onClick={() => actions.setActiveTab(tab.id)}
             onMouseDown={(e) => handleMouseDown(e, tab.id)}
             onContextMenu={(e) => handleContextMenu(e, tab)}
@@ -140,78 +104,46 @@ export default function TabBar() {
             <span className="tab-label">{tab.label}</span>
             <button
               className="tab-close"
+              aria-label={`Close ${tab.label}`}
               onClick={(e) => {
                 e.stopPropagation();
                 handleCloseTab(tab.id);
               }}
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <line x1="6" y1="6" x2="18" y2="18" />
-                <line x1="6" y1="18" x2="18" y2="6" />
-              </svg>
+              <CloseIcon />
             </button>
           </div>
         ))}
       </div>
 
-      <div className="tab-bar-add" ref={addRef}>
-        <button
-          className={`broadcast-toggle-btn ${broadcast ? 'active' : ''}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            actions.toggleBroadcast();
-          }}
-          title={broadcast ? 'Disable Broadcast Input' : 'Enable Broadcast Input — type in all tabs at once'}
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9" />
-            <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4" />
-            <circle cx="12" cy="12" r="2" />
-            <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4" />
-            <path d="M19.1 4.9C23 8.8 23 15.2 19.1 19.1" />
-          </svg>
-        </button>
-        <button
-          className="tab-add-btn"
-          onClick={(e) => {
-            e.stopPropagation();
-            setShowAddMenu(!showAddMenu);
-          }}
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-        </button>
+      <button
+        className="tab-add-btn"
+        onClick={actions.openLocalTerminal}
+        title="New local terminal (Ctrl+T)"
+        aria-label="New local terminal"
+      >
+        <PlusIcon />
+      </button>
 
-        {showAddMenu && (
-          <div className="tab-add-dropdown">
-            <button className="tab-add-dropdown-item" onClick={openLocalTerminal}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="4 17 10 11 4 5" />
-                <line x1="12" y1="19" x2="20" y2="19" />
-              </svg>
-              New Local Terminal
-            </button>
-            <button
-              className="tab-add-dropdown-item"
-              onClick={() => {
-                actions.setActiveSection('hosts');
-                actions.openHostForm(null);
-                setShowAddMenu(false);
-              }}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="2" y="3" width="20" height="7" rx="1.5" />
-                <rect x="2" y="14" width="20" height="7" rx="1.5" />
-                <circle cx="6" cy="6.5" r="1" fill="currentColor" stroke="none" />
-                <circle cx="6" cy="17.5" r="1" fill="currentColor" stroke="none" />
-              </svg>
-              New Host Connection
-            </button>
-          </div>
-        )}
-      </div>
+      {/* Empty strip: drags the window */}
+      <div className="tab-bar-drag" />
+
+      {broadcast && (
+        <div className="broadcast-indicator">
+          <BroadcastIcon />
+          <span>Broadcast</span>
+        </div>
+      )}
+      <button
+        className={`broadcast-toggle-btn ${broadcast ? 'active' : ''}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          actions.toggleBroadcast();
+        }}
+        title={broadcast ? 'Disable Broadcast Input' : 'Enable Broadcast Input — type in all tabs at once'}
+      >
+        <BroadcastIcon />
+      </button>
 
       {/* Tab context menu */}
       {contextMenu && (

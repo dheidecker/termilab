@@ -1,45 +1,54 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import DuplicateReview from './DuplicateReview';
-import { findDuplicateGroups } from './duplicates';
+import { findDuplicateGroups, endpointKey, rankForKeeping } from './duplicates';
+import { parseQuickConnect } from './quickConnect';
+import {
+  ServerIcon, GroupIcon, TerminalIcon, SearchIcon, ChevronDownIcon, ChevronRightIcon,
+  PencilIcon, CopyIcon, TrashIcon, FolderIcon, SessionIcon, PlusIcon, CloseIcon, TagIcon,
+} from '../Icons/icons';
+import ViewOptions, { useViewChoice, useSortChoice, sortItems } from '../ViewOptions/ViewOptions';
+import { distroFor, DistroLogo } from '../Icons/distros';
+import { PALETTE, hostColor } from './hostColor';
 import './HostList.css';
 
-/* Generate a stable color from a string */
-function hashColor(str) {
-  let hash = 0;
-  for (let i = 0; i < (str || '').length; i++) {
-    hash = str.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const hue = Math.abs(hash % 360);
-  return `hsl(${hue}, 55%, 55%)`;
-}
+const hostCount = (n) => `${n} ${n === 1 ? 'Host' : 'Hosts'}`;
+/* With a tag filter on, a group card says how many of its hosts match */
+const matchCount = (n, total, filtering) => (filtering ? `${n} of ${hostCount(total)}` : hostCount(total));
+const hostName = (h) => h.label || h.hostname;
 
-/* Get initials from label */
-function getInitials(label) {
-  if (!label) return '?';
-  const words = label.trim().split(/\s+/);
-  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
-  return label.substring(0, 2).toUpperCase();
-}
-
-export default function HostList({ sftpMode = false }) {
+export default function HostList() {
   const { state, actions } = useApp();
   const { hosts, groups, activeSessions } = state;
+  const {
+    connectToHost, openSFTPTab, openHostForm, saveHost, deleteHost, saveGroup, mergeHosts, openLocalTerminal,
+  } = actions;
+
   const [search, setSearch] = useState('');
-  const [collapsedGroups, setCollapsedGroups] = useState({});
+  const [groupId, setGroupId] = useState(null);
+  /* Same localStorage key as the old grid/list toggle, so the choice survives */
+  const [view, changeView] = useViewChoice('termilab.hosts.view');
+  const [sort, setSort] = useSortChoice('termilab.hosts.sort');
+  const [tagFilter, setTagFilter] = useState([]);
   const [contextMenu, setContextMenu] = useState(null);
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [showDuplicates, setShowDuplicates] = useState(false);
+  const [dragTarget, setDragTarget] = useState(null);
+  const searchRef = useRef(null);
+  const groupInputRef = useRef(null);
+  const newMenuRef = useRef(null);
 
-  /* Same user@host:port saved more than once. Not in SFTP mode: that list is
-     for picking a server, not for tidying the collection. */
-  const duplicateGroups = useMemo(
-    () => (sftpMode ? [] : findDuplicateGroups(hosts)),
-    [hosts, sftpMode]
-  );
+  /* Same user@host:port saved more than once. */
+  const duplicateGroups = useMemo(() => findDuplicateGroups(hosts), [hosts]);
+  /* id → label, the shape DuplicateReview expects */
   const groupsById = useMemo(
     () => Object.fromEntries((groups || []).map(g => [g.id, g.label || g.name])),
+    [groups]
+  );
+  const groupMap = useMemo(
+    () => Object.fromEntries((groups || []).map(g => [g.id, g])),
     [groups]
   );
   const undecryptableIds = state.sync?.status?.undecryptableIds || [];
@@ -56,81 +65,132 @@ export default function HostList({ sftpMode = false }) {
       : syncStatus.signedIn && !syncStatus.unlocked
         ? 'Unlock this computer in Settings → Sync first. Until then Termilab cannot tell which of these passwords are sealed by another computer, and a merge would delete them there too.'
         : null;
-  const [dragTarget, setDragTarget] = useState(null);
-  const menuRef = useRef(null);
-  const groupInputRef = useRef(null);
 
-  /* Filter hosts */
-  const filteredHosts = hosts.filter(h => {
-    const q = search.toLowerCase();
-    return (
-      h.label?.toLowerCase().includes(q) ||
-      h.hostname?.toLowerCase().includes(q) ||
-      h.username?.toLowerCase().includes(q)
-    );
-  });
+  /* A group that was deleted (here or by sync) while we were inside it */
+  const currentGroup = groupId ? groupMap[groupId] || null : null;
 
-  /* Group hosts */
-  const groupedHosts = {};
-  const ungrouped = [];
-  filteredHosts.forEach(h => {
-    if (h.groupId) {
-      if (!groupedHosts[h.groupId]) groupedHosts[h.groupId] = [];
-      groupedHosts[h.groupId].push(h);
-    } else {
-      ungrouped.push(h);
-    }
-  });
+  /* ─── Filtering ─── */
+  const q = search.trim().toLowerCase();
+  const parsedQuick = parseQuickConnect(search);
+  /* user@host[:port] of a saved host connects to that host, with its credentials */
+  const quickKey = parsedQuick && endpointKey(parsedQuick);
+  const savedQuick = quickKey
+    ? hosts.filter(h => endpointKey(h) === quickKey).sort(rankForKeeping)[0]
+    : null;
+  const quickHost = savedQuick || parsedQuick;
+
+  /* Tags in use, and the selected ones that still exist (a host edit can
+     remove the last use of a tag while it is selected). */
+  const allTags = useMemo(
+    () => [...new Set(hosts.flatMap(h => (Array.isArray(h.tags) ? h.tags : [])).filter(t => typeof t === 'string' && t))]
+      .sort((a, b) => a.localeCompare(b)),
+    [hosts]
+  );
+  const activeTags = tagFilter.filter(t => allTags.includes(t));
+  const tagFiltering = activeTags.length > 0;
+  /* ANY selected tag */
+  const tagMatches = (h) => !tagFiltering || (h.tags || []).some(t => activeTags.includes(t));
+
+  const textMatches = (h) => !q || [
+    h.label, h.hostname, h.username, `${h.username}@${h.hostname}`, ...(h.tags || []),
+  ].some(v => typeof v === 'string' && v.toLowerCase().includes(q));
+  const hostMatches = (h) => textMatches(h) && tagMatches(h);
+
+  const hostsInGroup = (id) => hosts.filter(h => h.groupId === id);
+  const matchingInGroup = (id) => hostsInGroup(id).filter(tagMatches).length;
+
+  let visibleGroups = [];
+  let visibleHosts;
+  if (currentGroup) {
+    visibleHosts = hostsInGroup(currentGroup.id).filter(hostMatches);
+  } else if (q) {
+    /* Searching from the top level looks through every group */
+    visibleGroups = groups.filter(g => (g.label || '').toLowerCase().includes(q)
+      && (!tagFiltering || matchingInGroup(g.id) > 0));
+    visibleHosts = hosts.filter(hostMatches);
+  } else {
+    /* Filtering by tag keeps the groups that hold a match, with their count */
+    visibleGroups = tagFiltering ? groups.filter(g => matchingInGroup(g.id) > 0) : groups;
+    /* A host pointing at a group that no longer exists would vanish otherwise */
+    visibleHosts = hosts.filter(h => (!h.groupId || !groupMap[h.groupId]) && tagMatches(h));
+  }
+  visibleGroups = sortItems(visibleGroups, sort, { label: g => g.label, date: g => g.createdAt });
+  visibleHosts = sortItems(visibleHosts, sort, { label: hostName, date: h => h.createdAt });
 
   const isConnected = (hostId) =>
     Object.values(activeSessions).some(s => s.hostId === hostId);
 
-  const toggleGroup = (groupId) =>
-    setCollapsedGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }));
+  const colorFor = (host) => hostColor(host, groupMap);
 
-  /* Connect */
+  /* ─── Connect ─── */
   const handleConnect = useCallback(async (host) => {
     try {
-      if (sftpMode) {
-        await actions.openSFTPTab(host);
-      } else {
-        await actions.connectToHost(host);
-      }
+      await connectToHost(host);
     } catch (err) {
       console.error('Connection failed:', err);
     }
-  }, [actions, sftpMode]);
+  }, [connectToHost]);
 
-  /* Right-click context menu */
+  /* An empty box is not a request to connect, even with one host showing */
+  const canSubmit = !!q && (!!quickHost || visibleHosts.length === 1);
+  const submitSearch = () => {
+    if (!canSubmit) return;
+    if (quickHost) {
+      handleConnect(quickHost);
+      setSearch('');
+    } else if (visibleHosts.length === 1) {
+      handleConnect(visibleHosts[0]);
+    }
+  };
+
+  const handleSearchKeyDown = (e) => {
+    if (e.key === 'Enter') submitSearch();
+    if (e.key === 'Escape') setSearch('');
+  };
+
+  /* ─── Menus: close on any outside click ─── */
+  useEffect(() => {
+    if (!contextMenu && !newMenuOpen) return undefined;
+    const close = (e) => {
+      if (newMenuRef.current && newMenuRef.current.contains(e.target)) return;
+      setContextMenu(null);
+      setNewMenuOpen(false);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') { setContextMenu(null); setNewMenuOpen(false); } };
+    document.addEventListener('click', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('click', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [contextMenu, newMenuOpen]);
+
   const handleContextMenu = (e, host) => {
     e.preventDefault();
     e.stopPropagation();
-    setContextMenu({ x: e.clientX, y: e.clientY, host });
+    /* Keep the menu on screen near the right and bottom edges */
+    const x = Math.min(e.clientX, window.innerWidth - 200);
+    const y = Math.min(e.clientY, window.innerHeight - 250);
+    setContextMenu({ x, y, host });
   };
 
-  /* Close context menu on click outside */
-  useEffect(() => {
-    const handleClick = () => setContextMenu(null);
-    if (contextMenu) {
-      document.addEventListener('click', handleClick);
-      return () => document.removeEventListener('click', handleClick);
-    }
-  }, [contextMenu]);
-
-  /* Context menu actions */
+  /* Context menu actions — the same set the old sidebar list had */
   const ctxConnect = () => contextMenu && handleConnect(contextMenu.host);
-  const ctxSftp = () => contextMenu && actions.openSFTPTab(contextMenu.host);
-  const ctxEdit = () => contextMenu && actions.openHostForm(contextMenu.host);
+  const ctxNewSession = () => contextMenu && connectToHost(contextMenu.host);
+  const ctxSftp = () => contextMenu && openSFTPTab(contextMenu.host);
+  const ctxEdit = () => contextMenu && openHostForm(contextMenu.host);
   const ctxDuplicate = () => {
     if (contextMenu) {
       const dup = { ...contextMenu.host, id: undefined, label: `${contextMenu.host.label} (copy)` };
-      actions.saveHost(dup);
+      saveHost(dup);
     }
   };
-  const ctxDelete = () => contextMenu && actions.deleteHost(contextMenu.host.id);
+  const ctxDelete = () => contextMenu && deleteHost(contextMenu.host.id);
 
-  /* New group — inline input */
+  /* ─── New group — inline input ─── */
   const handleNewGroup = () => {
+    setNewMenuOpen(false);
+    setGroupId(null);
     setShowNewGroup(true);
     setNewGroupName('');
     setTimeout(() => groupInputRef.current?.focus(), 50);
@@ -139,232 +199,307 @@ export default function HostList({ sftpMode = false }) {
   const submitNewGroup = async () => {
     if (newGroupName.trim()) {
       const hue = Math.floor(Math.random() * 360);
-      await actions.saveGroup({ label: newGroupName.trim(), color: `hsl(${hue}, 55%, 55%)` });
+      await saveGroup({ label: newGroupName.trim(), color: `hsl(${hue}, 55%, 55%)` });
     }
     setShowNewGroup(false);
     setNewGroupName('');
   };
 
-  /* ─── Drag & Drop ─── */
+  /* ─── Drag a host onto a group card (or onto "Hosts" to ungroup it) ─── */
   const handleDragStart = (e, host) => {
     e.dataTransfer.setData('text/plain', host.id);
     e.dataTransfer.effectAllowed = 'move';
   };
 
-  const handleDragOver = (e, groupId) => {
+  const handleDragOver = (e, target) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    setDragTarget(groupId);
+    setDragTarget(target);
   };
 
   const handleDragLeave = () => setDragTarget(null);
 
-  const handleDrop = async (e, groupId) => {
+  const handleDrop = async (e, targetGroupId) => {
     e.preventDefault();
     setDragTarget(null);
     const hostId = e.dataTransfer.getData('text/plain');
     const host = hosts.find(h => h.id === hostId);
     if (host) {
-      await actions.saveHost({ ...host, groupId: groupId || null });
+      await saveHost({ ...host, groupId: targetGroupId || null });
     }
   };
 
-  /* Chevron icon */
-  const Chevron = ({ collapsed }) => (
-    <svg className={`host-group-chevron ${collapsed ? 'collapsed' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="6 9 12 15 18 9" />
-    </svg>
-  );
+  const enterGroup = (id) => {
+    setGroupId(id);
+    setSearch('');
+  };
 
-  /* Render a host card */
-  const renderHost = (host) => {
-    const color = hashColor(host.label || host.hostname);
-    const connected = isConnected(host.id);
-    const displayLabel = host.label || host.hostname;
-
+  /* ─── Render pieces ─── */
+  const renderGroup = (group) => {
+    const total = hostsInGroup(group.id).length;
+    const count = matchingInGroup(group.id);
     return (
       <div
-        key={host.id}
-        className={`host-card ${connected ? 'connected' : ''}`}
-        draggable
-        onDragStart={(e) => handleDragStart(e, host)}
-        onClick={() => handleConnect(host)}
-        onContextMenu={(e) => handleContextMenu(e, host)}
+        key={group.id}
+        className={`hv-card hv-group ${dragTarget === group.id ? 'drag-over' : ''}`}
+        role="button"
+        tabIndex={0}
+        onClick={() => enterGroup(group.id)}
+        onKeyDown={(e) => { if (e.key === 'Enter') enterGroup(group.id); }}
+        onDragOver={(e) => handleDragOver(e, group.id)}
+        onDragLeave={handleDragLeave}
+        onDrop={(e) => handleDrop(e, group.id)}
       >
-        {/* Avatar */}
-        <div className="host-card-avatar" style={{ background: color }}>
-          <span>{getInitials(displayLabel)}</span>
-          {connected && <div className="host-card-status-dot" />}
+        <div className="hv-icon" style={{ background: group.color || PALETTE[0] }}>
+          <GroupIcon />
         </div>
-
-        {/* Info */}
-        <div className="host-card-info">
-          <div className="host-card-label">{displayLabel}</div>
-          <div className="host-card-address">
-            {host.username}@{host.hostname}{host.port && host.port !== 22 ? `:${host.port}` : ''}
-          </div>
-        </div>
-
-        {/* Actions on hover */}
-        <div className="host-card-actions">
-          <button
-            className="host-card-action-btn"
-            title="Edit"
-            onClick={(e) => { e.stopPropagation(); actions.openHostForm(host); }}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
-              <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
-            </svg>
-          </button>
-          <button
-            className="host-card-action-btn"
-            title="SFTP"
-            onClick={(e) => { e.stopPropagation(); actions.openSFTPTab(host); }}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2v11z" />
-            </svg>
-          </button>
+        <div className="hv-card-text">
+          <div className="hv-card-label">{group.label}</div>
+          <div className="hv-card-sub">{matchCount(count, total, tagFiltering)}</div>
         </div>
       </div>
     );
   };
 
+  const renderHost = (host) => {
+    const connected = isConnected(host.id);
+    const displayLabel = host.label || host.hostname;
+    const address = `${host.username}@${host.hostname}${host.port && host.port !== 22 ? `:${host.port}` : ''}`;
+    const groupLabel = !currentGroup && q && host.groupId && groupMap[host.groupId]?.label;
+    const distro = distroFor(host.os);
+
+    return (
+      <div
+        key={host.id}
+        className={`hv-card hv-host ${connected ? 'connected' : ''}`}
+        role="button"
+        tabIndex={0}
+        title={address}
+        draggable
+        onDragStart={(e) => handleDragStart(e, host)}
+        onClick={() => handleConnect(host)}
+        onKeyDown={(e) => { if (e.key === 'Enter') handleConnect(host); }}
+        onContextMenu={(e) => handleContextMenu(e, host)}
+      >
+        <div
+          className={`hv-icon ${distro ? 'hv-icon-distro' : ''}`}
+          style={{ background: distro ? distro.bg : colorFor(host) }}
+          title={distro ? distro.label : undefined}
+        >
+          {distro ? <DistroLogo os={host.os} /> : <ServerIcon />}
+          {connected && <span className="hv-icon-dot" aria-label="Connected" />}
+        </div>
+        <div className="hv-card-text">
+          <div className="hv-card-label">{displayLabel}</div>
+          <div className="hv-card-sub">
+            ssh, {host.username}
+            {groupLabel ? <span className="hv-card-group"> · {groupLabel}</span> : null}
+          </div>
+        </div>
+        {view === 'list' && <div className="hv-row-address">{address}</div>}
+        <button
+          className="hv-card-edit"
+          title="Edit host"
+          aria-label={`Edit ${displayLabel}`}
+          onClick={(e) => { e.stopPropagation(); openHostForm(host); }}
+        >
+          <PencilIcon />
+        </button>
+      </div>
+    );
+  };
+
+  const noHostsAtAll = hosts.length === 0 && groups.length === 0;
+  const showGroupsSection = !currentGroup && (visibleGroups.length > 0 || showNewGroup);
+  const nothingMatches = !noHostsAtAll && visibleHosts.length === 0 && visibleGroups.length === 0;
+
   return (
-    <div className="host-list">
-      <div className="host-list-header">
-        <h2>{sftpMode ? 'SFTP' : 'Hosts'}</h2>
-        <div className="host-search">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
+    <div className="hosts-view">
+      <div className="hv-top">
+        {/* Search / quick connect */}
+        <div className="hv-search">
+          <SearchIcon className="hv-search-icon" />
           <input
+            ref={searchRef}
             type="text"
-            placeholder="Search hosts..."
+            placeholder="Find a host or ssh user@hostname…"
             value={search}
             onChange={e => setSearch(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
+            spellCheck={false}
+            aria-label="Find a host or connect with user@hostname"
           />
-        </div>
-        <div className="host-list-actions">
-          <button className="host-list-action-btn primary" onClick={() => actions.openHostForm()}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            New Host
-          </button>
-          <button className="host-list-action-btn" onClick={handleNewGroup}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            Group
+          {search && (
+            <button className="hv-search-clear" onClick={() => setSearch('')} aria-label="Clear search">
+              <CloseIcon />
+            </button>
+          )}
+          <button className="hv-connect-btn" onClick={submitSearch} disabled={!canSubmit}>
+            Connect
           </button>
         </div>
-        {showNewGroup && (
-          <div className="host-new-group-input">
-            <input
-              ref={groupInputRef}
-              type="text"
-              placeholder="Group name..."
-              value={newGroupName}
-              onChange={e => setNewGroupName(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') submitNewGroup();
-                if (e.key === 'Escape') { setShowNewGroup(false); setNewGroupName(''); }
-              }}
-              onBlur={submitNewGroup}
-            />
+        {quickHost && (
+          <div className="hv-quick-hint">
+            Press Enter to connect to <strong>{quickHost.username}@{quickHost.hostname}</strong>
+            {(Number(quickHost.port) || 22) !== 22 ? <> on port <strong>{quickHost.port}</strong></> : null}
+            {savedQuick ? <> using saved host <strong>{savedQuick.label || savedQuick.hostname}</strong></> : null}
           </div>
         )}
+
+        {/* Action row */}
+        <div className="hv-actions">
+          <div className="hv-split" ref={newMenuRef}>
+            <button className="hv-btn hv-btn-primary hv-split-main" onClick={() => openHostForm()}>
+              <ServerIcon />
+              New host
+            </button>
+            <button
+              className="hv-btn hv-btn-primary hv-split-toggle"
+              aria-label="More new items"
+              aria-expanded={newMenuOpen}
+              onClick={() => setNewMenuOpen(o => !o)}
+            >
+              <ChevronDownIcon />
+            </button>
+            {newMenuOpen && (
+              <div className="hv-menu hv-split-menu">
+                <button className="hv-menu-item" onClick={() => { setNewMenuOpen(false); openHostForm(); }}>
+                  <ServerIcon /> New host
+                </button>
+                <button className="hv-menu-item" onClick={handleNewGroup}>
+                  <GroupIcon /> New group
+                </button>
+              </div>
+            )}
+          </div>
+          <button className="hv-btn" onClick={openLocalTerminal}>
+            <TerminalIcon />
+            Terminal
+          </button>
+
+          <div className="hv-actions-spacer" />
+
+          <ViewOptions
+            view={view}
+            onViewChange={changeView}
+            sort={sort}
+            onSortChange={setSort}
+            tags={allTags}
+            selectedTags={activeTags}
+            onTagsChange={setTagFilter}
+          />
+        </div>
       </div>
 
-      {duplicateGroups.length > 0 && !showDuplicates && (
-        <button className="dup-banner" onClick={() => setShowDuplicates(true)}>
-          <span>
-            {duplicateGroups.length === 1
-              ? '1 server is saved more than once'
-              : `${duplicateGroups.length} servers are saved more than once`}
-          </span>
-          <span className="dup-banner-action">Review</span>
-        </button>
-      )}
-      {showDuplicates && duplicateGroups.length > 0 && (
-        <DuplicateReview
-          duplicateGroups={duplicateGroups}
-          groupsById={groupsById}
-          undecryptableIds={undecryptableIds}
-          mergeBlockedReason={mergeBlockedReason}
-          onMerge={actions.mergeHosts}
-          onClose={() => setShowDuplicates(false)}
-        />
-      )}
+      <div className="hv-scroll">
+        {duplicateGroups.length > 0 && !showDuplicates && (
+          <button className="dup-banner" onClick={() => setShowDuplicates(true)}>
+            <span>
+              {duplicateGroups.length === 1
+                ? '1 server is saved more than once'
+                : `${duplicateGroups.length} servers are saved more than once`}
+            </span>
+            <span className="dup-banner-action">Review</span>
+          </button>
+        )}
+        {showDuplicates && duplicateGroups.length > 0 && (
+          <DuplicateReview
+            duplicateGroups={duplicateGroups}
+            groupsById={groupsById}
+            undecryptableIds={undecryptableIds}
+            mergeBlockedReason={mergeBlockedReason}
+            onMerge={mergeHosts}
+            onClose={() => setShowDuplicates(false)}
+          />
+        )}
 
-      <div className="host-list-content">
-        {filteredHosts.length === 0 ? (
-          <div className="host-list-empty">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="3" width="20" height="7" rx="1.5" />
-              <rect x="2" y="14" width="20" height="7" rx="1.5" />
-              <circle cx="6" cy="6.5" r="1" fill="currentColor" stroke="none" />
-              <circle cx="6" cy="17.5" r="1" fill="currentColor" stroke="none" />
-            </svg>
-            <p>
-              No hosts yet.<br />
-              Add your first server to get started.
-            </p>
+        {currentGroup && (
+          <nav className="hv-breadcrumb" aria-label="Breadcrumb">
+            <button
+              className={`hv-crumb ${dragTarget === '__root' ? 'drag-over' : ''}`}
+              onClick={() => enterGroup(null)}
+              onDragOver={(e) => handleDragOver(e, '__root')}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => handleDrop(e, null)}
+              title="Back to all hosts (drop a host here to take it out of the group)"
+            >
+              Hosts
+            </button>
+            <ChevronRightIcon className="hv-crumb-sep" />
+            <span className="hv-crumb-current">{currentGroup.label}</span>
+            <span className="hv-crumb-count">
+              {matchCount(matchingInGroup(currentGroup.id), hostsInGroup(currentGroup.id).length, tagFiltering)}
+            </span>
+          </nav>
+        )}
+
+        {noHostsAtAll && !showNewGroup ? (
+          <div className="hv-empty">
+            <div className="hv-empty-icon"><ServerIcon /></div>
+            <h3>No hosts yet</h3>
+            <p>Add your first server, or type <code>user@hostname</code> above to connect right away.</p>
+            <button className="hv-btn hv-btn-primary" onClick={() => openHostForm()}>
+              <PlusIcon /> New host
+            </button>
+          </div>
+        ) : nothingMatches && !showNewGroup ? (
+          <div className="hv-empty">
+            <div className="hv-empty-icon"><SearchIcon /></div>
+            {q ? (
+              <>
+                <h3>No hosts match “{search.trim()}”{tagFiltering ? ' with the selected tags' : ''}</h3>
+                <p>{parsedQuick && !savedQuick ? 'Press Enter or Connect to open it as a one-off connection.' : 'Try a label, hostname, username or tag.'}</p>
+              </>
+            ) : tagFiltering ? (
+              <>
+                <h3>No hosts {currentGroup ? 'in this group ' : ''}with {activeTags.length === 1 ? `the tag “${activeTags[0]}”` : 'any of the selected tags'}</h3>
+                <p>
+                  <button className="hv-btn" onClick={() => setTagFilter([])}><TagIcon /> Clear tag filter</button>
+                </p>
+              </>
+            ) : (
+              <>
+                <h3>This group is empty</h3>
+                <p>Drag a host onto the group card, or pick the group in a host’s editor.</p>
+              </>
+            )}
           </div>
         ) : (
           <>
-            {groups.map(group => {
-              const groupHosts = groupedHosts[group.id] || [];
-              if (groupHosts.length === 0 && search) return null;
-              const collapsed = collapsedGroups[group.id];
-              return (
-                <div key={group.id} className="host-group">
-                  <div
-                    className={`host-group-header ${dragTarget === group.id ? 'drag-over' : ''}`}
-                    onClick={() => toggleGroup(group.id)}
-                    onDragOver={(e) => handleDragOver(e, group.id)}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, group.id)}
-                  >
-                    <Chevron collapsed={collapsed} />
-                    <div className="host-group-color" style={{ background: group.color || '#58a6ff' }} />
-                    <span className="host-group-label">{group.label}</span>
-                    <span className="host-group-count">{groupHosts.length}</span>
-                  </div>
-                  {!collapsed && (
-                    <div className="host-group-items">
-                      {groupHosts.map(renderHost)}
+            {showGroupsSection && (
+              <section className="hv-section">
+                <h4 className="hv-section-title">Groups</h4>
+                <div className={`hv-grid ${view === 'list' ? 'hv-list' : ''}`}>
+                  {showNewGroup && (
+                    <div className="hv-card hv-group hv-new-group">
+                      <div className="hv-icon hv-icon-muted"><GroupIcon /></div>
+                      <input
+                        ref={groupInputRef}
+                        type="text"
+                        placeholder="Group name"
+                        value={newGroupName}
+                        onChange={e => setNewGroupName(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') submitNewGroup();
+                          if (e.key === 'Escape') { setShowNewGroup(false); setNewGroupName(''); }
+                        }}
+                        onBlur={submitNewGroup}
+                      />
                     </div>
                   )}
+                  {visibleGroups.map(renderGroup)}
                 </div>
-              );
-            })}
-            {ungrouped.length > 0 && (
-              <div className="host-group">
-                {groups.length > 0 && (
-                  <div
-                    className={`host-group-header ${dragTarget === '__ungrouped' ? 'drag-over' : ''}`}
-                    onClick={() => toggleGroup('__ungrouped')}
-                    onDragOver={(e) => handleDragOver(e, '__ungrouped')}
-                    onDragLeave={handleDragLeave}
-                    onDrop={(e) => handleDrop(e, null)}
-                  >
-                    <Chevron collapsed={collapsedGroups['__ungrouped']} />
-                    <span className="host-group-label">Ungrouped</span>
-                    <span className="host-group-count">{ungrouped.length}</span>
-                  </div>
-                )}
-                {(!collapsedGroups['__ungrouped'] || groups.length === 0) && (
-                  <div className="host-group-items">
-                    {ungrouped.map(renderHost)}
-                  </div>
-                )}
-              </div>
+              </section>
+            )}
+
+            {visibleHosts.length > 0 && (
+              <section className="hv-section">
+                {/* Inside a group the breadcrumb already says where you are */}
+                {!currentGroup && <h4 className="hv-section-title">Hosts</h4>}
+                <div className={`hv-grid ${view === 'list' ? 'hv-list' : ''}`}>
+                  {visibleHosts.map(renderHost)}
+                </div>
+              </section>
             )}
           </>
         )}
@@ -373,58 +508,29 @@ export default function HostList({ sftpMode = false }) {
       {/* Context menu */}
       {contextMenu && (
         <div
-          ref={menuRef}
           className="host-context-menu"
           style={{ top: contextMenu.y, left: contextMenu.x }}
+          onContextMenu={(e) => e.preventDefault()}
         >
           <button className="host-context-menu-item" onClick={ctxConnect}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="4 17 10 11 4 5" />
-              <line x1="12" y1="19" x2="20" y2="19" />
-            </svg>
-            Connect
+            <TerminalIcon /> Connect
           </button>
-          <button className="host-context-menu-item" onClick={() => {
-            if (contextMenu) {
-              // Open a second session to the same host
-              actions.connectToHost(contextMenu.host);
-            }
-          }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="3" width="20" height="7" rx="1.5" />
-              <rect x="2" y="14" width="20" height="7" rx="1.5" />
-              <line x1="12" y1="10" x2="12" y2="14" />
-            </svg>
-            New Session
+          <button className="host-context-menu-item" onClick={ctxNewSession}>
+            <SessionIcon /> New Session
           </button>
           <button className="host-context-menu-item" onClick={ctxSftp}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2v11z" />
-            </svg>
-            Open SFTP
+            <FolderIcon /> Open SFTP
           </button>
           <div className="host-context-separator" />
           <button className="host-context-menu-item" onClick={ctxEdit}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
-              <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
-            </svg>
-            Edit
+            <PencilIcon /> Edit
           </button>
           <button className="host-context-menu-item" onClick={ctxDuplicate}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
-            </svg>
-            Duplicate
+            <CopyIcon /> Duplicate
           </button>
           <div className="host-context-separator" />
           <button className="host-context-menu-item danger" onClick={ctxDelete}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="3 6 5 6 21 6" />
-              <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-            </svg>
-            Delete
+            <TrashIcon /> Delete
           </button>
         </div>
       )}

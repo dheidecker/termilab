@@ -1,5 +1,8 @@
 const { Client } = require('ssh2');
 const crypto = require('crypto');
+const { detectOs } = require('./os-detect');
+const hostKeyService = require('./host-key-service');
+const connectionLogService = require('./connection-log-service');
 
 class SSHService {
   constructor() {
@@ -26,12 +29,39 @@ class SSHService {
   async connect(config) {
     const sessionId = crypto.randomUUID();
     const client = new Client();
+    /* Known key types for this host:port first, so a server with several host
+       keys presents one we already trust (see known-hosts hostKeyAlgorithms). */
+    const serverHostKey = await hostKeyService.algorithmsFor(config.host, config.port || 22);
 
     return new Promise((resolve, reject) => {
-      const connectionTimeout = setTimeout(() => {
-        client.end();
-        reject(new Error('Connection timed out after 30 seconds'));
-      }, config.timeout || 30000);
+      const timeoutMs = config.timeout || 30000;
+      let connectionTimeout = null;
+      /* Socket gone: nothing may re-arm the timeout after this (the dialog
+         settling late would otherwise report "timed out" 30 s later). */
+      let closed = false;
+      const armTimeout = () => {
+        clearTimeout(connectionTimeout);
+        if (closed) return;
+        connectionTimeout = setTimeout(() => {
+          client.end();
+          reject(new Error(`Connection timed out after ${Math.round(timeoutMs / 1000)} seconds`));
+        }, timeoutMs);
+      };
+      armTimeout();
+
+      /* Host key check. While the user reads the dialog (up to 2 min) neither
+         our timeout nor ssh2's readyTimeout may fire; ours is re-armed once
+         they answer and covers the rest of the handshake. */
+      const verifier = hostKeyService.createVerifier(config.host, config.port || 22, {
+        onPrompt: () => {
+          clearTimeout(connectionTimeout);
+          clearTimeout(client._readyTimeout);
+        },
+        onSettled: () => armTimeout(),
+      });
+      const hostKeyError = () => new Error(
+        `Host key rejected: the key presented by ${config.host}:${config.port || 22} was not accepted, so the connection was closed.`
+      );
 
       client.on('ready', () => {
         clearTimeout(connectionTimeout);
@@ -49,7 +79,17 @@ class SSHService {
             return reject(new Error(`Failed to open shell: ${err.message}`));
           }
 
-          this.sessions.set(sessionId, { client, stream, config });
+          /* History for the Logs section: who, where, when. Nothing else. */
+          const logId = connectionLogService.start({
+            type: config.purpose === 'sftp' ? 'sftp' : 'ssh',
+            hostId: config.hostId,
+            label: config.label,
+            hostname: config.host,
+            port: config.port || 22,
+            username: config.username,
+          });
+
+          this.sessions.set(sessionId, { client, stream, config, logId });
 
           stream.on('data', (data) => {
             this._send('ssh:data', sessionId, data.toString('utf-8'));
@@ -69,18 +109,44 @@ class SSHService {
           });
 
           resolve(sessionId);
+
+          // Best effort, after the session is already handed back: one exec
+          // on the same client to learn the distro for the host card. Any
+          // failure is swallowed inside detectOs.
+          setImmediate(() => {
+            if (this.sessions.get(sessionId)?.client !== client) return;
+            detectOs(client, (os) => {
+              connectionLogService.setOs(logId, os);
+              if (this.sessions.get(sessionId)?.client !== client) return;
+              this._send('ssh:os-detected', { sessionId, os });
+            });
+          });
         });
       });
 
       client.on('error', (err) => {
         clearTimeout(connectionTimeout);
-        this._send('ssh:error', sessionId, err.message);
+        verifier.cancel();
+        const error = verifier.wasRejected() ? hostKeyError() : null;
+        this._send('ssh:error', sessionId, error ? error.message : err.message);
         this._cleanup(sessionId);
-        reject(new Error(`SSH connection error: ${err.message}`));
+        reject(error || new Error(`SSH connection error: ${err.message}`));
       });
 
       client.on('close', () => {
+        closed = true;
         clearTimeout(connectionTimeout);
+        /* Read before cancel(): cancelling resolves the pending decision. */
+        const waitingOnUser = verifier.isPending();
+        verifier.cancel();
+        if (verifier.wasRejected()) reject(hostKeyError());
+        else if (waitingOnUser) {
+          reject(new Error(`${config.host}:${config.port || 22} closed the connection while the host key was waiting for confirmation.`));
+        } else if (!this.sessions.has(sessionId)) {
+          /* Closed before the shell was up, with no 'error': say so now
+             instead of waiting for the timeout. No-op once resolved. */
+          reject(new Error(`The connection to ${config.host}:${config.port || 22} closed before it was ready.`));
+        }
         if (this.sessions.has(sessionId)) {
           this._send('ssh:close', sessionId);
           this._cleanup(sessionId);
@@ -134,9 +200,12 @@ class SSHService {
           compress: config.compress ? ['zlib@openssh.com', 'zlib', 'none'] : ['none'],
         };
       }
+      if (serverHostKey) {
+        sshConfig.algorithms = { ...(sshConfig.algorithms || {}), serverHostKey };
+      }
 
-      // Host key verification - we accept all for now (TODO: known_hosts support)
-      sshConfig.hostVerifier = () => true;
+      // Host key verification: known_hosts-style TOFU, see host-key-service.js
+      sshConfig.hostVerifier = verifier.hostVerifier;
 
       try {
         client.connect(sshConfig);
@@ -202,6 +271,7 @@ class SSHService {
   _cleanup(sessionId) {
     const session = this.sessions.get(sessionId);
     if (session) {
+      connectionLogService.end(session.logId);
       try {
         if (session.stream) {
           session.stream.removeAllListeners();

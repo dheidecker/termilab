@@ -154,8 +154,26 @@
   color: var(--color-success);
 }
 
-.snippet-action-btn.run:hover {
+.snippet-action-btn.run:hover:not(:disabled) {
   background: rgba(63, 185, 80, 0.25);
+}
+
+.snippet-action-btn.run:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.snippet-run-target {
+  margin-top: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.snippet-run-target.none {
+  color: var(--text-tertiary);
 }
 
 .snippet-action-btn.delete {

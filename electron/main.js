@@ -7,9 +7,15 @@ const sftpService = require('./services/sftp-service');
 const portForwardService = require('./services/port-forward-service');
 const localShellService = require('./services/local-shell-service');
 const syncService = require('./services/sync-service');
+const hostKeyService = require('./services/host-key-service');
+const connectionLogService = require('./services/connection-log-service');
 
 // Prevent garbage collection of mainWindow
 let mainWindow = null;
+// before-quit holds the first quit until the history is written (see below)
+let quitCleanupDone = false;
+let installingUpdate = false;
+const QUIT_LOG_TIMEOUT_MS = 2000;
 
 function createWindow() {
   const preloadPath = path.join(__dirname, 'preload.js');
@@ -141,6 +147,8 @@ function setupAutoUpdater() {
 
     // IPC: Install update (quit and install)
     ipcMain.handle('updater:install', () => {
+      // The updater drives its own quit; before-quit must not hold it.
+      installingUpdate = true;
       autoUpdater.quitAndInstall(false, true);
     });
 
@@ -190,8 +198,29 @@ app.on('window-all-closed', () => {
   }
 });
 
-// Cleanup on quit
-app.on('before-quit', async () => {
+// Cleanup on quit.
+// Electron does not await this handler, so the FIRST quit is held with
+// preventDefault() until the open history entries are stamped under the store
+// lock (a synchronous write here could overlap an in-flight async one and
+// drop its entry). Then app.quit() again; the flag lets that second pass
+// through, so there is no quit loop. closeAllForQuit has its own hard timeout
+// and the race below is the backstop: quitting can never hang on it.
+// An update install drives its own quit: no hold, synchronous stamp.
+app.on('before-quit', async (event) => {
+  if (quitCleanupDone) return;
+  quitCleanupDone = true;
+  if (installingUpdate) {
+    connectionLogService.closeAllSync();
+  } else {
+    event.preventDefault();
+    let timer;
+    Promise.race([
+      connectionLogService.closeAllForQuit(QUIT_LOG_TIMEOUT_MS),
+      new Promise(r => { timer = setTimeout(r, QUIT_LOG_TIMEOUT_MS + 500); }),
+    ]).catch(err => console.error('[Main] Could not close history on quit:', err.message))
+      .finally(() => { clearTimeout(timer); app.quit(); });
+  }
+  hostKeyService.rejectAll();
   try {
     await sshService.disconnectAll();
     sftpService.closeAll();

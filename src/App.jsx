@@ -1,23 +1,40 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AppProvider, useApp } from './contexts/AppContext';
 import Titlebar from './components/Titlebar/Titlebar';
 import Sidebar from './components/Sidebar/Sidebar';
 import HostList from './components/HostList/HostList';
 import HostForm from './components/HostForm/HostForm';
-import TabBar from './components/TabBar/TabBar';
 import SplitPane from './components/SplitPane/SplitPane';
 import SFTPExplorer from './components/SFTP/SFTPExplorer';
 import Snippets from './components/Snippets/Snippets';
 import KeyManager from './components/KeyManager/KeyManager';
 import PortForwarding from './components/PortForwarding/PortForwarding';
 import Settings from './components/Settings/Settings';
-import WelcomeScreen from './components/WelcomeScreen/WelcomeScreen';
+import KnownHosts from './components/KnownHosts/KnownHosts';
+import Logs from './components/Logs/Logs';
+import HostKeyPrompt from './components/HostKeyPrompt/HostKeyPrompt';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
 import './App.css';
+
+const SIDEBAR_KEY = 'termilab.sidebar.collapsed';
+
+function readSidebarCollapsed() {
+  try { return window.localStorage.getItem(SIDEBAR_KEY) === '1'; } catch { return false; }
+}
 
 function AppContent() {
   const { state, actions } = useApp();
   const { activeSection, tabs, activeTabId, loading, hostFormOpen } = state;
+  const { openLocalTerminal, setActiveTab, removeTab, disconnectSession } = actions;
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed(prev => {
+      const next = !prev;
+      try { window.localStorage.setItem(SIDEBAR_KEY, next ? '1' : '0'); } catch { /* storage blocked */ }
+      return next;
+    });
+  };
 
   /* ─── Global Keyboard Shortcuts ─── */
   useEffect(() => {
@@ -25,15 +42,9 @@ function AppContent() {
       // Ctrl+T → New local terminal
       if (e.ctrlKey && !e.shiftKey && e.key === 't') {
         e.preventDefault();
-        const tabId = crypto.randomUUID();
-        actions.addTab({
-          id: tabId,
-          type: 'local-terminal',
-          label: 'Local Terminal',
-          sessionId: `local-${tabId}`,
-        });
+        openLocalTerminal();
       }
-      // Ctrl+W → Close active tab
+      // Ctrl+W → Close active tab (the home tab has no id and never closes)
       if (e.ctrlKey && !e.shiftKey && e.key === 'w') {
         e.preventDefault();
         if (activeTabId) {
@@ -45,36 +56,25 @@ function AppContent() {
             if (tab.type === 'local-terminal') {
               window.electronAPI?.localShell?.kill(tab.sessionId).catch(() => {});
             } else {
-              actions.disconnectSession(tab.sessionId);
+              disconnectSession(tab.sessionId);
             }
           }
-          actions.removeTab(activeTabId);
+          removeTab(activeTabId);
         }
       }
-      // Ctrl+Tab → Next tab
-      if (e.ctrlKey && !e.shiftKey && e.key === 'Tab') {
+      // Ctrl+Tab / Ctrl+Shift+Tab → cycle tabs; the home tab (null) comes first
+      if (e.ctrlKey && e.key === 'Tab') {
         e.preventDefault();
-        const visible = tabs.filter(t => !t.hidden);
-        const idx = visible.findIndex(t => t.id === activeTabId);
-        if (visible.length > 0) {
-          const next = visible[(idx + 1) % visible.length];
-          actions.setActiveTab(next.id);
-        }
-      }
-      // Ctrl+Shift+Tab → Previous tab
-      if (e.ctrlKey && e.shiftKey && e.key === 'Tab') {
-        e.preventDefault();
-        const visible = tabs.filter(t => !t.hidden);
-        const idx = visible.findIndex(t => t.id === activeTabId);
-        if (visible.length > 0) {
-          const prev = visible[(idx - 1 + visible.length) % visible.length];
-          actions.setActiveTab(prev.id);
-        }
+        const order = [null, ...tabs.filter(t => !t.hidden).map(t => t.id)];
+        const current = tabs.some(t => t.id === activeTabId) ? activeTabId : null;
+        const idx = order.indexOf(current);
+        const step = e.shiftKey ? -1 : 1;
+        setActiveTab(order[(idx + step + order.length) % order.length]);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [tabs, activeTabId, actions]);
+  }, [tabs, activeTabId, openLocalTerminal, setActiveTab, removeTab, disconnectSession]);
 
   if (loading) {
     return (
@@ -84,19 +84,23 @@ function AppContent() {
     );
   }
 
-  const activeTab = tabs.find(t => t.id === activeTabId);
+  /* No session tab selected → the home tab (sidebar + section) is showing */
+  const homeActive = !tabs.some(t => t.id === activeTabId);
 
-  const renderPanel = () => {
+  const renderSection = () => {
     switch (activeSection) {
-      case 'hosts': return <HostList />;
-      case 'sftp': return <HostList sftpMode />;
-      case 'snippets': return <Snippets />;
+      case 'keychain': return <div className="app-section-column"><KeyManager /></div>;
       case 'port-forwarding': return <PortForwarding />;
-      case 'keychain': return <KeyManager />;
+      case 'snippets': return <div className="app-section-column"><Snippets /></div>;
+      case 'known-hosts': return <KnownHosts />;
+      case 'logs': return <Logs />;
+      case 'settings': return <Settings fullPage />;
+      case 'hosts':
       default: return <HostList />;
     }
   };
 
+  /* Session views stay mounted while hidden so terminals keep their state */
   const renderAllTerminals = () => {
     return tabs
       .filter(t => (t.type === 'terminal' || t.type === 'local-terminal') && !t.hidden)
@@ -123,43 +127,22 @@ function AppContent() {
       ));
   };
 
-  const isContentTab = (type) => type === 'terminal' || type === 'local-terminal' || type === 'sftp' || type === 'settings';
-  const showTabs = tabs.length > 0;
-
   return (
     <div className="app">
-      <Titlebar />
+      <Titlebar sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
       <div className="app-body">
-        <Sidebar />
-        <div className="app-panel">{renderPanel()}</div>
-        <div className="app-main">
-          {showTabs && <TabBar />}
-          <div className="app-view">
-            {tabs.length === 0 ? (
-              <WelcomeScreen />
-            ) : (
-              <>
-                {renderAllTerminals()}
-                {renderAllSFTP()}
-
-                {/* Settings tab */}
-                {tabs.filter(t => t.type === 'settings').map(tab => (
-                  <div
-                    key={tab.id}
-                    style={{ display: tab.id === activeTabId ? 'flex' : 'none', flex: 1, minHeight: 0 }}
-                  >
-                    <Settings fullPage />
-                  </div>
-                ))}
-
-                {activeTab && !isContentTab(activeTab.type) && <WelcomeScreen />}
-                {!activeTab && <WelcomeScreen />}
-              </>
-            )}
-          </div>
+        <div className="app-home" style={{ display: homeActive ? 'flex' : 'none' }}>
+          <Sidebar collapsed={sidebarCollapsed} />
+          <main className="app-section">{renderSection()}</main>
+        </div>
+        <div className="app-view" style={{ display: homeActive ? 'none' : 'flex' }}>
+          {renderAllTerminals()}
+          {renderAllSFTP()}
         </div>
       </div>
       {hostFormOpen && <HostForm />}
+      {/* Main asks here when a server's host key is unknown or changed */}
+      <HostKeyPrompt />
     </div>
   );
 }

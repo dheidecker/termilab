@@ -1,63 +1,75 @@
-/* TabBar.css */
+/* TabBar.css — the tab strip inside the title bar */
 
 .tab-bar {
-  height: var(--tab-height);
-  min-height: var(--tab-height);
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
+  flex: 1;
+  min-width: 0;
+  height: 100%;
   display: flex;
-  align-items: stretch;
+  align-items: center;
+  gap: 4px;
   position: relative;
 }
 
 .tab-bar-tabs {
   display: flex;
-  flex: 1;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
+  -webkit-app-region: no-drag;
 }
 
 .tab-bar-tabs::-webkit-scrollbar {
   display: none;
 }
 
+/* Whatever is left of the strip keeps dragging the window */
+.tab-bar-drag {
+  flex: 1;
+  align-self: stretch;
+  min-width: 24px;
+}
+
 .tab {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 14px;
+  gap: 7px;
+  height: 30px;
+  padding: 0 8px 0 11px;
   min-width: 120px;
-  max-width: 200px;
-  height: 100%;
+  max-width: 210px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
-  transition: all var(--transition-base);
-  border-right: 1px solid var(--border-secondary);
   position: relative;
   flex-shrink: 0;
+  color: var(--text-secondary);
+  transition: background var(--transition-base), color var(--transition-base);
 }
 
 .tab:hover {
-  background: var(--overlay-subtle);
+  background: var(--hover-overlay);
+  color: var(--text-primary);
 }
 
 .tab.active {
-  background: var(--bg-primary);
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
 }
 
-.tab.active::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: var(--accent);
+/* Home tab: fixed, no close button */
+.tab-home {
+  min-width: 0;
+  padding: 0 14px 0 12px;
 }
 
 .tab-icon {
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
   color: var(--text-tertiary);
   flex-shrink: 0;
 }
@@ -68,16 +80,12 @@
 
 .tab-label {
   flex: 1;
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
+  font-size: var(--font-size-md);
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
-}
-
-.tab.active .tab-label {
-  color: var(--text-primary);
 }
 
 .tab-close {
@@ -89,7 +97,7 @@
   border-radius: var(--radius-sm);
   color: var(--text-tertiary);
   opacity: 0;
-  transition: all var(--transition-base);
+  transition: opacity var(--transition-base), background var(--transition-base), color var(--transition-base);
   flex-shrink: 0;
 }
 
@@ -108,70 +116,70 @@
   height: 12px;
 }
 
-/* Add button */
-.tab-bar-add {
-  display: flex;
-  align-items: center;
-  position: relative;
-}
-
-.tab-add-btn {
-  width: 34px;
-  height: 100%;
+/* "+" — new local terminal */
+.tab-add-btn,
+.broadcast-toggle-btn {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  border-radius: var(--radius-lg);
   color: var(--text-tertiary);
-  transition: all var(--transition-base);
+  transition: background var(--transition-base), color var(--transition-base);
+  -webkit-app-region: no-drag;
 }
 
-.tab-add-btn:hover {
+.tab-add-btn:hover,
+.broadcast-toggle-btn:hover {
   color: var(--text-primary);
-  background: var(--overlay-subtle);
+  background: var(--hover-overlay);
 }
 
 .tab-add-btn svg {
-  width: 14px;
-  height: 14px;
-}
-
-/* Tab add dropdown */
-.tab-add-dropdown {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  min-width: 200px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-lg);
-  padding: 4px;
-  box-shadow: var(--shadow-lg);
-  z-index: 5000;
-  animation: fadeIn 0.1s ease;
-}
-
-.tab-add-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
-  border-radius: var(--radius-sm);
-  width: 100%;
-  text-align: left;
-  transition: all var(--transition-fast);
-}
-
-.tab-add-dropdown-item:hover {
-  background: var(--accent-subtle);
-  color: var(--text-primary);
-}
-
-.tab-add-dropdown-item svg {
   width: 16px;
   height: 16px;
+}
+
+.broadcast-toggle-btn {
+  margin-right: 4px;
+}
+
+.broadcast-toggle-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.broadcast-toggle-btn.active {
+  color: var(--accent);
+  background: var(--accent-muted);
+}
+
+/* Broadcast on: a label next to the toggle, so it can't be missed */
+.broadcast-indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 11px;
+  background: var(--accent-muted);
+  color: var(--accent);
   flex-shrink: 0;
+  animation: fadeIn 0.15s ease;
+}
+
+.broadcast-indicator svg {
+  width: 12px;
+  height: 12px;
+}
+
+.broadcast-indicator span {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
 }
 
 /* Tab context menu */
@@ -185,6 +193,9 @@
   box-shadow: var(--shadow-lg);
   z-index: 10000;
   animation: fadeIn 0.1s ease;
+  /* Rendered inside the title bar (a drag region): without this, the part of
+     the menu over the bar moves the window instead of clicking. */
+  -webkit-app-region: no-drag;
 }
 
 .tab-context-menu-item {
@@ -226,91 +237,6 @@
   background: var(--color-danger);
 }
 
-/* ── Broadcast Toggle Button ── */
-.broadcast-toggle-btn {
-  width: 34px;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-tertiary);
-  transition: all var(--transition-base);
-  position: relative;
-}
-
-.broadcast-toggle-btn:hover {
-  color: var(--text-primary);
-  background: var(--overlay-subtle);
-}
-
-.broadcast-toggle-btn svg {
-  width: 15px;
-  height: 15px;
-}
-
-.broadcast-toggle-btn.active {
-  color: var(--accent);
-  background: var(--accent-subtle);
-}
-
-.broadcast-toggle-btn.active:hover {
-  background: var(--accent-muted);
-}
-
-.broadcast-toggle-btn.active::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 4px;
-  right: 4px;
-  height: 2px;
-  background: var(--accent);
-  border-radius: 1px;
-}
-
-/* ── Broadcast Indicator Bar ── */
-.broadcast-indicator {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 22px;
-  background: var(--accent-muted);
-  border-bottom: 1px solid var(--accent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  z-index: 100;
-  animation: broadcastSlideIn 0.2s ease;
-}
-
-.broadcast-indicator svg {
-  width: 12px;
-  height: 12px;
-  color: var(--accent);
-}
-
-.broadcast-indicator span {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 1.5px;
-  color: var(--accent);
-  text-transform: uppercase;
-}
-
-@keyframes broadcastSlideIn {
-  from {
-    opacity: 0;
-    transform: translateY(-100%);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-
 /* Bell notification indicator */
 .tab.notify::before {
   content: '';
@@ -328,7 +254,7 @@
 }
 
 .tab.notify {
-  padding-left: 20px;
+  padding-left: 22px;
 }
 
 .tab.notify .tab-label {

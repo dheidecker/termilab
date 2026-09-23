@@ -11,25 +11,28 @@
 
 /* ----- CSS Custom Properties — dark (default) ----- */
 :root {
-  /* Surface colors */
-  --bg-primary: #0d1117;
-  --bg-secondary: #161b22;
-  --bg-tertiary: #1c2128;
-  --bg-elevated: #21262d;
-  --bg-overlay: rgba(0, 0, 0, 0.6);
-  --bg-input: #0d1117;
+  /* Surface colors — deep blue-grey. Main area is the darkest; the sidebar
+     and title bar sit one step lighter, cards one step lighter than main. */
+  --bg-primary: #151924;
+  --bg-secondary: #1b1f2d;
+  --bg-tertiary: #212637;
+  --bg-elevated: #272d40;
+  --bg-overlay: rgba(4, 6, 12, 0.55);
+  --bg-input: #11141d;
+  --bg-card: #1f2433;
+  --bg-card-hover: #262c3e;
 
   /* Border colors */
   --border-primary: rgba(255, 255, 255, 0.08);
-  --border-secondary: rgba(255, 255, 255, 0.04);
+  --border-secondary: rgba(255, 255, 255, 0.045);
   --border-focus: #58a6ff;
 
   /* Text colors */
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
-  --text-tertiary: #6e7681;
-  --text-placeholder: #484f58;
-  --text-inverse: #0d1117;
+  --text-primary: #e5e8f0;
+  --text-secondary: #9aa2b6;
+  --text-tertiary: #7c849a;
+  --text-placeholder: #596076;
+  --text-inverse: #151924;
 
   /* Accent colors — AppContext overrides these from the user's accent choice */
   --accent: #58a6ff;
@@ -84,12 +87,14 @@
   --radius-md: 6px;
   --radius-lg: 8px;
   --radius-xl: 12px;
+  --radius-card: 10px;
 
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
   --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6);
+  --shadow-card-hover: 0 6px 18px rgba(0, 0, 0, 0.28);
 
   /* Transitions */
   --transition-fast: 0.1s ease;
@@ -98,21 +103,23 @@
   --transition-slower: 0.3s ease;
 
   /* Layout */
-  --titlebar-height: 38px;
-  --sidebar-width: 56px;
-  --panel-width: 280px;
-  --tab-height: 38px;
+  --titlebar-height: 42px;
+  --sidebar-width: 172px;
+  --sidebar-collapsed-width: 60px;
+  --drawer-width: 420px;
 }
 
 /* ----- Light theme ----- */
 :root[data-theme='light'] {
   /* Surface colors */
   --bg-primary: #ffffff;
-  --bg-secondary: #f6f8fa;
-  --bg-tertiary: #eaeef2;
+  --bg-secondary: #f2f4f8;
+  --bg-tertiary: #e9edf3;
   --bg-elevated: #ffffff;
-  --bg-overlay: rgba(31, 35, 40, 0.4);
+  --bg-overlay: rgba(31, 35, 40, 0.3);
   --bg-input: #ffffff;
+  --bg-card: #f5f7fa;
+  --bg-card-hover: #edf0f5;
 
   /* Border colors — dark-on-light instead of light-on-dark */
   --border-primary: rgba(31, 35, 40, 0.15);
@@ -156,6 +163,7 @@
   --shadow-md: 0 4px 12px rgba(31, 35, 40, 0.1);
   --shadow-lg: 0 8px 24px rgba(31, 35, 40, 0.12);
   --shadow-xl: 0 16px 48px rgba(31, 35, 40, 0.16);
+  --shadow-card-hover: 0 4px 14px rgba(31, 35, 40, 0.09);
 }
 
 /* Applied by AppContext only while the theme/accent is being swapped.

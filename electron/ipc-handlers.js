@@ -9,6 +9,9 @@ const keyService = require('./services/key-service');
 const portForwardService = require('./services/port-forward-service');
 const localShellService = require('./services/local-shell-service');
 const syncService = require('./services/sync-service');
+const hostKeyService = require('./services/host-key-service');
+const connectionLogService = require('./services/connection-log-service');
+const { parseKnownHosts } = require('./services/known-hosts');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -37,7 +40,11 @@ function registerIpcHandlers(mainWindow) {
   portForwardService.setMainWindow(mainWindow);
   localShellService.setMainWindow(mainWindow);
   syncService.setMainWindow(mainWindow);
+  hostKeyService.setMainWindow(mainWindow);
   syncService.start();
+
+  // A prompt nobody can answer any more is a rejection, not a 2-minute hang.
+  mainWindow.on('closed', () => hostKeyService.rejectAll());
 
   // ─── SSH Handlers ─────────────────────────────────────
 
@@ -56,6 +63,49 @@ function registerIpcHandlers(mainWindow) {
     // Also close any associated SFTP session
     sftpService.closeSFTP(sessionId);
     return true;
+  }));
+
+  // Answer to an 'ssh:host-key-prompt' push. Unknown/expired ids are ignored.
+  ipcMain.handle('ssh:host-key-response', wrapHandler(async (event, payload) => {
+    const { requestId, accept } = payload || {};
+    if (typeof requestId !== 'string') throw new Error('requestId missing');
+    return await hostKeyService.respond(requestId, accept === true);
+  }));
+
+  // ─── Known Hosts (local only, never synced) ───────────
+
+  ipcMain.handle('known-hosts:list', wrapHandler(async () => {
+    return await storeService.getKnownHosts();
+  }));
+
+  ipcMain.handle('known-hosts:delete', wrapHandler(async (event, id) => {
+    return await storeService.deleteKnownHost(id);
+  }));
+
+  // Reads ~/.ssh/known_hosts. Plain entries only: hashed (|1|), @cert-authority,
+  // @revoked, wildcard patterns and malformed lines are counted as skipped.
+  ipcMain.handle('known-hosts:import', wrapHandler(async () => {
+    const file = path.join(os.homedir(), '.ssh', 'known_hosts');
+    let text;
+    try {
+      text = await require('fs/promises').readFile(file, 'utf-8');
+    } catch (err) {
+      if (err.code === 'ENOENT') throw new Error(`No known_hosts file at ${file}`);
+      throw err;
+    }
+    const parsed = parseKnownHosts(text);
+    const { added, duplicates } = await storeService.addKnownHosts(parsed.entries);
+    return { file, imported: added, duplicates, skipped: parsed.skipped, reasons: parsed.reasons };
+  }));
+
+  // ─── Connection Logs (local only, never synced) ───────
+
+  ipcMain.handle('logs:list', wrapHandler(async () => {
+    return await connectionLogService.list();
+  }));
+
+  ipcMain.handle('logs:clear', wrapHandler(async () => {
+    return await connectionLogService.clear();
   }));
 
   ipcMain.on('ssh:send-data', (event, sessionId, data) => {
@@ -130,6 +180,23 @@ function registerIpcHandlers(mainWindow) {
 
   ipcMain.handle('store:save-host', wrapHandler(async (event, host) => {
     return await storeService.saveHost(host);
+  }));
+
+  /* The detected OS, written field-level in main (see storeService.setHostOs).
+     Hosts sync could not open here are never written: that would replace the
+     sealed remote copy. Unknown sync state counts as sealed. */
+  ipcMain.handle('store:set-host-os', wrapHandler(async (event, hostId, os) => {
+    return await storeService.setHostOs(hostId, os, {
+      isSealed: async (id) => {
+        try {
+          const s = await syncService.status();
+          if (!s || !Array.isArray(s.undecryptableIds)) return true;
+          return s.undecryptableIds.includes(`hosts/${id}`);
+        } catch (_) {
+          return true;
+        }
+      },
+    });
   }));
 
   ipcMain.handle('store:delete-host', wrapHandler(async (event, id) => {
@@ -220,6 +287,8 @@ function registerIpcHandlers(mainWindow) {
   }));
 
   ipcMain.handle('store:delete-port-forward', wrapHandler(async (event, id) => {
+    // A deleted rule has no card left to stop it from: stop it first.
+    await portForwardService.stop(id);
     return await storeService.deletePortForward(id);
   }));
 
@@ -235,18 +304,19 @@ function registerIpcHandlers(mainWindow) {
 
   // ─── Port Forwarding (Active Tunnels) ─────────────────
 
-  ipcMain.handle('port-forward:start', wrapHandler(async (event, config) => {
-    // If a keyId is provided, resolve the private key
-    if (config.keyId) {
-      const privateKey = await keyService.getPrivateKey(config.keyId);
-      config.privateKey = privateKey;
-    }
-    return await portForwardService.start(config);
+  // Only a rule id crosses IPC. Main reads the rule, its host and the host's
+  // credentials from the store itself (port-forward-service._resolveConnection).
+  // Status is pushed on 'port-forward:status' as { ruleId, state, error? }.
+  ipcMain.handle('port-forward:start', wrapHandler(async (event, ruleId) => {
+    return await portForwardService.start(ruleId);
   }));
 
-  ipcMain.handle('port-forward:stop', wrapHandler(async (event, forwardId) => {
-    await portForwardService.stop(forwardId);
-    return true;
+  ipcMain.handle('port-forward:stop', wrapHandler(async (event, ruleId) => {
+    return await portForwardService.stop(ruleId);
+  }));
+
+  ipcMain.handle('port-forward:status', wrapHandler(async () => {
+    return portForwardService.status();
   }));
 
   // ─── Local Shell Handlers ──────────────────────────────
@@ -415,17 +485,19 @@ function registerIpcHandlers(mainWindow) {
  */
 function removeIpcHandlers() {
   const channels = [
-    'ssh:connect', 'ssh:disconnect',
+    'ssh:connect', 'ssh:disconnect', 'ssh:host-key-response',
+    'known-hosts:list', 'known-hosts:delete', 'known-hosts:import',
+    'logs:list', 'logs:clear',
     'sftp:list', 'sftp:download', 'sftp:upload', 'sftp:mkdir',
     'sftp:delete', 'sftp:rename', 'sftp:stat',
-    'store:get-hosts', 'store:save-host', 'store:delete-host',
+    'store:get-hosts', 'store:save-host', 'store:set-host-os', 'store:delete-host',
     'store:get-groups', 'store:save-group', 'store:delete-group',
     'store:get-snippets', 'store:save-snippet', 'store:delete-snippet',
     'store:get-keys', 'store:save-key', 'store:delete-key',
     'store:import-key', 'store:generate-key', 'store:paste-key',
     'store:get-port-forwards', 'store:save-port-forward', 'store:delete-port-forward',
     'app:get-settings', 'app:save-settings',
-    'port-forward:start', 'port-forward:stop',
+    'port-forward:start', 'port-forward:stop', 'port-forward:status',
     'local:spawn', 'local:kill',
     'dialog:open-file', 'dialog:save-file',
     'window:is-maximized',

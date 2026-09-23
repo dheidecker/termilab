@@ -42,6 +42,42 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('ssh:error', listener);
       return listener;
     },
+    /* { sessionId, os } once per SSH session, when the remote OS could be
+       identified. Deliberately not in removeAllListeners below: its only
+       subscriber is AppContext, and a terminal tab clearing it would leave the
+       whole app deaf. */
+    onOsDetected: (callback) => {
+      const listener = (event, payload) => callback(payload);
+      ipcRenderer.on('ssh:os-detected', listener);
+      return listener;
+    },
+    removeOsDetectedListener: (listener) => {
+      if (listener) ipcRenderer.removeListener('ssh:os-detected', listener);
+    },
+    /* Host key verification. Main pushes
+         {requestId, host, port, keyType, fingerprint,
+          reason: 'unknown'|'changed'|'new-key-type',
+          previousFingerprint?, knownTypes?, knownFingerprints?: [{keyType, fingerprint}]}
+       and waits (120 s max) for respondHostKey. 'ssh:host-key-prompt-cancel'
+       {requestId} means main gave up (timeout, connection gone): close the
+       dialog. Same rule as onOsDetected: one subscriber (HostKeyPrompt), not
+       cleared by removeAllListeners below. */
+    onHostKeyPrompt: (callback) => {
+      const listener = (event, payload) => callback(payload);
+      ipcRenderer.on('ssh:host-key-prompt', listener);
+      return listener;
+    },
+    onHostKeyPromptCancel: (callback) => {
+      const listener = (event, payload) => callback(payload);
+      ipcRenderer.on('ssh:host-key-prompt-cancel', listener);
+      return listener;
+    },
+    removeHostKeyPromptListener: (listener) => {
+      if (!listener) return;
+      ipcRenderer.removeListener('ssh:host-key-prompt', listener);
+      ipcRenderer.removeListener('ssh:host-key-prompt-cancel', listener);
+    },
+    respondHostKey: (requestId, accept) => invoke('ssh:host-key-response', { requestId, accept: accept === true }),
     removeAllListeners: () => {
       ipcRenderer.removeAllListeners('ssh:data');
       ipcRenderer.removeAllListeners('ssh:close');
@@ -73,6 +109,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Hosts
     getHosts: () => invoke('store:get-hosts'),
     saveHost: (host) => invoke('store:save-host', host),
+    // Only `os`, read-modify-write in main; resolves the host or null (no-op)
+    setHostOs: (hostId, os) => invoke('store:set-host-os', hostId, os),
     deleteHost: (id) => invoke('store:delete-host', id),
 
     // Groups
@@ -103,23 +141,39 @@ contextBridge.exposeInMainWorld('electronAPI', {
     saveSettings: (settings) => invoke('app:save-settings', settings),
   },
 
+  // ─── Known Hosts (local only) ──────────────────────────
+  knownHosts: {
+    list: () => invoke('known-hosts:list'),
+    delete: (id) => invoke('known-hosts:delete', id),
+    /* Reads ~/.ssh/known_hosts in main. Resolves
+       {file, imported, duplicates, skipped, reasons: {hashed, unsupported, malformed}} */
+    importFromSsh: () => invoke('known-hosts:import'),
+  },
+
+  // ─── Connection Logs (local only) ─────────────────────
+  logs: {
+    list: () => invoke('logs:list'),
+    clear: () => invoke('logs:clear'),
+  },
+
   // ─── Port Forwarding (Active Tunnels) ─────────────────
   portForward: {
-    start: (config) => invoke('port-forward:start', config),
-    stop: (forwardId) => invoke('port-forward:stop', forwardId),
-    onError: (callback) => {
-      const listener = (event, forwardId, error) => callback(forwardId, error);
-      ipcRenderer.on('port-forward:error', listener);
+    /* Rule ids only: main resolves the host and its credentials itself.
+       start() resolves {ruleId, state:'running', boundPort, activeConnections}
+       (a no-op if it is already running) and rejects with a readable message. */
+    start: (ruleId) => invoke('port-forward:start', ruleId),
+    stop: (ruleId) => invoke('port-forward:stop', ruleId),
+    /* [{ruleId, state, error?, boundPort?, activeConnections}] — rules not stopped */
+    status: () => invoke('port-forward:status'),
+    /* {ruleId, state: 'starting'|'running'|'error'|'stopped', error?} */
+    onStatus: (callback) => {
+      const listener = (event, payload) => callback(payload);
+      ipcRenderer.on('port-forward:status', listener);
       return listener;
     },
-    onClosed: (callback) => {
-      const listener = (event, forwardId) => callback(forwardId);
-      ipcRenderer.on('port-forward:closed', listener);
-      return listener;
-    },
-    removeAllListeners: () => {
-      ipcRenderer.removeAllListeners('port-forward:error');
-      ipcRenderer.removeAllListeners('port-forward:closed');
+    removeStatusListener: (listener) => {
+      if (listener) ipcRenderer.removeListener('port-forward:status', listener);
+      else ipcRenderer.removeAllListeners('port-forward:status');
     },
   },
 
