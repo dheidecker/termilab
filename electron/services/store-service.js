@@ -25,6 +25,17 @@ class StoreService {
     this.dataDir = path.join(app.getPath('userData'), 'data');
     this._initialized = false;
     this._fileLocks = new Map();
+    this._changeListeners = new Set();
+  }
+
+  /**
+   * Called with the collection name after every local write — not after the
+   * sync engine's own writes (`writeRaw`/`mutateRaw`), or a pull would
+   * trigger another sync forever. Returns an unsubscribe function.
+   */
+  onLocalChange(fn) {
+    this._changeListeners.add(fn);
+    return () => this._changeListeners.delete(fn);
   }
 
   async _ensureDataDir() {
@@ -79,7 +90,7 @@ class StoreService {
     }
   }
 
-  async _writeCollection(collection, data) {
+  async _writeCollection(collection, data, { fromSync = false } = {}) {
     await this._ensureDataDir();
     const filePath = this._getFilePath(collection);
     const tempPath = `${filePath}.tmp`;
@@ -90,6 +101,11 @@ class StoreService {
       // Clean up temp file on failure
       try { await fsp.unlink(tempPath); } catch (_) { /* ignore */ }
       throw err;
+    }
+    if (!fromSync) {
+      for (const fn of this._changeListeners) {
+        try { fn(collection); } catch (_) { /* a listener never breaks a write */ }
+      }
     }
   }
 
@@ -647,7 +663,7 @@ class StoreService {
     try {
       const current = await this._readCollection(collection);
       const next = await fn(Array.isArray(current) ? current : []);
-      if (Array.isArray(next)) await this._writeCollection(collection, next);
+      if (Array.isArray(next)) await this._writeCollection(collection, next, { fromSync: true });
       return next;
     } finally {
       this._releaseLock(collection);
@@ -658,7 +674,7 @@ class StoreService {
   async writeRaw(collection, items) {
     await this._acquireLock(collection);
     try {
-      await this._writeCollection(collection, items);
+      await this._writeCollection(collection, items, { fromSync: true });
       return items.length;
     } finally {
       this._releaseLock(collection);

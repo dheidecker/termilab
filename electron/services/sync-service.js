@@ -39,7 +39,12 @@ const POLL_INTERVAL_MS = 2000;
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 const PAIR_POLL_INTERVAL_MS = 2000;
 const PAIR_TIMEOUT_MS = 10 * 60 * 1000;
-const AUTO_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+/* A local edit is pushed this long after the last write: a burst of saves
+   (a merge, an import) becomes one sync. */
+const CHANGE_SYNC_DELAY_MS = 3000;
+/* Coming back to the window pulls what other devices changed, at most this often. */
+const FOCUS_SYNC_MIN_GAP_MS = 60 * 1000;
 const AUTO_SYNC_DELAY_MS = 8000;
 const PUSH_BATCH = 200;
 const HTTP_TIMEOUT_MS = 30000;
@@ -1402,13 +1407,39 @@ class SyncService {
     if (this._initialTimer.unref) this._initialTimer.unref();
     this._autoTimer = setInterval(run, AUTO_SYNC_INTERVAL_MS);
     if (this._autoTimer.unref) this._autoTimer.unref();
+    this._autoRun = run;
+    this._unwatchStore = storeService.onLocalChange(() => this.scheduleSoon());
+  }
+
+  /** Debounced sync after a local change. Only once `start()` has armed auto-sync. */
+  scheduleSoon(delay = CHANGE_SYNC_DELAY_MS) {
+    if (!this._autoRun) return;
+    if (this._changeTimer) clearTimeout(this._changeTimer);
+    this._changeTimer = setTimeout(() => {
+      this._changeTimer = null;
+      this._autoRun();
+    }, delay);
+    if (this._changeTimer.unref) this._changeTimer.unref();
+  }
+
+  /** The window regained focus: pull, unless we did so a moment ago. */
+  onFocus() {
+    const now = Date.now();
+    if (this._lastFocusSync && now - this._lastFocusSync < FOCUS_SYNC_MIN_GAP_MS) return;
+    this._lastFocusSync = now;
+    this.scheduleSoon(0);
   }
 
   stop() {
     if (this._initialTimer) clearTimeout(this._initialTimer);
     if (this._autoTimer) clearInterval(this._autoTimer);
+    if (this._changeTimer) clearTimeout(this._changeTimer);
+    if (this._unwatchStore) this._unwatchStore();
     this._initialTimer = null;
     this._autoTimer = null;
+    this._changeTimer = null;
+    this._unwatchStore = null;
+    this._autoRun = null;
     this._loginAborted = true;
     for (const claim of this._claims.values()) {
       if (claim.timer) clearTimeout(claim.timer);

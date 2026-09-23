@@ -183,6 +183,9 @@ app.whenReady().then(() => {
   createWindow();
   setupAutoUpdater();
 
+  // Back to the window: pick up what other devices changed meanwhile.
+  app.on('browser-window-focus', () => syncService.onFocus());
+
   // macOS: re-create window when dock icon is clicked
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
