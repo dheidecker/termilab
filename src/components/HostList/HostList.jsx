@@ -1,5 +1,7 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useApp } from '../../contexts/AppContext';
+import DuplicateReview from './DuplicateReview';
+import { findDuplicateGroups } from './duplicates';
 import './HostList.css';
 
 /* Generate a stable color from a string */
@@ -28,6 +30,32 @@ export default function HostList({ sftpMode = false }) {
   const [contextMenu, setContextMenu] = useState(null);
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
+  const [showDuplicates, setShowDuplicates] = useState(false);
+
+  /* Same user@host:port saved more than once. Not in SFTP mode: that list is
+     for picking a server, not for tidying the collection. */
+  const duplicateGroups = useMemo(
+    () => (sftpMode ? [] : findDuplicateGroups(hosts)),
+    [hosts, sftpMode]
+  );
+  const groupsById = useMemo(
+    () => Object.fromEntries((groups || []).map(g => [g.id, g.label || g.name])),
+    [groups]
+  );
+  const undecryptableIds = state.sync?.status?.undecryptableIds || [];
+  /* Which hosts are sealed by another computer is only known once this one is
+     unlocked: unlocking does the full pull that fills that list. Before that a
+     sealed duplicate looks like a host with no password, and merging it away
+     would delete the only readable copy on the other computer. Without sync
+     nothing propagates, so there is nothing to protect. */
+  const syncStatus = state.sync?.status;
+  const mergeBlockedReason = !state.sync?.available
+    ? null
+    : state.sync.loading || !syncStatus
+      ? 'Checking sync status…'
+      : syncStatus.signedIn && !syncStatus.unlocked
+        ? 'Unlock this computer in Settings → Sync first. Until then Termilab cannot tell which of these passwords are sealed by another computer, and a merge would delete them there too.'
+        : null;
   const [dragTarget, setDragTarget] = useState(null);
   const menuRef = useRef(null);
   const groupInputRef = useRef(null);
@@ -252,6 +280,27 @@ export default function HostList({ sftpMode = false }) {
           </div>
         )}
       </div>
+
+      {duplicateGroups.length > 0 && !showDuplicates && (
+        <button className="dup-banner" onClick={() => setShowDuplicates(true)}>
+          <span>
+            {duplicateGroups.length === 1
+              ? '1 server is saved more than once'
+              : `${duplicateGroups.length} servers are saved more than once`}
+          </span>
+          <span className="dup-banner-action">Review</span>
+        </button>
+      )}
+      {showDuplicates && duplicateGroups.length > 0 && (
+        <DuplicateReview
+          duplicateGroups={duplicateGroups}
+          groupsById={groupsById}
+          undecryptableIds={undecryptableIds}
+          mergeBlockedReason={mergeBlockedReason}
+          onMerge={actions.mergeHosts}
+          onClose={() => setShowDuplicates(false)}
+        />
+      )}
 
       <div className="host-list-content">
         {filteredHosts.length === 0 ? (
