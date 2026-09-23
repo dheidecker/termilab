@@ -4,7 +4,10 @@ import { registerAuthRoutes, authenticate, configured } from './auth.js';
 import { registerPairingRoutes } from './pairing.js';
 
 const PORT = Number(process.env.PORT || 8110);
-const COLLECTIONS = ['hosts', 'groups', 'snippets', 'port_forwards', 'keys', 'settings'];
+/* Lista blanca. known_hosts viaja cifrada (enc) incluso en sus tumbas, y
+   connection_logs en claro: aqui no cambia nada, el servidor no mira dentro.
+   Los clientes <= v1.10.0 ignoran las colecciones que no conocen. */
+const COLLECTIONS = ['hosts', 'groups', 'snippets', 'port_forwards', 'keys', 'settings', 'known_hosts', 'connection_logs'];
 
 const app = Fastify({ logger: true });
 registerAuthRoutes(app);

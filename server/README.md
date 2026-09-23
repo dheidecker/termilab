@@ -1,7 +1,14 @@
 # termilab-sync
 
 Backend de sincronizacion de Termilab. Cada cuenta de Google ve los mismos
-hosts, grupos, snippets y port-forwards en todos sus dispositivos.
+hosts, grupos, snippets, port-forwards, claves SSH, known hosts e historial de
+conexiones en todos sus dispositivos.
+
+Colecciones admitidas (`COLLECTIONS` en `api/src/server.js`; cualquier otra
+da 400): `hosts`, `groups`, `snippets`, `port_forwards`, `keys`, `settings`,
+`known_hosts`, `connection_logs`. Anadir una es un cambio en los dos lados:
+la app nueva sube filas de ella y un servidor viejo le rechaza el lote
+entero, asi que **se despliega primero el servidor**.
 
 - API en el puerto **8110** del host (`termilab.rhinlab.com` via Cloudflare).
 - Postgres propio en `127.0.0.1:5435`, datos en `./data/postgres`.
@@ -52,7 +59,13 @@ Sin `GOOGLE_CLIENT_ID`, `/v1/*` responde 503. El bypass de desarrollo exige
 para las colecciones cifradas solo almacena y devuelve bytes. Pasar una
 coleccion de clara a cifrada no necesita migracion.
 
-Las claves SSH van por la via cifrada. La clave maestra que las cifra vive
+Las claves SSH y los known hosts van por la via cifrada. Los known hosts no
+por secretos sino por autenticidad: una fila en claro permitiria a quien
+controle este servidor plantar una clave de host falsa en todos los equipos.
+Por lo mismo sus tumbas tambien van cifradas (`enc: true, deleted: true`
+con `ciphertext`), cosa que la restriccion `payload_xor_ciphertext` ya
+admite; el cliente ignora una tumba de `known_hosts` sin sellar.
+`connection_logs` va en claro, como `hosts`. La clave maestra que las cifra vive
 en el llavero del sistema operativo de cada dispositivo y llega a un equipo
 nuevo por emparejamiento: el nuevo publica una clave efimera, el que ya la
 tiene responde con la suya y con la maestra cifrada para ese destinatario.

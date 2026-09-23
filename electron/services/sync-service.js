@@ -7,6 +7,7 @@ const { app, shell } = require('electron');
 const storeService = require('./store-service');
 const cryptoService = require('./crypto-service');
 const pairingCrypto = require('./pairing-crypto');
+const { dedupeEntries } = require('./known-hosts');
 
 /**
  * The sync engine. Talks to the sync API on the user's own server, applies the
@@ -83,8 +84,49 @@ const COLLECTIONS = {
   snippets: 'snippets',
   port_forwards: 'port-forwards',
   keys: 'keys',
+  known_hosts: 'known-hosts',
+  connection_logs: 'connection-logs',
 };
-const ENCRYPTED_COLLECTIONS = new Set(['keys']);
+/**
+ * Row-encrypted collections: never uploaded without the unlocked key, and what
+ * no key here opens is counted in `undecryptable` and never applied.
+ *
+ * `known_hosts` is here for AUTHENTICITY, not secrecy: a plaintext row would
+ * let a compromised server plant a host key and make every device trust an
+ * impostor. AES-GCM with the account key means only a device that knows the
+ * passphrase can write a row the others accept.
+ */
+const ENCRYPTED_COLLECTIONS = new Set(['keys', 'known_hosts']);
+
+/**
+ * Collections whose TOMBSTONES are sealed too. A plaintext tombstone is
+ * something the server can forge: for `known_hosts` that deletes a trusted key
+ * on every device, and the next MITM gets an "unknown host" prompt instead of
+ * a "key changed" one. So a `known_hosts` deletion travels as
+ * `enc: true, deleted: true` with `{id, deleted: true}` sealed inside, and a
+ * remote tombstone that is not sealed, or does not open, deletes nothing.
+ * (`keys` keeps plaintext tombstones: forging one only loses data, which the
+ * other devices still hold, and old clients send them that way.)
+ */
+const SEALED_TOMBSTONES = new Set(['known_hosts']);
+
+/**
+ * Sealed rows whose plaintext must carry `id === item_id`. Stops the server
+ * from replaying one entry's ciphertext under another entry's id. Only for
+ * collections born with this rule: `keys` rows from older versions are not
+ * guaranteed to satisfy it byte for byte.
+ */
+const BOUND_ITEM_IDS = new Set(['known_hosts']);
+
+/**
+ * Bump when COLLECTIONS grows. A client older than the collection ignored its
+ * rows while its cursor moved past them (v1.10.0: `_applyRecords` skips unknown
+ * collections), so after an upgrade the cursor no longer covers them: a state
+ * written with a lower version is pulled again from 0 once.
+ *   1: hosts, groups, snippets, port_forwards, keys, settings (<= v1.10.0)
+ *   2: + known_hosts, connection_logs
+ */
+const COLLECTIONS_VERSION = 2;
 
 /**
  * ####################################################################
@@ -221,6 +263,7 @@ class SyncService {
       // desbloqueada de esa sal mientras existian ESAS legacy. Sin esto, las
       // legacy no se descartan (ver _prepareLegacyMigration).
       resealBaseline: null,
+      collectionsVersion: COLLECTIONS_VERSION,
     };
     this._loaded = false;
     this._syncing = false;
@@ -264,7 +307,11 @@ class SyncService {
         vault: cryptoService.parseVault(raw.vault),
         undecryptable: raw.undecryptable && typeof raw.undecryptable === 'object' ? raw.undecryptable : {},
         resealBaseline: raw.resealBaseline && typeof raw.resealBaseline === 'object' ? raw.resealBaseline : null,
+        collectionsVersion: COLLECTIONS_VERSION,
       };
+      // Written by a version that did not know every collection: its cursor
+      // skipped their rows. Pull everything again once (same as a key install).
+      if ((Number(raw.collectionsVersion) || 1) < COLLECTIONS_VERSION) this.state.cursor = 0;
       this._migrateSecrets();
     } catch (err) {
       if (err.code !== 'ENOENT') {
@@ -300,7 +347,10 @@ class SyncService {
     // with ENOENT because the first already moved it.
     const tmp = `${file}.${process.pid}.${++this._saveSeq}.tmp`;
     try {
-      await fsp.writeFile(tmp, JSON.stringify(this.state, null, 2), 'utf-8');
+      // collectionsVersion always current: a cursor this build moved covers
+      // every collection it knows (see COLLECTIONS_VERSION).
+      const state = { ...this.state, collectionsVersion: COLLECTIONS_VERSION };
+      await fsp.writeFile(tmp, JSON.stringify(state, null, 2), 'utf-8');
       await fsp.rename(tmp, file);
     } catch (err) {
       try { await fsp.unlink(tmp); } catch (_) { /* ignore */ }
@@ -693,7 +743,7 @@ class SyncService {
    */
   _markReseal() {
     const undecryptable = this.state.undecryptable || {};
-    for (const collection of ['keys', ...Object.keys(SECRET_FIELDS)]) {
+    for (const collection of [...ENCRYPTED_COLLECTIONS, ...Object.keys(SECRET_FIELDS)]) {
       const shadow = this.state.shadow[collection];
       if (!shadow) continue;
       for (const [itemId, entry] of Object.entries(shadow)) {
@@ -785,7 +835,26 @@ class SyncService {
     return { item, blocked, kept, reseal };
   }
 
-  _buildTombstone(serverCollection, itemId, updatedAt) {
+  _buildTombstone(serverCollection, itemId, updatedAt, key) {
+    if (SEALED_TOMBSTONES.has(serverCollection)) {
+      // Sealed so the server cannot forge it (see SEALED_TOMBSTONES). `_push`
+      // skips the whole collection without the unlocked key, so the deletion
+      // waits in the shadow until there is one.
+      if (!key) throw new Error(`Sin clave maestra desbloqueada no se borra en ${serverCollection}`);
+      const { ciphertext, nonce } = cryptoService.encryptWith(
+        key, JSON.stringify({ id: itemId, deleted: true })
+      );
+      return {
+        collection: serverCollection,
+        item_id: itemId,
+        enc: true,
+        payload: null,
+        ciphertext,
+        nonce,
+        deleted: true,
+        updated_at: updatedAt,
+      };
+    }
     // Neither payload nor ciphertext: there is nothing left to carry, and a
     // deleted `keys` row must not need the master key to be expressible.
     return {
@@ -810,13 +879,39 @@ class SyncService {
         console.error(`[SyncService] Ninguna clave de este equipo abre ${record.collection}/${record.item_id}`);
         return { blocked: true, item: null, undecryptable: true };
       }
+      let item;
       try {
-        return { blocked: false, item: JSON.parse(opened.plaintext), reseal: opened.fallback };
+        item = JSON.parse(opened.plaintext);
       } catch (_) {
         return { blocked: true, item: null, undecryptable: true };
       }
+      if (BOUND_ITEM_IDS.has(record.collection)
+          && (!item || typeof item !== 'object' || String(item.id) !== String(record.item_id))) {
+        // Authentic ciphertext, but of ANOTHER entry: replayed under this id.
+        console.error(`[SyncService] ${record.collection}/${record.item_id} trae el contenido de otro objeto; se ignora`);
+        return { blocked: true, item: null, undecryptable: true };
+      }
+      return { blocked: false, item, reseal: opened.fallback };
     }
     return { blocked: false, item: record.payload, reseal: false };
+  }
+
+  /**
+   * A remote tombstone for a SEALED_TOMBSTONES collection.
+   * @returns {'apply'|'blocked'|'forged'} 'blocked' = sealed with a key not
+   *   here (counts as undecryptable, deletes nothing); 'forged' = not sealed
+   *   or not a tombstone of this id (deletes nothing, is not counted).
+   */
+  _checkSealedTombstone(record, ctx) {
+    if (!record.enc || !record.ciphertext || !record.nonce) return 'forged';
+    if (!ctx.keys.length) return 'blocked';
+    const opened = this._tryOpen(ctx, record.ciphertext, record.nonce);
+    if (!opened) return 'blocked';
+    try {
+      const body = JSON.parse(opened.plaintext);
+      if (body && body.deleted === true && String(body.id) === String(record.item_id)) return 'apply';
+    } catch (_) { /* fall through */ }
+    return 'forged';
   }
 
   // ─── Vault record ───────────────────────────────────────
@@ -927,84 +1022,116 @@ class SyncService {
     let blockedSecrets = 0;
 
     for (const [collection, collectionRecords] of byCollection) {
-      const items = await this._readLocal(collection);
       const shadow = this.state.shadow[collection] || (this.state.shadow[collection] = {});
-      let dirty = false;
-
-      for (const record of collectionRecords) {
-        const itemId = record.item_id;
-        const tag = `${collection}/${itemId}`;
-        const index = items.findIndex(i => i && i.id === itemId);
-
-        if (record.deleted) {
-          // Tombstone. Honour it or objects deleted elsewhere come back.
-          delete undecryptable[tag];
-          if (collection === 'settings') continue;
-          if (index !== -1) {
-            items.splice(index, 1);
-            dirty = true;
-            applied++;
-          }
-          delete shadow[itemId];
-          continue;
+      // Read-modify-write under the store's lock for that file: connection logs
+      // and known hosts are written by main on their own (a connection starting,
+      // a key accepted) and a plain read ... writeRaw would drop that write.
+      const mutate = collection === 'settings'
+        ? async fn => {
+          const items = await this._readLocal(collection);
+          const next = await fn(items);
+          if (next) await this._writeLocal(collection, next);
         }
+        : fn => storeService.mutateRaw(COLLECTIONS[collection], fn);
+      await mutate(async (items) => {
+        let dirty = false;
 
-        const decoded = await this._decodeRecord(record, ctx);
-        if (decoded.blocked) {
-          blocked++;
-          undecryptable[tag] = true;
-          // Nadie aqui abre la copia remota, que puede ser MAS NUEVA que la
-          // local: no se re-sella ni se sube desde este equipo.
-          if (shadow[itemId]) {
-            delete shadow[itemId].reseal;
-            delete shadow[itemId].secretsPending;
-          }
-          continue;
-        }
-        if (!decoded.item || typeof decoded.item !== 'object') continue;
+        for (const record of collectionRecords) {
+          const itemId = record.item_id;
+          const tag = `${collection}/${itemId}`;
+          const index = items.findIndex(i => i && i.id === itemId);
 
-        const local = index !== -1 ? items[index] : null;
-        if (local) {
-          const shadowEntry = shadow[itemId];
-          const locallyDirty = !shadowEntry || shadowEntry.hash !== hashItem(local);
-          if (locallyDirty && isNewer(local.updatedAt, record.updated_at)) {
-            // Local edit is newer than what the server has: keep it, the push
-            // phase will send it up.
+          if (record.deleted) {
+            if (SEALED_TOMBSTONES.has(collection)) {
+              const verdict = this._checkSealedTombstone(record, ctx);
+              if (verdict === 'blocked') {
+                // Same rule as a live row we cannot open: the local copy stays.
+                blocked++;
+                undecryptable[tag] = true;
+                if (shadow[itemId]) delete shadow[itemId].reseal;
+                continue;
+              }
+              if (verdict === 'forged') {
+                console.error(`[SyncService] Lapida sin sellar o ajena para ${tag}; no se borra nada`);
+                continue;
+              }
+            }
+            // Tombstone. Honour it or objects deleted elsewhere come back.
+            delete undecryptable[tag];
+            if (collection === 'settings') continue;
+            if (index !== -1) {
+              items.splice(index, 1);
+              dirty = true;
+              applied++;
+            }
+            delete shadow[itemId];
             continue;
           }
+
+          const decoded = await this._decodeRecord(record, ctx);
+          if (decoded.blocked) {
+            blocked++;
+            undecryptable[tag] = true;
+            // Nadie aqui abre la copia remota, que puede ser MAS NUEVA que la
+            // local: no se re-sella ni se sube desde este equipo.
+            if (shadow[itemId]) {
+              delete shadow[itemId].reseal;
+              delete shadow[itemId].secretsPending;
+            }
+            continue;
+          }
+          if (!decoded.item || typeof decoded.item !== 'object') continue;
+
+          const local = index !== -1 ? items[index] : null;
+          if (local) {
+            const shadowEntry = shadow[itemId];
+            const locallyDirty = !shadowEntry || shadowEntry.hash !== hashItem(local);
+            if (locallyDirty && isNewer(local.updatedAt, record.updated_at)) {
+              // Local edit is newer than what the server has: keep it, the push
+              // phase will send it up.
+              continue;
+            }
+          }
+
+          // Los campos secretos se abren aqui, y lo que el servidor no traiga se
+          // rellena con lo que ya teniamos: sin clave maestra el host baja sin
+          // contrasena y no debe borrar la que este equipo tiene guardada.
+          const opened = await this._openSecretFields(
+            collection,
+            { ...decoded.item, id: itemId },
+            local,
+            ctx
+          );
+          const incoming = opened.item;
+          blockedSecrets += opened.blocked;
+          if (opened.blocked) undecryptable[tag] = true;
+          else delete undecryptable[tag];
+
+          if (index !== -1) items[index] = incoming;
+          else items.push(incoming);
+          dirty = true;
+          applied++;
+          shadow[itemId] = { hash: hashItem(incoming), updated_at: record.updated_at };
+          // Guardamos un secreto que el servidor no tiene: la fila remota esta
+          // incompleta y hay que volver a subirla en cuanto haya clave maestra,
+          // aunque el hash local no se mueva.
+          // Si algun sobre bajo ilegible, NO: la copia remota tiene un secreto que
+          // aqui no se puede leer (y quiza es mas nuevo); subir el local lo pisaria.
+          if (opened.kept && !opened.blocked) shadow[itemId].secretsPending = true;
+          // Abierto con una clave vieja: la copia del servidor sigue sellada con
+          // ella y los demas dispositivos no la pueden abrir. Se re-sella al subir.
+          if ((decoded.reseal || opened.reseal) && !opened.blocked) shadow[itemId].reseal = true;
         }
 
-        // Los campos secretos se abren aqui, y lo que el servidor no traiga se
-        // rellena con lo que ya teniamos: sin clave maestra el host baja sin
-        // contrasena y no debe borrar la que este equipo tiene guardada.
-        const opened = await this._openSecretFields(
-          collection,
-          { ...decoded.item, id: itemId },
-          local,
-          ctx
-        );
-        const incoming = opened.item;
-        blockedSecrets += opened.blocked;
-        if (opened.blocked) undecryptable[tag] = true;
-        else delete undecryptable[tag];
-
-        if (index !== -1) items[index] = incoming;
-        else items.push(incoming);
-        dirty = true;
-        applied++;
-        shadow[itemId] = { hash: hashItem(incoming), updated_at: record.updated_at };
-        // Guardamos un secreto que el servidor no tiene: la fila remota esta
-        // incompleta y hay que volver a subirla en cuanto haya clave maestra,
-        // aunque el hash local no se mueva.
-        // Si algun sobre bajo ilegible, NO: la copia remota tiene un secreto que
-        // aqui no se puede leer (y quiza es mas nuevo); subir el local lo pisaria.
-        if (opened.kept && !opened.blocked) shadow[itemId].secretsPending = true;
-        // Abierto con una clave vieja: la copia del servidor sigue sellada con
-        // ella y los demas dispositivos no la pueden abrir. Se re-sella al subir.
-        if ((decoded.reseal || opened.reseal) && !opened.blocked) shadow[itemId].reseal = true;
-      }
-
-      if (dirty) await this._writeLocal(collection, items);
+        if (collection === 'known_hosts') {
+          // Two devices that accepted the SAME key hold two entries (random ids).
+          // Every device keeps the smallest id and drops the rest, so they all
+          // converge; the dropped ones leave as (sealed) tombstones on push.
+          const kept = dedupeEntries(items);
+          if (kept.length !== items.length) return kept;
+        }
+        return dirty ? items : null;
+      });
     }
     return { applied, blocked, blockedSecrets };
   }
@@ -1066,7 +1193,7 @@ class SyncService {
       for (const itemId of Object.keys(shadow)) {
         if (seen.has(itemId)) continue;
         if (collection === 'settings') continue;
-        records.push(this._buildTombstone(collection, itemId, now));
+        records.push(this._buildTombstone(collection, itemId, now, key));
         commit.push({ collection, itemId, deleted: true });
       }
     }
