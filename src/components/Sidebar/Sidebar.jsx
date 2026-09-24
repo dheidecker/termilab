@@ -1,15 +1,17 @@
 import React from 'react';
 import { useApp } from '../../contexts/AppContext';
 import {
-  VaultIcon, KeyIcon, ForwardIcon, SnippetIcon, FingerprintIcon, ClockIcon, SettingsIcon,
+  VaultIcon, KeyIcon, ForwardIcon, SnippetIcon, FingerprintIcon, ClockIcon, SettingsIcon, FolderIcon,
 } from '../Icons/icons';
 import { FEATURES } from '../../platform';
 import './Sidebar.css';
 
 /* The home tab's navigation. Only sections that exist; Settings (which also
-   holds Sync) is pinned to the bottom. */
+   holds Sync) is pinned to the bottom. SFTP is not a section: it opens (or
+   returns to) an SFTP tab in the tab strip, like Termius. */
 const sections = [
   { id: 'hosts', label: 'Hosts', Icon: VaultIcon },
+  { id: 'sftp', label: 'SFTP', Icon: FolderIcon, available: FEATURES.sftp, opensTab: true },
   { id: 'keychain', label: 'Keychain', Icon: KeyIcon },
   { id: 'port-forwarding', label: 'Port Forwarding', Icon: ForwardIcon, available: FEATURES.portForwarding },
   { id: 'snippets', label: 'Snippets', Icon: SnippetIcon },
@@ -21,15 +23,15 @@ const settingsItem = { id: 'settings', label: 'Settings', Icon: SettingsIcon };
 
 export default function Sidebar({ collapsed = false }) {
   const { state, actions } = useApp();
-  const { setActiveSection } = actions;
+  const { setActiveSection, openSFTP } = actions;
 
-  const renderItem = ({ id, label, Icon }) => {
-    const active = state.activeSection === id;
+  const renderItem = ({ id, label, Icon, opensTab }) => {
+    const active = !opensTab && state.activeSection === id;
     return (
       <button
         key={id}
         className={`sidebar-item ${active ? 'active' : ''}`}
-        onClick={() => setActiveSection(id)}
+        onClick={() => (opensTab ? openSFTP() : setActiveSection(id))}
         aria-current={active ? 'page' : undefined}
         aria-label={label}
         title={collapsed ? label : undefined}

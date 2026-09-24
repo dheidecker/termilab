@@ -63,8 +63,41 @@ class SSHService {
         `Host key rejected: the key presented by ${config.host}:${config.port || 22} was not accepted, so the connection was closed.`
       );
 
+      /* History for the Logs section: who, where, when. Nothing else. */
+      const startLog = () => connectionLogService.start({
+        type: config.purpose === 'sftp' ? 'sftp' : 'ssh',
+        hostId: config.hostId,
+        label: config.label,
+        hostname: config.host,
+        port: config.port || 22,
+        username: config.username,
+      });
+
+      /* Best effort, after the session is already handed back: one exec on
+         the same client to learn the distro for the host card. Any failure
+         is swallowed inside detectOs. */
+      const detectAfterReady = (logId) => setImmediate(() => {
+        if (this.sessions.get(sessionId)?.client !== client) return;
+        detectOs(client, (os) => {
+          connectionLogService.setOs(logId, os);
+          if (this.sessions.get(sessionId)?.client !== client) return;
+          this._send('ssh:os-detected', { sessionId, os });
+        });
+      });
+
       client.on('ready', () => {
         clearTimeout(connectionTimeout);
+
+        /* An SFTP pane's own connection: no shell, no pty. The SFTP channel
+           is opened on this client by sftp-service; 'ssh:close' still comes
+           from client 'close'/'end' below. */
+        if (config.purpose === 'sftp') {
+          const logId = startLog();
+          this.sessions.set(sessionId, { client, stream: null, config, logId });
+          resolve(sessionId);
+          detectAfterReady(logId);
+          return;
+        }
 
         const shellOpts = {
           term: config.term || 'xterm-256color',
@@ -79,15 +112,7 @@ class SSHService {
             return reject(new Error(`Failed to open shell: ${err.message}`));
           }
 
-          /* History for the Logs section: who, where, when. Nothing else. */
-          const logId = connectionLogService.start({
-            type: config.purpose === 'sftp' ? 'sftp' : 'ssh',
-            hostId: config.hostId,
-            label: config.label,
-            hostname: config.host,
-            port: config.port || 22,
-            username: config.username,
-          });
+          const logId = startLog();
 
           this.sessions.set(sessionId, { client, stream, config, logId });
 
@@ -109,18 +134,7 @@ class SSHService {
           });
 
           resolve(sessionId);
-
-          // Best effort, after the session is already handed back: one exec
-          // on the same client to learn the distro for the host card. Any
-          // failure is swallowed inside detectOs.
-          setImmediate(() => {
-            if (this.sessions.get(sessionId)?.client !== client) return;
-            detectOs(client, (os) => {
-              connectionLogService.setOs(logId, os);
-              if (this.sessions.get(sessionId)?.client !== client) return;
-              this._send('ssh:os-detected', { sessionId, os });
-            });
-          });
+          detectAfterReady(logId);
         });
       });
 

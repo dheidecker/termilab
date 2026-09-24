@@ -448,3 +448,69 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   comprobar paquete, versionCode y firma: no quites esa capa "porque Node ya verificó el sha".
 - La limpieza de `updates/` es al arrancar (todo lo que no sea más nuevo que lo instalado, y los
   `.part`), porque tras instalar el proceso muere y no hay "después".
+
+## SFTP de dos paneles (2026-09-24, rama `feat/sftp-termius`, arnés L1–L4, F1–F13)
+
+- **`ssh:connect` con `purpose:'sftp'` ya no abre shell** (sesión con `stream: null`; `ssh:close` sale
+  del `close`/`end` del cliente). Sigue pasando por el verificador de host key y sale en Logs como `sftp`.
+- **`sshService.disconnect()` NO emite `ssh:close`**: `_cleanup` quita los listeners antes del `close`.
+  Quien dependa de "la sesión se fue" (el panel SFTP que reutiliza la sesión de una terminal) tiene que
+  mirar otra cosa (el renderer mira `activeSessions`).
+- **Piping de `ssh2` Read/WriteStream = 1 petición en vuelo = ~2 MB/s en localhost.** `transfer-service`
+  copia por trozos de 64 KB con 16 en vuelo sobre `open/read/write/close`, que `fs` y el SFTP de ssh2
+  comparten con la misma forma: un bucle sirve para las cuatro direcciones (~250 MB/s). `fastGet/fastPut`
+  no se cancelan ni hacen remoto→remoto.
+- El `WriteStream` de ssh2 cierra el handle en `_final` y **nunca emite `finish`** (y `writableFinished`
+  queda false). Si vuelves a streams, espera `close` tras el `end` de lectura.
+- Cada fichero va a `.<nombre>.<rand>.termilab-part` y se renombra al final. SFTP v3 `rename` NO pisa:
+  `posix-rename@openssh.com` (`ext_openssh_rename`) si está, si no unlink+rename. Cancelar borra el part;
+  un destino que se estaba sobrescribiendo sobrevive (F5). El control negativo "sin part" deja F4 verde
+  (el unlink limpia igual): el que lo caza es F5.
+- **Nombres que vienen del servidor**: `readdir` de un servidor hostil puede traer `../x` o `a/b`.
+  `sftp-service.list` los oculta; el motor de transferencias para la carpeta entera (F8). Todo `join`
+  al destino local pasa por `checkName` (un segmento; en Windows también `\`).
+- Conflictos se deciden en el renderer ANTES de empezar (`conflict: overwrite|rename`); main solo falla
+  si existe y no hay decisión. Un fichero nunca reemplaza una carpeta.
+- Borrar local = `shell.trashItem`; L3 mira el fuente para que no vuelva un `unlink/rm`.
+- **Arnés**: `scripts/lib/real-sshd.js` levanta `/usr/sbin/sshd -D` como usuario normal en 127.0.0.1 y
+  puerto libre (el `ssh2.Server` de pruebas no tiene subsistema SFTP). Borra `SSH_AUTH_SOCK` antes.
+  A 300 MB/s un fichero de 50 MB termina entre dos pushes de progreso: para "cancelar a mitad" pon
+  `transferService.progressMs = 0` (un push por trozo) y cancela desde el push.
+- Memoria remoto→remoto: `rss`/`external` crecen ~30 MB y **no escalan con el tamaño** (20 MB → +14,
+  240 MB → +33, otra vez 20 MB → +3); es memoria nativa de ssh2, no nuestra. F7 mide lo RETENIDO con
+  `gc()` en cada muestra (`v8.setFlagsFromString('--expose-gc')` + `vm.runInNewContext('gc')`).
+- Temporales de Abrir/Editar: `sftp-edit-service`, carpeta por pestaña (`owner` = id de pestaña),
+  `fs.watch` sobre la CARPETA (los editores guardan con rename y el watch del inodo viejo se calla).
+  `before-quit` hace `transferService.cancelAll()` + `sftpEditService.closeAllSync()`.
+
+## Revisión SFTP 2026-09-24 (arnés F14–F21)
+
+- **Re-subir una edición = escritura EN SITIO**, no part+rename: `realpath` primero (OpenSSH resuelve
+  enlaces) y `transferService.start(id, spec, { inPlace: true })` abre con flags numéricas SFTP
+  `WRITE|TRUNC` (0x12, sin CREAT: el servidor nunca aplica modo a un existente). Conserva enlace,
+  inodo, enlaces duros, dueño y modo. No es atómico (aceptado solo para ediciones). Si `realpath`
+  da NO_SUCH_FILE se recrea por el camino normal. F14.
+- El tercer argumento `internal` de `transferService.start` (`inPlace`, `fileMode`) es **solo de
+  main**: el handler IPC pasa `(id, spec)`. No lo metas en `spec` o el renderer lo controla.
+- Transferencia normal que sobrescribe un **fichero**: tras el rename se hace `chmod` con los bits
+  0o777 del que había (la umask local quitaba group-write). setuid/setgid no se reaplican. Sobre un
+  **enlace** se reemplaza el enlace, no se escribe a través (decisión, como rsync). F15.
+- Temporales de Abrir/Editar se crean con `fileMode: 0o600`. `openRefusal(name, purpose, platform)`
+  en `sftp-edit-service`: Abrir niega `OPEN_BLOCKED` (unión de todas las plataformas + scripts);
+  Editar niega solo lo que el SO ejecuta aunque sea texto en ESTA plataforma (`EDIT_BLOCKED`: en
+  Windows .js/.bat/.sh…). Se comprueba antes de bajar y otra vez con el nombre local. El mensaje
+  empieza por **"Refusing to open"**: el renderer lo detecta por texto (el sobre IPC solo lleva
+  `message`, no `code`). Si cambias esa frase, cambia `FilePane.refusedOrFlash`. F16.
+- `_deleteTree` hace `lstat` de cada hijo: los attrs de `readdir` los decide el servidor. Probarlo
+  contra OpenSSH exige falsear `sftp.readdir` en la instancia (propiedad propia, luego `delete`),
+  porque OpenSSH ya da attrs de lstat. F17.
+- Sin `posix-rename`: destino → `.<n>.<rand>.termilab-old`, part → destino, borrar backup. Si falla
+  el segundo rename se restaura el backup y el error lleva `keepPart = true` (el part NO se borra y
+  su nombre va en el mensaje). F18 quita la extensión de `sftp._extensions` y falsea `sftp.rename`.
+- `sftpEditService.upload` serializa por edición (`inflight` + como mucho un `queued` compartido).
+  F19 espía `transferService.start` (solo ids `edit-*`) y mide concurrencia máxima.
+- Windows: `checkName(name, platform)` niega `<>:"|?*`, control, punto/espacio final y
+  CON/PRN/AUX/NUL/COM0-9/LPT0-9 (también con extensión y ¹²³). En bajadas `safeLocalName` mapea y
+  el resultado trae `renamed: [{from, to}]`; si el mapeo choca con un hermano, " (n)". Plataforma
+  inyectable con `transferService.localPlatform = 'win32'` (el harness la vuelve a `null`). F20.
+- El control negativo en copia sin `.git` deja S9 rojo (lee `5ecfa09` con git): es ruido, no tuyo.

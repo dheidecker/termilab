@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef } from 'react';
 import { normalizeSyncStatus } from '../components/Sync/helpers';
+import { mockConnect } from '../components/SFTP/fsApi';
 
 const AppContext = createContext(null);
 
@@ -7,15 +8,15 @@ const AppContext = createContext(null);
 /* Enough of them to fill the Hosts grid, with one duplicate endpoint (4/14)
    so the duplicate banner shows up in browser dev mode too. */
 const MOCK_HOSTS = [
-  { id: '1', label: 'Production Server', hostname: '192.168.1.100', port: 22, username: 'root', authType: 'password', groupId: 'g1', createdAt: '2026-06-08T09:00:00.000Z', tags: ['prod'] },
-  { id: '2', label: 'Staging Server', hostname: '192.168.1.101', port: 22, username: 'deploy', authType: 'key', keyId: 'k1', groupId: 'g1', createdAt: '2026-02-15T09:00:00.000Z', tags: ['staging'] },
-  { id: '3', label: 'Database Server', hostname: '10.0.0.50', port: 2222, username: 'admin', authType: 'password', groupId: 'g2', createdAt: '2026-07-22T09:00:00.000Z', tags: ['db'] },
+  { id: '1', label: 'Production Server', hostname: '192.168.1.100', port: 22, username: 'root', os: 'ubuntu', authType: 'password', groupId: 'g1', createdAt: '2026-06-08T09:00:00.000Z', tags: ['prod'] },
+  { id: '2', label: 'Staging Server', hostname: '192.168.1.101', port: 22, username: 'deploy', os: 'debian', authType: 'key', keyId: 'k1', groupId: 'g1', createdAt: '2026-02-15T09:00:00.000Z', tags: ['staging'] },
+  { id: '3', label: 'Database Server', hostname: '10.0.0.50', port: 2222, username: 'admin', os: 'rocky', authType: 'password', groupId: 'g2', createdAt: '2026-07-22T09:00:00.000Z', tags: ['db'] },
   { id: '4', label: 'Dev Machine', hostname: 'dev.local', port: 22, username: 'derek', authType: 'key', keyId: 'k1', groupId: null, createdAt: '2026-03-02T09:00:00.000Z', tags: [] },
   { id: '5', label: 'Edge Proxy', hostname: '192.168.1.110', port: 22, username: 'root', authType: 'password', groupId: 'g1', createdAt: '2026-08-09T09:00:00.000Z', tags: ['prod'] },
   { id: '6', label: 'Replica 1', hostname: '10.0.0.51', port: 22, username: 'postgres', authType: 'key', keyId: 'k1', groupId: 'g2', createdAt: '2026-04-16T09:00:00.000Z', tags: ['db'] },
   { id: '7', label: 'Home NAS', hostname: 'nas.home.arpa', port: 22, username: 'admin', authType: 'password', groupId: 'g3', createdAt: '2026-09-23T09:00:00.000Z', tags: [] },
-  { id: '8', label: 'Raspberry Pi', hostname: '192.168.0.42', port: 22, username: 'pi', authType: 'password', groupId: 'g3', createdAt: '2026-05-03T09:00:00.000Z', tags: [] },
-  { id: '9', label: 'Build Runner', hostname: 'ci-runner-01.internal', port: 22, username: 'ci', authType: 'key', keyId: 'k1', groupId: null, createdAt: '2026-01-10T09:00:00.000Z', tags: ['ci'] },
+  { id: '8', label: 'Raspberry Pi', hostname: '192.168.0.42', port: 22, username: 'pi', os: 'raspbian', authType: 'password', groupId: 'g3', createdAt: '2026-05-03T09:00:00.000Z', tags: [] },
+  { id: '9', label: 'Build Runner', hostname: 'ci-runner-01.internal', port: 22, username: 'ci', os: 'fedora', authType: 'key', keyId: 'k1', groupId: null, createdAt: '2026-01-10T09:00:00.000Z', tags: ['ci'] },
   { id: '10', label: 'Bastion', hostname: 'bastion.example.com', port: 2200, username: 'derek', authType: 'key', keyId: 'k1', groupId: null, createdAt: '2026-06-17T09:00:00.000Z', tags: [] },
   { id: '11', label: 'Mail Relay', hostname: 'mx1.example.com', port: 22, username: 'root', authType: 'password', groupId: null, createdAt: '2026-02-24T09:00:00.000Z', tags: [] },
   { id: '12', label: 'Monitoring', hostname: 'grafana.internal', port: 22, username: 'ops', authType: 'key', keyId: 'k1', groupId: null, createdAt: '2026-07-04T09:00:00.000Z', tags: ['ops'] },
@@ -92,6 +93,24 @@ const MOCK_SETTINGS = {
 /* ── Helper to check Electron API ── */
 const api = () => window.electronAPI;
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
+
+/* What ssh:connect gets for a saved host: the same for a terminal and for an
+   SFTP pane's own connection. main resolves keyId to the private key and runs
+   the same host-key verification either way. */
+function buildConnectConfig(host) {
+  const config = {
+    host: host.hostname,
+    port: host.port || 22,
+    username: host.username,
+    /* For the Logs section only: main keeps hostId if it is a saved host */
+    hostId: host.id,
+    label: host.label || host.hostname,
+  };
+  if (host.authType === 'password') config.password = host.password || '';
+  if (host.authType === 'key' && host.keyId) config.keyId = host.keyId;
+  if (host.authType === 'key' && host.privateKey) config.privateKey = host.privateKey;
+  return config;
+}
 
 /* ── Sync bridge ──
    Built by the main process; absent in the browser and in any build whose main
@@ -681,19 +700,7 @@ export function AppProvider({ children }) {
 
       if (hasApi()) {
         try {
-          const config = {
-            host: host.hostname,
-            port: host.port || 22,
-            username: host.username,
-            /* For the Logs section only: main keeps hostId if it is a saved host */
-            hostId: host.id,
-            label: host.label || host.hostname,
-          };
-          if (host.authType === 'password') config.password = host.password || '';
-          if (host.authType === 'key' && host.keyId) config.keyId = host.keyId;
-          if (host.authType === 'key' && host.privateKey) config.privateKey = host.privateKey;
-
-          const result = await api().ssh.connect(config);
+          const result = await api().ssh.connect(buildConnectConfig(host));
           const sessionId = result.sessionId;
           dispatch({ type: 'ADD_SESSION', payload: { sessionId, hostId: host.id, host, status: 'connected' } });
           /* Update the tab with the sessionId and mark as connected */
@@ -911,35 +918,54 @@ export function AppProvider({ children }) {
       return api().logs.clear();
     }, []),
 
-    /* Open SFTP tab */
-    openSFTPTab: useCallback(async (host) => {
+    /* ── SFTP ──
+       An SFTP tab is only a layout: {left, right} pane sources, each
+       {kind:'local'} | {kind:'host', hostId} | null (pick one). Panes connect
+       themselves (connectSftp) and close what they opened when they unmount,
+       so closing the tab is just removing it. */
+    openSFTPTab: useCallback((host) => {
       const tabId = crypto.randomUUID();
-      let sessionId;
-      if (hasApi()) {
-        try {
-          const config = {
-            host: host.hostname,
-            port: host.port || 22,
-            username: host.username,
-            hostId: host.id,
-            label: host.label || host.hostname,
-            purpose: 'sftp',
-          };
-          if (host.authType === 'password') config.password = host.password || '';
-          if (host.authType === 'key' && host.keyId) config.keyId = host.keyId;
-          if (host.authType === 'key' && host.privateKey) config.privateKey = host.privateKey;
-          const result = await api().ssh.connect(config);
-          sessionId = result.sessionId;
-        } catch (err) {
-          console.error('SFTP connection failed:', err);
-          throw err;
-        }
-      } else {
-        sessionId = `mock-sftp-${tabId}`;
+      dispatch({ type: 'ADD_TAB', payload: {
+        id: tabId,
+        type: 'sftp',
+        label: host ? `SFTP · ${host.label || host.hostname}` : 'SFTP',
+        hostId: host?.id,
+        panes: { left: { kind: 'local' }, right: host ? { kind: 'host', hostId: host.id } : null },
+      } });
+      return { tabId };
+    }, []),
+
+    /* Sidebar "SFTP": back to the last SFTP tab, or a new one. */
+    openSFTP: useCallback(() => {
+      const existing = stateRef.current.tabs.filter(t => t.type === 'sftp');
+      if (existing.length) {
+        dispatch({ type: 'SET_ACTIVE_TAB', payload: existing[existing.length - 1].id });
+        return { tabId: existing[existing.length - 1].id };
       }
-      dispatch({ type: 'ADD_SESSION', payload: { sessionId, hostId: host.id, host, status: 'connected' } });
-      dispatch({ type: 'ADD_TAB', payload: { id: tabId, type: 'sftp', label: `SFTP: ${host.label || host.hostname}`, sessionId, hostId: host.id } });
-      return { tabId, sessionId };
+      const tabId = crypto.randomUUID();
+      dispatch({ type: 'ADD_TAB', payload: { id: tabId, type: 'sftp', label: 'SFTP', panes: { left: { kind: 'local' }, right: null } } });
+      return { tabId };
+    }, []),
+
+    /* A pane's connection to `host`: the session of an open terminal to that
+       host when there is one (owned: false — the terminal keeps it), else a
+       connection of its own (ssh:connect purpose:'sftp', no shell; host key
+       verified like any other; logged as sftp). The caller disconnects only
+       what it owns. */
+    connectSftp: useCallback(async (host) => {
+      const st = stateRef.current;
+      const reusable = st.tabs.find(t => t.type === 'terminal' && t.hostId === host.id && t.sessionId
+        && !t.connecting && !t.error && st.activeSessions[t.sessionId]);
+      if (reusable) return { sessionId: reusable.sessionId, owned: false };
+      if (!hasApi()) {
+        await new Promise(r => setTimeout(r, 250));
+        const sessionId = mockConnect(host);
+        dispatch({ type: 'ADD_SESSION', payload: { sessionId, hostId: host.id, host, status: 'connected', sftp: true } });
+        return { sessionId, owned: true };
+      }
+      const { sessionId } = await api().ssh.connect({ ...buildConnectConfig(host), purpose: 'sftp' });
+      dispatch({ type: 'ADD_SESSION', payload: { sessionId, hostId: host.id, host, status: 'connected', sftp: true } });
+      return { sessionId, owned: true };
     }, []),
   };
 

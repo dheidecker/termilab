@@ -1263,6 +1263,9 @@ async function main() {
   // ── P. Port forwarding ────────────────────────────────────
   await seccionPortForward();
 
+  // ── L/F. SFTP de dos paneles: local-fs, sshd real, transferencias ──
+  await require('./lib/check-sftp').seccionSftp({ check, ROOT, getBridge: () => bridge });
+
   const cryptoService = require(path.join(ROOT, 'electron', 'services', 'crypto-service.js'));
   const storeService = require(path.join(ROOT, 'electron', 'services', 'store-service.js'));
   const syncService = require(path.join(ROOT, 'electron', 'services', 'sync-service.js'));

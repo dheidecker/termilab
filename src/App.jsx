@@ -5,7 +5,8 @@ import Sidebar from './components/Sidebar/Sidebar';
 import HostList from './components/HostList/HostList';
 import HostForm from './components/HostForm/HostForm';
 import SplitPane from './components/SplitPane/SplitPane';
-import SFTPExplorer from './components/SFTP/SFTPExplorer';
+import SFTPView from './components/SFTP/SFTPView';
+import { confirmCloseSftp } from './components/SFTP/activeTransfers';
 import Snippets from './components/Snippets/Snippets';
 import KeyManager from './components/KeyManager/KeyManager';
 import PortForwarding from './components/PortForwarding/PortForwarding';
@@ -78,6 +79,7 @@ function AppContent() {
           if (tab?.sessionId && (tab.type === 'local-terminal' || tab.type === 'ssh')) {
             if (!window.confirm(`Close "${tab.label}"? Any running process will be terminated.`)) return;
           }
+          if (!confirmCloseSftp(tab)) return;
           if (tab?.sessionId) {
             if (tab.type === 'local-terminal') {
               window.electronAPI?.localShell?.kill(tab.sessionId).catch(() => {});
@@ -167,7 +169,7 @@ function AppContent() {
           key={tab.id}
           style={{ display: tab.id === activeTabId ? 'flex' : 'none', flex: 1, minHeight: 0 }}
         >
-          <SFTPExplorer tab={tab} />
+          <SFTPView tab={tab} />
         </div>
       ));
   };

@@ -4,6 +4,9 @@ const os = require('os');
 
 const sshService = require('./services/ssh-service');
 const sftpService = require('./services/sftp-service');
+const transferService = require('./services/transfer-service');
+const sftpEditService = require('./services/sftp-edit-service');
+const localFsService = require('./services/local-fs-service');
 const storeService = require('./services/store-service');
 const keyService = require('./services/key-service');
 const portForwardService = require('./services/port-forward-service');
@@ -37,6 +40,8 @@ function registerIpcHandlers(mainWindow) {
   // Inject mainWindow into services that need to push events to the renderer
   sshService.setMainWindow(mainWindow);
   sftpService.setMainWindow(mainWindow);
+  transferService.setMainWindow(mainWindow);
+  sftpEditService.setMainWindow(mainWindow);
   portForwardService.setMainWindow(mainWindow);
   localShellService.setMainWindow(mainWindow);
   syncService.setMainWindow(mainWindow);
@@ -117,59 +122,114 @@ function registerIpcHandlers(mainWindow) {
   });
 
   // ─── SFTP Handlers ────────────────────────────────────
+  // Remote side of the SFTP screen. sessionId is an ssh-service session: a
+  // terminal's (reused) or one opened with ssh:connect purpose:'sftp'.
+  // Paths are absolute POSIX; names that create something are one segment
+  // (validated in sftp-service, not here).
 
   ipcMain.handle('sftp:list', wrapHandler(async (event, sessionId, remotePath) => {
     return await sftpService.list(sessionId, remotePath);
   }));
 
-  ipcMain.handle('sftp:download', wrapHandler(async (event, sessionId, remotePath) => {
-    const fileName = path.basename(remotePath);
-    const result = await dialog.showSaveDialog(mainWindow, {
-      title: 'Save File',
-      defaultPath: fileName,
-      properties: ['showOverwriteConfirmation', 'createDirectory'],
-    });
-
-    if (result.canceled || !result.filePath) {
-      return null;
-    }
-
-    return await sftpService.download(sessionId, remotePath, result.filePath);
-  }));
-
-  ipcMain.handle('sftp:upload', wrapHandler(async (event, sessionId, remotePath) => {
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Select File to Upload',
-      properties: ['openFile'],
-    });
-
-    if (result.canceled || result.filePaths.length === 0) {
-      return null;
-    }
-
-    const localPath = result.filePaths[0];
-    const fileName = path.basename(localPath);
-    const remoteFilePath = remotePath.endsWith('/')
-      ? `${remotePath}${fileName}`
-      : `${remotePath}/${fileName}`;
-
-    return await sftpService.upload(sessionId, localPath, remoteFilePath);
-  }));
-
-  ipcMain.handle('sftp:mkdir', wrapHandler(async (event, sessionId, remotePath) => {
-    return await sftpService.mkdir(sessionId, remotePath);
-  }));
-
-  ipcMain.handle('sftp:delete', wrapHandler(async (event, sessionId, remotePath, isDirectory) => {
-    return await sftpService.delete(sessionId, remotePath, isDirectory);
-  }));
-
-  ipcMain.handle('sftp:rename', wrapHandler(async (event, sessionId, oldPath, newPath) => {
-    return await sftpService.rename(sessionId, oldPath, newPath);
+  ipcMain.handle('sftp:realpath', wrapHandler(async (event, sessionId, remotePath) => {
+    return await sftpService.realpath(sessionId, remotePath);
   }));
 
   ipcMain.handle('sftp:stat', wrapHandler(async (event, sessionId, remotePath) => {
     return await sftpService.stat(sessionId, remotePath);
+  }));
+
+  ipcMain.handle('sftp:mkdir', wrapHandler(async (event, sessionId, dir, name) => {
+    return await sftpService.mkdir(sessionId, dir, name);
+  }));
+
+  ipcMain.handle('sftp:create-file', wrapHandler(async (event, sessionId, dir, name) => {
+    return await sftpService.createFile(sessionId, dir, name);
+  }));
+
+  ipcMain.handle('sftp:rename', wrapHandler(async (event, sessionId, remotePath, newName) => {
+    return await sftpService.rename(sessionId, remotePath, newName);
+  }));
+
+  // Permanent (there is no remote trash); the renderer's confirm says so.
+  ipcMain.handle('sftp:delete', wrapHandler(async (event, sessionId, remotePath) => {
+    return await sftpService.delete(sessionId, remotePath);
+  }));
+
+  ipcMain.handle('sftp:chmod', wrapHandler(async (event, sessionId, remotePath, mode) => {
+    return await sftpService.chmod(sessionId, remotePath, mode);
+  }));
+
+  // Transfers between any two endpoints ({kind:'local'} | {kind:'remote', sessionId}).
+  // Progress on 'sftp:transfer-progress'; cancel deletes the part file.
+  ipcMain.handle('sftp:transfer-start', wrapHandler(async (event, id, spec) => {
+    return await transferService.start(id, spec || {});
+  }));
+
+  ipcMain.handle('sftp:transfer-cancel', wrapHandler(async (event, id) => {
+    return transferService.cancel(id);
+  }));
+
+  // Remote files opened/edited through a temp copy owned by an SFTP tab.
+  ipcMain.handle('sftp:open-remote', wrapHandler(async (event, sessionId, remotePath, owner) => {
+    return await sftpEditService.open(sessionId, remotePath, owner);
+  }));
+
+  ipcMain.handle('sftp:edit-start', wrapHandler(async (event, sessionId, remotePath, owner) => {
+    return await sftpEditService.start(sessionId, remotePath, owner);
+  }));
+
+  ipcMain.handle('sftp:edit-upload', wrapHandler(async (event, editId) => {
+    return await sftpEditService.upload(editId);
+  }));
+
+  ipcMain.handle('sftp:edit-stop', wrapHandler(async (event, editId) => {
+    return sftpEditService.stop(editId);
+  }));
+
+  ipcMain.handle('sftp:cleanup', wrapHandler(async (event, owner) => {
+    return await sftpEditService.cleanup(owner);
+  }));
+
+  // ─── Local filesystem (SFTP screen's Local pane) ───────
+  // Absolute paths only, names are one segment, delete goes to the OS trash.
+
+  ipcMain.handle('local-fs:home', wrapHandler(async () => localFsService.home()));
+
+  ipcMain.handle('local-fs:list', wrapHandler(async (event, dir) => {
+    return await localFsService.list(dir);
+  }));
+
+  ipcMain.handle('local-fs:stat', wrapHandler(async (event, p) => {
+    return await localFsService.stat(p);
+  }));
+
+  ipcMain.handle('local-fs:mkdir', wrapHandler(async (event, dir, name) => {
+    return await localFsService.mkdir(dir, name);
+  }));
+
+  ipcMain.handle('local-fs:create-file', wrapHandler(async (event, dir, name) => {
+    return await localFsService.createFile(dir, name);
+  }));
+
+  ipcMain.handle('local-fs:rename', wrapHandler(async (event, p, newName) => {
+    return await localFsService.rename(p, newName);
+  }));
+
+  ipcMain.handle('local-fs:trash', wrapHandler(async (event, p) => {
+    return await localFsService.trash(p);
+  }));
+
+  ipcMain.handle('local-fs:copy', wrapHandler(async (event, src, dstDir, name) => {
+    return await localFsService.copy(src, dstDir, name);
+  }));
+
+  ipcMain.handle('local-fs:chmod', wrapHandler(async (event, p, mode) => {
+    return await localFsService.chmod(p, mode);
+  }));
+
+  ipcMain.handle('local-fs:open', wrapHandler(async (event, p) => {
+    return await localFsService.open(p);
   }));
 
   // ─── Store: Hosts ─────────────────────────────────────
@@ -488,8 +548,12 @@ function removeIpcHandlers() {
     'ssh:connect', 'ssh:disconnect', 'ssh:host-key-response',
     'known-hosts:list', 'known-hosts:delete', 'known-hosts:import',
     'logs:list', 'logs:clear',
-    'sftp:list', 'sftp:download', 'sftp:upload', 'sftp:mkdir',
-    'sftp:delete', 'sftp:rename', 'sftp:stat',
+    'sftp:list', 'sftp:realpath', 'sftp:stat', 'sftp:mkdir', 'sftp:create-file',
+    'sftp:rename', 'sftp:delete', 'sftp:chmod',
+    'sftp:transfer-start', 'sftp:transfer-cancel',
+    'sftp:open-remote', 'sftp:edit-start', 'sftp:edit-upload', 'sftp:edit-stop', 'sftp:cleanup',
+    'local-fs:home', 'local-fs:list', 'local-fs:stat', 'local-fs:mkdir', 'local-fs:create-file',
+    'local-fs:rename', 'local-fs:trash', 'local-fs:copy', 'local-fs:chmod', 'local-fs:open',
     'store:get-hosts', 'store:save-host', 'store:set-host-os', 'store:delete-host',
     'store:get-groups', 'store:save-group', 'store:delete-group',
     'store:get-snippets', 'store:save-snippet', 'store:delete-snippet',

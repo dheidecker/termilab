@@ -4,6 +4,8 @@ const path = require('path');
 const { registerIpcHandlers, removeIpcHandlers } = require('./ipc-handlers');
 const sshService = require('./services/ssh-service');
 const sftpService = require('./services/sftp-service');
+const transferService = require('./services/transfer-service');
+const sftpEditService = require('./services/sftp-edit-service');
 const portForwardService = require('./services/port-forward-service');
 const localShellService = require('./services/local-shell-service');
 const syncService = require('./services/sync-service');
@@ -224,6 +226,10 @@ app.on('before-quit', async (event) => {
       .finally(() => { clearTimeout(timer); app.quit(); });
   }
   hostKeyService.rejectAll();
+  // Transfers first (each deletes its .termilab-part), then the temp copies
+  // of opened/edited remote files: nothing of SFTP may stay in /tmp.
+  transferService.cancelAll();
+  sftpEditService.closeAllSync();
   try {
     await sshService.disconnectAll();
     sftpService.closeAll();

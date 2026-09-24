@@ -4,6 +4,7 @@ import { VaultIcon, ServerIcon, TerminalIcon, FolderIcon, PlusIcon, CloseIcon, B
 import { FEATURES } from '../../platform';
 import './TabBar.css';
 import { useBackHandler } from '../../hooks/useBackHandler';
+import { confirmCloseSftp } from '../SFTP/activeTransfers';
 
 function getTabIcon(tab) {
   if (tab.type === 'sftp') return <FolderIcon className="tab-icon" />;
@@ -40,6 +41,7 @@ export default function TabBar() {
       const confirmed = window.confirm(`Close "${tab.label}"? Any running process will be terminated.`);
       if (!confirmed) return;
     }
+    if (!confirmCloseSftp(tab)) return;
     if (tab?.sessionId) {
       if (tab.type === 'local-terminal') {
         try {
