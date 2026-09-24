@@ -3,7 +3,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const sftpService = require('./sftp-service');
-const { checkPath, checkName } = require('./local-fs-service');
+const { checkPath, checkName, safeLocalName } = require('./local-fs-service');
 
 const posix = path.posix;
 const { STATUS, checkRemotePath, checkRemoteName, isSafeRemoteName } = sftpService;
@@ -27,6 +27,24 @@ const { STATUS, checkRemotePath, checkRemoteName, isSafeRemoteName } = sftpServi
  *    marked by its name.
  * Files of a folder copied before the cancel stay where they are.
  *
+ * Overwriting an existing FILE keeps its permission bits (rwx for u/g/o):
+ * the new inode is chmod'ed back to them after the rename, so the local
+ * umask never silently drops group-write. setuid/setgid/sticky are NOT
+ * re-applied to new content. Owner, group, hard links and ACLs cannot
+ * survive a rename; that is the price of never leaving a half-written file.
+ * Overwriting a SYMLINK replaces the link itself (its target is untouched),
+ * like rsync: the conflict the user answered was about the name they saw.
+ *
+ * The one exception is `internal.inPlace` (sftp-edit-service's re-upload of a
+ * file being edited): the resolved target is opened with truncate and
+ * written in place, so symlinks, owner, group, hard links, ACLs and mode all
+ * stay. It is not atomic (a failure mid-write leaves a truncated file); the
+ * edited copy is still on disk to retry from.
+ *
+ * Local names on Windows: names a POSIX server lists that Windows cannot
+ * hold ("a:b", "CON", "x.", "q?") are mapped with safeLocalName and reported
+ * in the result as `renamed: [{from, to}]` (relative paths).
+ *
  * Conflicts are decided by the caller BEFORE start, for the top-level item:
  *   conflict: undefined → fail if the target exists
  *             'overwrite' → replace a file / merge into a folder
@@ -42,6 +60,7 @@ const { STATUS, checkRemotePath, checkRemoteName, isSafeRemoteName } = sftpServi
 const CHUNK = 64 * 1024;
 const CONCURRENCY = 16;
 const PART_SUFFIX = '.termilab-part';
+const OLD_SUFFIX = '.termilab-old';
 
 function cancelError() {
   const err = new Error('Cancelled');
@@ -61,11 +80,15 @@ function splitExt(name) {
 // ─── Endpoints ──────────────────────────────────────────────
 
 class LocalEndpoint {
-  constructor() { this.kind = 'local'; }
+  constructor(platform) {
+    this.kind = 'local';
+    this.platform = platform || process.platform;
+  }
   checkDir(p) { return checkPath(p); }
-  checkName(n) { return checkName(n); }
+  checkName(n) { return checkName(n, this.platform); }
+  safeName(n) { return safeLocalName(n, this.platform); }
   join(dir, name) {
-    const full = path.join(dir, checkName(name));
+    const full = path.join(dir, checkName(name, this.platform));
     if (path.dirname(full) !== path.resolve(dir)) throw new Error(`"${name}" escapes ${dir}`);
     return full;
   }
@@ -102,7 +125,12 @@ class LocalEndpoint {
   close(fd) {
     return new Promise((resolve, reject) => fs.close(fd, (e) => (e ? reject(e) : resolve())));
   }
+  /** Existing file, written from byte 0: no create, truncate (see inPlace). */
+  openInPlace(p) {
+    return new Promise((resolve, reject) => fs.open(p, fs.constants.O_WRONLY | fs.constants.O_TRUNC, (e, fd) => (e ? reject(e) : resolve(fd))));
+  }
   async unlink(p) { await fsp.unlink(p); }
+  async chmod(p, mode) { await fsp.chmod(p, mode); }
   /** Replaces `to` if it is a file (fs.rename does, atomically). */
   async replace(from, to) { await fsp.rename(from, to); }
 }
@@ -120,6 +148,7 @@ class RemoteEndpoint {
   }
   checkDir(p) { return checkRemotePath(p); }
   checkName(n) { return checkRemoteName(n); }
+  safeName(n) { return n; }
   join(dir, name) { return posix.join(dir, checkRemoteName(name)); }
   dirname(p) { return posix.dirname(p); }
   basename(p) { return posix.basename(p); }
@@ -170,20 +199,45 @@ class RemoteEndpoint {
     return new Promise((resolve, reject) => this.sftp.write(handle, buf, off, len, pos, (e) => (e ? reject(e) : resolve(len))));
   }
   close(handle) { return this._call('close', handle); }
+  /* WRITE|TRUNC without CREAT (SFTP v3 open flags): the file must exist, and
+     the server never applies a mode to an existing file. */
+  async openInPlace(p) {
+    try { return await this._call('open', p, 0x02 | 0x10); } catch (err) { throw sftpService.readable(err, p); }
+  }
   async unlink(p) { await this._call('unlink', p); }
+  async chmod(p, mode) {
+    try { await this._call('chmod', p, mode); } catch (err) { throw sftpService.readable(err, p); }
+  }
   async replace(from, to) {
     const there = await this.lstat(to);
     if (!there) {
       try { await this._call('rename', from, to); return; } catch (err) { throw sftpService.readable(err, to); }
     }
     /* SFTP v3 rename refuses an existing target. OpenSSH's posix-rename
-       replaces atomically; without it, unlink then rename (a short window
-       with no file, never a half-written one). */
+       replaces atomically. Without it: move the old file aside, move the
+       part into place, and only then delete the old one. If the second
+       rename fails the old file goes back and the part is KEPT (its name is
+       in the error): at every step one full copy exists. */
     if (this.sftp._extensions && this.sftp._extensions['posix-rename@openssh.com']) {
       try { await this._call('ext_openssh_rename', from, to); return; } catch (_) { /* fall through */ }
     }
-    await this._call('unlink', to).catch((err) => { throw sftpService.readable(err, to); });
-    try { await this._call('rename', from, to); } catch (err) { throw sftpService.readable(err, to); }
+    const rand = crypto.randomBytes(4).toString('hex');
+    const base = posix.basename(to);
+    const backup = posix.join(posix.dirname(to), `.${Buffer.from(base).length > 200 ? base.slice(0, 100) : base}.${rand}${OLD_SUFFIX}`);
+    try { await this._call('rename', to, backup); } catch (err) { throw sftpService.readable(err, to); }
+    try {
+      await this._call('rename', from, to);
+    } catch (err) {
+      let restored = true;
+      try { await this._call('rename', backup, to); } catch (_) { restored = false; }
+      const out = new Error(restored
+        ? `Could not put the new copy in place (${err.message}). The original is unchanged; the new copy was kept as ${posix.basename(from)}.`
+        : `Could not put the new copy in place (${err.message}). The original is at ${posix.basename(backup)} and the new copy at ${posix.basename(from)}.`);
+      out.code = err.code;
+      out.keepPart = true;
+      throw out;
+    }
+    await this._call('unlink', backup).catch(() => { /* marked by its name if it survives */ });
   }
 }
 
@@ -197,6 +251,9 @@ class TransferService {
     /* Progress throttle. The harness sets 0 to cancel at an exact byte
        count: at localhost speed a 50 MB file is done between two ticks. */
     this.progressMs = 120;
+    /* Platform whose naming rules the local side follows. The harness sets
+       'win32' to test the Windows name mapping on Linux. */
+    this.localPlatform = null;
   }
 
   setMainWindow(win) {
@@ -213,7 +270,7 @@ class TransferService {
 
   async _endpoint(spec) {
     if (!spec || typeof spec !== 'object') throw new Error('Transfer endpoint missing.');
-    if (spec.kind === 'local') return new LocalEndpoint();
+    if (spec.kind === 'local') return new LocalEndpoint(this.localPlatform);
     if (spec.kind === 'remote') {
       if (typeof spec.sessionId !== 'string' || !spec.sessionId) throw new Error('Remote endpoint without a session.');
       return new RemoteEndpoint(spec.sessionId, await sftpService.getSFTP(spec.sessionId));
@@ -225,9 +282,12 @@ class TransferService {
    * Run one transfer to completion.
    * @param {string} id  chosen by the renderer (queue item id)
    * @param {{src, srcPath, dst, dstDir, name?, conflict?}} spec
-   * @returns {Promise<{id, bytes, files, skipped, target}>}
+   * @param {{inPlace?: boolean, fileMode?: number}} internal  main-only, never from IPC:
+   *   inPlace  write the existing target file in place (edit re-upload)
+   *   fileMode create every file with exactly this mode (temp copies: 0600)
+   * @returns {Promise<{id, bytes, files, skipped, renamed, target}>}
    */
-  async start(id, spec) {
+  async start(id, spec, internal = {}) {
     if (typeof id !== 'string' || !id) throw new Error('Transfer id missing.');
     if (this.jobs.has(id)) throw new Error('A transfer with this id is already running.');
     const job = { id, cancelled: false, transferred: 0, total: 0, files: 0, filesDone: 0, current: '', lastSent: 0 };
@@ -237,7 +297,10 @@ class TransferService {
       const dst = await this._endpoint(spec.dst);
       const srcPath = src.checkDir(spec.srcPath);
       const dstDir = dst.checkDir(spec.dstDir);
-      const name = dst.checkName(spec.name === undefined ? src.basename(srcPath) : spec.name);
+      const renamed = [];
+      const wanted = spec.name === undefined ? src.basename(srcPath) : spec.name;
+      const name = dst.checkName(dst.safeName(wanted));
+      if (name !== wanted) renamed.push({ from: wanted, to: name });
 
       const top = await src.lstat(srcPath);
       if (!top) throw new Error(`Nothing at ${srcPath} any more.`);
@@ -284,7 +347,7 @@ class TransferService {
       // Plan: every file and folder, so progress has a real total.
       const plan = [];
       const skipped = [];
-      await this._plan(src, srcPath, '', topType, topSize, top.mode, plan, skipped, job);
+      await this._plan(src, dst, srcPath, '', '', topType, topSize, top.mode, plan, skipped, renamed, job);
       job.total = plan.reduce((n, p) => n + (p.type === 'file' ? p.size : 0), 0);
       job.files = plan.filter(p => p.type === 'file').length;
       this._progress(job, true);
@@ -292,7 +355,7 @@ class TransferService {
       const target = dst.join(dstDir, finalName);
       for (const item of plan) {
         if (job.cancelled) throw cancelError();
-        const to = item.rel ? this._joinRel(dst, target, item.rel) : target;
+        const to = item.dstRel ? this._joinRel(dst, target, item.dstRel) : target;
         const from = item.rel ? this._joinRel(src, srcPath, item.rel) : srcPath;
         if (item.type === 'directory') {
           const there = await dst.lstat(to);
@@ -302,13 +365,17 @@ class TransferService {
         }
         const there = await dst.lstat(to);
         if (there && there.type === 'directory') throw new Error(`A folder named "${dst.basename(to)}" is in the way of a file.`);
+        if (internal.inPlace && (!there || there.type !== 'file')) throw new Error(`${to} is not a file any more.`);
         job.current = item.rel || finalName;
-        await this._copyFile(job, src, from, dst, to, item.mode, item.size);
+        await this._copyFile(job, src, from, dst, to, internal.fileMode || item.mode, item.size, {
+          inPlace: !!internal.inPlace,
+          keepMode: there && there.type === 'file' ? there.mode & 0o777 : null,
+        });
         job.filesDone++;
         this._progress(job);
       }
       this._progress(job, true);
-      return { id, bytes: job.transferred, files: job.filesDone, skipped, target };
+      return { id, bytes: job.transferred, files: job.filesDone, skipped, renamed, target };
     } finally {
       this.jobs.delete(id);
     }
@@ -331,18 +398,34 @@ class TransferService {
     return out;
   }
 
-  async _plan(src, p, rel, type, size, mode, plan, skipped, job) {
+  async _plan(src, dst, p, rel, dstRel, type, size, mode, plan, skipped, renamed, job) {
     if (job.cancelled) throw cancelError();
     if (type === 'file') {
-      plan.push({ rel, type: 'file', size: size || 0, mode });
+      plan.push({ rel, dstRel, type: 'file', size: size || 0, mode });
       return;
     }
-    plan.push({ rel, type: 'directory' });
+    plan.push({ rel, dstRel, type: 'directory' });
     const names = await src.readdir(p);
     names.sort();
+    /* Destination names in this folder. Mapping for Windows can make two
+       names one ("a:b" and "a_b"); the later one gets " (1)". Windows
+       names are case-insensitive, so compare lowercased there. */
+    const fold = (x) => (dst.kind === 'local' && dst.platform === 'win32' ? x.toLowerCase() : x);
+    const taken = new Set(names.map(fold));
     for (const n of names) {
       const child = src.join(p, n);
       const childRel = rel ? `${rel}/${n}` : n;
+      let dn = dst.safeName(n);
+      if (dn !== n) {
+        if (taken.has(fold(dn))) {
+          const { stem, ext } = splitExt(dn);
+          let i = 1;
+          while (taken.has(fold(`${stem} (${i})${ext}`))) i++;
+          dn = `${stem} (${i})${ext}`;
+        }
+        taken.add(fold(dn));
+      }
+      const childDstRel = dstRel ? `${dstRel}/${dn}` : dn;
       let st = await src.lstat(child);
       if (!st) continue;
       if (st.type === 'symlink') {
@@ -351,7 +434,8 @@ class TransferService {
         st = t;
       }
       if (st.type === 'file' || st.type === 'directory') {
-        await this._plan(src, child, childRel, st.type, st.size, st.mode, plan, skipped, job);
+        if (dn !== n) renamed.push({ from: childRel, to: childDstRel });
+        await this._plan(src, dst, child, childRel, childDstRel, st.type, st.size, st.mode, plan, skipped, renamed, job);
       } else {
         skipped.push(childRel);
       }
@@ -375,14 +459,14 @@ class TransferService {
     return dst.join(dst.dirname(to), `.${stem}.${rand}${PART_SUFFIX}`);
   }
 
-  async _copyFile(job, src, from, dst, to, mode, size) {
+  async _copyFile(job, src, from, dst, to, mode, size, { inPlace = false, keepMode = null } = {}) {
     if (job.cancelled) throw cancelError();
-    const part = this._partName(dst, to);
+    const part = inPlace ? null : this._partName(dst, to);
     let wrote = 0;
     const rh = await src.open(from, 'r');
     let wh = null;
     try {
-      wh = await dst.open(part, 'wx', mode);
+      wh = inPlace ? await dst.openInPlace(to) : await dst.open(part, 'wx', mode);
       await this._pump(job, src, rh, dst, wh, size, (n) => {
         wrote += n;
         job.transferred += n;
@@ -391,16 +475,19 @@ class TransferService {
       const h = wh;
       wh = null;
       await dst.close(h);
-      if (job.cancelled) throw cancelError();
-      await dst.replace(part, to);
+      if (job.cancelled && !inPlace) throw cancelError();
+      if (!inPlace) await dst.replace(part, to);
     } catch (err) {
       if (wh !== null) await dst.close(wh).catch(() => {});
       job.transferred -= wrote;
-      await dst.unlink(part).catch(() => { /* marked by its name if it survives */ });
+      if (part && !err.keepPart) await dst.unlink(part).catch(() => { /* marked by its name if it survives */ });
       throw err;
     } finally {
       await src.close(rh).catch(() => {});
     }
+    /* New inode over an existing file: give it the old permission bits back
+       (open() applied the local umask to the source's mode). */
+    if (!inPlace && keepMode !== null) await dst.chmod(to, keepMode);
   }
 
   /**
@@ -458,4 +545,5 @@ class TransferService {
 
 module.exports = new TransferService();
 module.exports.PART_SUFFIX = PART_SUFFIX;
+module.exports.OLD_SUFFIX = OLD_SUFFIX;
 module.exports.splitExt = splitExt;

@@ -16,8 +16,6 @@ const path = require('path');
  * OS trash with shell.trashItem instead of unlinking.
  */
 
-const IS_WIN = process.platform === 'win32';
-
 function badPath(msg) {
   const err = new Error(msg);
   err.code = 'EINVALIDPATH';
@@ -32,16 +30,54 @@ function checkPath(p) {
   return path.resolve(p);
 }
 
+/* Windows refuses (or silently mangles) names that POSIX servers happily
+   list: "a:b" is an NTFS alternate data stream of "a", CON/NUL/COM1… (with
+   ANY extension, "nul.txt" too) are devices, a trailing dot or space is
+   stripped, and <>:"|?* and control characters are invalid. */
+const WIN_BAD_CHARS = /[<>:"|?*\\/\x00-\x1f]/g;
+const WIN_RESERVED = /^(con|prn|aux|nul|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])$/i;
+
+function winReserved(name) {
+  return WIN_RESERVED.test(name.split('.')[0].replace(/ +$/, ''));
+}
+
+/** Why `name` cannot be a file name on Windows, or null. */
+function winNameProblem(name) {
+  if (/[<>:"|?*\x00-\x1f]/.test(name)) return `"${name}" contains a character Windows does not allow in names (< > : " | ? * or a control character).`;
+  if (/[. ]$/.test(name)) return `"${name}" ends with a dot or a space, which Windows removes.`;
+  if (winReserved(name)) return `"${name}" is a reserved device name on Windows.`;
+  return null;
+}
+
+/**
+ * A name from a remote listing made safe for this computer: on Windows every
+ * invalid character becomes "_", a trailing dot/space becomes "_", and a
+ * reserved device name gets a "_" in front. Elsewhere it is returned as is
+ * (remote names are already one segment, see sftp-service.isSafeRemoteName).
+ */
+function safeLocalName(name, platform = process.platform) {
+  if (platform !== 'win32') return name;
+  let out = name.replace(WIN_BAD_CHARS, '_').replace(/[. ]+$/, (m) => '_'.repeat(m.length));
+  if (winReserved(out)) out = `_${out}`;
+  return out;
+}
+
 /**
  * One path segment. Shared rule with the transfer engine, which applies it to
  * every name a remote server lists (a hostile server can send "../x").
+ * `platform` is injectable so the harness can test the Windows rules on Linux.
  */
-function checkName(name) {
+function checkName(name, platform = process.platform) {
   if (typeof name !== 'string' || !name) throw badPath('A name is required.');
   if (name === '.' || name === '..') throw badPath(`"${name}" is not a valid name.`);
   if (name.includes('\0')) throw badPath('The name contains a NUL byte.');
-  if (name.includes('/') || (IS_WIN && name.includes('\\'))) {
+  const win = platform === 'win32';
+  if (name.includes('/') || (win && name.includes('\\'))) {
     throw badPath(`"${name}" contains a path separator.`);
+  }
+  if (win) {
+    const problem = winNameProblem(name);
+    if (problem) throw badPath(problem);
   }
   if (Buffer.byteLength(name, 'utf-8') > 255) throw badPath('The name is too long.');
   return name;
@@ -259,4 +295,6 @@ const instance = new LocalFsService();
 module.exports = instance;
 module.exports.checkPath = checkPath;
 module.exports.checkName = checkName;
+module.exports.safeLocalName = safeLocalName;
+module.exports.winNameProblem = winNameProblem;
 module.exports.formatPermissions = formatPermissions;

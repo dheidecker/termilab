@@ -505,6 +505,250 @@ async function seccionSftp({ check, ROOT, getBridge }) {
       assert.deepStrictEqual(missing, [], `el renderer llama a miembros que preload no expone: ${missing.join(', ')}`);
     });
 
+    // ── Revision 2026-09-24: F14–F20 ──────────────────────────
+    const R_ = () => ({ ...R, sessionId: sid });
+    const ino = (p) => fs.statSync(p).ino;
+    const mode = (p) => fs.statSync(p).mode & 0o777;
+
+    await check('F14 re-subir una edicion escribe EN SITIO en el destino resuelto: el enlace sigue siendo enlace, mismo inodo, enlace duro y modo 664 intactos', async () => {
+      assert.ok(sid, 'sin sesion');
+      const real = path.join(remoteDir, 'f14-real.conf');
+      const hard = path.join(remoteDir, 'f14-duro.conf');
+      const link = path.join(remoteDir, 'f14-enlace.conf');
+      fs.writeFileSync(real, 'v1\n');
+      fs.chmodSync(real, 0o664);
+      fs.linkSync(real, hard);
+      fs.symlinkSync(real, link);
+      const ino0 = ino(real);
+      const e = await bridge.sftp.editStart(sid, link, 'tab-f14');
+      fs.writeFileSync(e.localPath, 'v2 editado\n');
+      await bridge.sftp.editUpload(e.editId);
+      assert.ok(fs.lstatSync(link).isSymbolicLink(), 'el enlace se convirtio en un fichero normal');
+      assert.strictEqual(fs.readlinkSync(link), real);
+      assert.strictEqual(fs.readFileSync(real, 'utf-8'), 'v2 editado\n', 'el destino del enlace no cambio');
+      assert.strictEqual(ino(real), ino0, 'cambio el inodo (se renombro encima)');
+      assert.strictEqual(fs.readFileSync(hard, 'utf-8'), 'v2 editado\n', 'el enlace duro se separo');
+      assert.strictEqual(mode(real), 0o664, `el modo paso a ${mode(real).toString(8)}`);
+      assert.deepStrictEqual(partsIn(remoteDir), []);
+      await bridge.sftp.cleanup('tab-f14');
+    });
+
+    await check('F15 transferencia normal que sobrescribe: conserva el modo del fichero existente (664) y sobre un enlace reemplaza el ENLACE (el destino no se toca)', async () => {
+      assert.ok(sid, 'sin sesion');
+      const src = path.join(localDir, 'f15.txt');
+      fs.writeFileSync(src, 'NUEVO');
+      fs.chmodSync(src, 0o600);
+      const there = path.join(remoteDir, 'f15.txt');
+      fs.writeFileSync(there, 'VIEJO');
+      fs.chmodSync(there, 0o664);
+      await transferService.start('f15a', { src: L, srcPath: src, dst: R_(), dstDir: remoteDir, conflict: 'overwrite' });
+      assert.strictEqual(fs.readFileSync(there, 'utf-8'), 'NUEVO');
+      assert.strictEqual(mode(there), 0o664, `el modo paso a ${mode(there).toString(8)}`);
+      // Bajando tambien (local existente 640, remoto 600)
+      const dlDir = path.join(base, 'f15-dl');
+      fs.mkdirSync(dlDir);
+      fs.writeFileSync(path.join(dlDir, 'f15.txt'), 'local');
+      fs.chmodSync(path.join(dlDir, 'f15.txt'), 0o640);
+      fs.chmodSync(there, 0o600);
+      await transferService.start('f15b', { src: R_(), srcPath: there, dst: L, dstDir: dlDir, conflict: 'overwrite' });
+      assert.strictEqual(mode(path.join(dlDir, 'f15.txt')), 0o640);
+      // Enlace: se reemplaza el enlace, no se escribe a traves
+      const tgt = path.join(remoteDir, 'f15-destino.txt');
+      fs.writeFileSync(tgt, 'DESTINO');
+      fs.symlinkSync(tgt, path.join(remoteDir, 'f15-enlace.txt'));
+      await transferService.start('f15c', { src: L, srcPath: src, dst: R_(), dstDir: remoteDir, name: 'f15-enlace.txt', conflict: 'overwrite' });
+      assert.ok(!fs.lstatSync(path.join(remoteDir, 'f15-enlace.txt')).isSymbolicLink());
+      assert.strictEqual(fs.readFileSync(tgt, 'utf-8'), 'DESTINO', 'escribio a traves del enlace');
+    });
+
+    await check('F16 abrir remoto: .exe/.sh/.desktop/.command/.js… se niegan sin bajar ni llamar a openPath; el temporal es 0600 aunque el remoto sea 755', async () => {
+      assert.ok(sid, 'sin sesion');
+      opened.length = 0;
+      for (const n of ['evil.sh', 'setup.EXE', 'run.desktop', 'x.command', 'y.js', 'z.bat', 'w.vbs', 'a.AppImage', 'trail.exe. ']) {
+        const p = path.join(remoteDir, n);
+        fs.writeFileSync(p, '#!/bin/sh\ntouch PWNED\n');
+        fs.chmodSync(p, 0o755);
+        await assert.rejects(bridge.sftp.openRemote(sid, p, 'tab-f16'), /Refusing to open/, `${n} se abrio`);
+      }
+      assert.deepStrictEqual(opened, [], 'openPath se llamo con un ejecutable');
+      assert.ok(!editService.ownerDirs.has('tab-f16'), 'bajo el fichero antes de negarse');
+      // Un texto con bit de ejecucion: se abre, pero la copia no es ejecutable
+      const txt = path.join(remoteDir, 'f16 notas.txt');
+      fs.writeFileSync(txt, 'hola');
+      fs.chmodSync(txt, 0o775);
+      const r = await bridge.sftp.openRemote(sid, txt, 'tab-f16');
+      assert.deepStrictEqual(opened, [r.localPath]);
+      assert.strictEqual(mode(r.localPath), 0o600, `el temporal quedo ${mode(r.localPath).toString(8)}`);
+      // Editar: en Linux un .sh se edita (sin bit x); un .desktop no; en Windows .js/.bat tampoco
+      const e = await bridge.sftp.editStart(sid, path.join(remoteDir, 'evil.sh'), 'tab-f16');
+      assert.strictEqual(mode(e.localPath) & 0o111, 0, 'el temporal del .sh es ejecutable');
+      await assert.rejects(bridge.sftp.editStart(sid, path.join(remoteDir, 'run.desktop'), 'tab-f16'), /Refusing to open/);
+      const { openRefusal } = editService;
+      assert.ok(openRefusal('a.js', 'edit', 'win32') && openRefusal('a.CMD', 'edit', 'win32') && openRefusal('a.command', 'edit', 'darwin'));
+      assert.strictEqual(openRefusal('a.js', 'edit', 'linux'), null);
+      assert.strictEqual(openRefusal('notas.txt', 'open', 'win32'), null);
+      assert.strictEqual(openRefusal('Makefile', 'open', 'win32'), null);
+      await bridge.sftp.cleanup('tab-f16');
+      for (const where of [remoteDir, process.cwd(), os.homedir()]) assert.ok(!fs.existsSync(path.join(where, 'PWNED')));
+    });
+
+    await check('F17 borrado recursivo con un servidor que sigue enlaces en readdir (enlace a carpeta como "directory"): borra el enlace, nunca lo de fuera', async () => {
+      assert.ok(sid, 'sin sesion');
+      const fuera = path.join(base, 'f17-fuera');
+      fs.mkdirSync(fuera);
+      fs.writeFileSync(path.join(fuera, 'victima.txt'), 'no me borres');
+      const dir = path.join(remoteDir, 'f17-borrar');
+      fs.mkdirSync(dir);
+      fs.symlinkSync(fuera, path.join(dir, 'enlace-a-fuera'));
+      fs.writeFileSync(path.join(dir, 'normal.txt'), 'x');
+      const sftp = sftpService.sftpSessions.get(sid);
+      assert.ok(sftp, 'sin canal SFTP');
+      const realReaddir = Object.getPrototypeOf(sftp).readdir;
+      const realStat = Object.getPrototypeOf(sftp).stat;
+      // Servidor "que sigue enlaces": los attrs de readdir son los de stat(), no lstat()
+      sftp.readdir = function (where, ...rest) {
+        const cb = rest.pop();
+        realReaddir.call(sftp, where, ...rest, (err, list) => {
+          if (err || typeof where !== 'string') return cb(err, list);
+          let left = list.length;
+          if (!left) return cb(null, list);
+          for (const item of list) {
+            realStat.call(sftp, `${where}/${item.filename}`, (e2, st) => {
+              if (!e2) item.attrs = st;
+              if (--left === 0) cb(null, list);
+            });
+          }
+        });
+      };
+      try {
+        await bridge.sftp.delete(sid, dir).catch(() => {});
+      } finally {
+        delete sftp.readdir;
+      }
+      assert.ok(fs.existsSync(path.join(fuera, 'victima.txt')), 'borro el contenido de la carpeta a la que apuntaba el enlace');
+      assert.ok(!fs.existsSync(dir), 'la carpeta no se borro');
+    });
+
+    await check('F18 sin posix-rename: sobrescribir va por copia de respaldo; si el rename final falla, el original vuelve y el .termilab-part se CONSERVA (nombre en el error)', async () => {
+      assert.ok(sid, 'sin sesion');
+      const sftp = sftpService.sftpSessions.get(sid);
+      const ext0 = sftp._extensions;
+      sftp._extensions = { ...ext0 };
+      delete sftp._extensions['posix-rename@openssh.com'];
+      const target = path.join(remoteDir, 'f18.txt');
+      const src = path.join(localDir, 'f18.txt');
+      const leftovers = () => fs.readdirSync(remoteDir).filter(n => n.startsWith('.f18.txt.'));
+      try {
+        fs.writeFileSync(target, 'ORIGINAL');
+        fs.writeFileSync(src, 'NUEVO');
+        await transferService.start('f18a', { src: L, srcPath: src, dst: R_(), dstDir: remoteDir, conflict: 'overwrite' });
+        assert.strictEqual(fs.readFileSync(target, 'utf-8'), 'NUEVO');
+        assert.deepStrictEqual(leftovers(), [], 'quedo una copia de respaldo o un part');
+        // Ahora el rename del part falla
+        fs.writeFileSync(src, 'MAS NUEVO');
+        const realRename = Object.getPrototypeOf(sftp).rename;
+        sftp.rename = function (from, to, cb) {
+          if (from.endsWith(transferService.PART_SUFFIX)) return process.nextTick(cb, Object.assign(new Error('simulado'), { code: 4 }));
+          return realRename.call(sftp, from, to, cb);
+        };
+        let msg = '';
+        try {
+          await transferService.start('f18b', { src: L, srcPath: src, dst: R_(), dstDir: remoteDir, conflict: 'overwrite' });
+        } catch (err) { msg = err.message; } finally { delete sftp.rename; }
+        assert.ok(/kept as \.f18\.txt\.[0-9a-f]+\.termilab-part/.test(msg), `error sin el nombre del part: "${msg}"`);
+        assert.strictEqual(fs.readFileSync(target, 'utf-8'), 'NUEVO', 'el original no volvio');
+        const parts = leftovers();
+        assert.strictEqual(parts.length, 1, `esperaba solo el part, hay: ${parts.join(', ')}`);
+        assert.ok(parts[0].endsWith('.termilab-part'));
+        assert.strictEqual(fs.readFileSync(path.join(remoteDir, parts[0]), 'utf-8'), 'MAS NUEVO', 'el part no tiene lo nuevo');
+        fs.unlinkSync(path.join(remoteDir, parts[0]));
+      } finally {
+        sftp._extensions = ext0;
+        delete sftp.rename;
+      }
+    });
+
+    await check('F19 subidas de la misma edicion serializadas: una en vuelo, tres guardados = 2 subidas, gana el ultimo contenido', async () => {
+      assert.ok(sid, 'sin sesion');
+      const remoteFile = path.join(remoteDir, 'f19.txt');
+      fs.writeFileSync(remoteFile, 'v0');
+      const e = await bridge.sftp.editStart(sid, remoteFile, 'tab-f19');
+      const realStart = transferService.start;
+      let enVuelo = 0;
+      let maxEnVuelo = 0;
+      let subidas = 0;
+      transferService.start = async function (...args) {
+        if (!String(args[0]).startsWith('edit-')) return realStart.apply(this, args);
+        subidas++;
+        enVuelo++;
+        maxEnVuelo = Math.max(maxEnVuelo, enVuelo);
+        try { await sleep(40); return await realStart.apply(this, args); } finally { enVuelo--; }
+      };
+      try {
+        fs.writeFileSync(e.localPath, 'A');
+        const u1 = bridge.sftp.editUpload(e.editId);
+        fs.writeFileSync(e.localPath, 'B');
+        const u2 = bridge.sftp.editUpload(e.editId);
+        fs.writeFileSync(e.localPath, 'C ultimo');
+        const u3 = bridge.sftp.editUpload(e.editId);
+        await Promise.all([u1, u2, u3]);
+      } finally {
+        transferService.start = realStart;
+      }
+      assert.strictEqual(maxEnVuelo, 1, `${maxEnVuelo} subidas de la misma edicion a la vez`);
+      assert.strictEqual(subidas, 2, `esperaba 2 subidas (una + una en cola), hubo ${subidas}`);
+      assert.strictEqual(fs.readFileSync(remoteFile, 'utf-8'), 'C ultimo');
+      await bridge.sftp.cleanup('tab-f19');
+    });
+
+    await check('F20 nombres de Windows (plataforma inyectada): checkName niega ADS, CON/NUL/COM1 (con extension), punto/espacio final y <>:"|?*; una bajada los mapea y lo cuenta', async () => {
+      const { checkName, safeLocalName } = localFs;
+      const malos = ['a:b', 'CON', 'con.txt', 'NUL.tar.gz', 'COM1', 'lpt9.log', 'aux ', 'x.', 'x ', 'q?', 'a<b', 'a>b', 'a|b', 'a"b', 'a*b', 'tab\tname', 'a\\b', 'Com¹'];
+      for (const n of malos) assert.throws(() => checkName(n, 'win32'), undefined, `win32 acepto ${JSON.stringify(n)}`);
+      for (const n of ['normal.txt', 'CONSOLE.txt', 'com10', 'a.b.c', '.bashrc', 'ñandú']) assert.strictEqual(checkName(n, 'win32'), n);
+      for (const n of ['a:b', 'CON', 'x.', 'q?']) assert.strictEqual(checkName(n, 'linux'), n, `linux nego ${n}`);
+      assert.deepStrictEqual(['a:b', 'CON', 'nul.txt', 'x.', 'q?.txt', 'ok.txt', 'a. .'].map(n => safeLocalName(n, 'win32')),
+        ['a_b', '_CON', '_nul.txt', 'x_', 'q_.txt', 'ok.txt', 'a___']);
+      for (const n of malos) assert.strictEqual(checkName(safeLocalName(n, 'win32'), 'win32'), safeLocalName(n, 'win32'), `el mapeo de ${JSON.stringify(n)} no es valido`);
+      assert.ok(sid, 'sin sesion');
+      const rdir = path.join(remoteDir, 'win-f20');
+      fs.mkdirSync(path.join(rdir, 'aux'), { recursive: true });
+      for (const n of ['a:b', 'a_b', 'CON', 'nul.txt', 'x.', 'q?.txt']) fs.writeFileSync(path.join(rdir, n), n);
+      fs.writeFileSync(path.join(rdir, 'aux', 'f*.txt'), 'f');
+      fs.writeFileSync(path.join(remoteDir, 'COM1.log'), 'c');
+      const dl = path.join(base, 'f20-dl');
+      fs.mkdirSync(dl);
+      transferService.localPlatform = 'win32';
+      let r;
+      let r1;
+      try {
+        r = await transferService.start('f20', { src: R_(), srcPath: rdir, dst: L, dstDir: dl });
+        r1 = await transferService.start('f20b', { src: R_(), srcPath: path.join(remoteDir, 'COM1.log'), dst: L, dstDir: dl });
+      } finally {
+        transferService.localPlatform = null;
+      }
+      const got = fs.readdirSync(path.join(dl, 'win-f20')).sort();
+      assert.deepStrictEqual(got, ['_CON', '_aux', '_nul.txt', 'a_b', 'a_b (1)', 'q_.txt', 'x_'].sort());
+      assert.strictEqual(fs.readFileSync(path.join(dl, 'win-f20', 'a_b'), 'utf-8'), 'a_b', 'el a_b original se piso');
+      assert.strictEqual(fs.readFileSync(path.join(dl, 'win-f20', 'a_b (1)'), 'utf-8'), 'a:b');
+      assert.ok(fs.existsSync(path.join(dl, 'win-f20', '_aux', 'f_.txt')));
+      assert.strictEqual(r.renamed.length, 7, JSON.stringify(r.renamed));
+      assert.ok(r.renamed.some(x => x.from === 'aux/f*.txt' && x.to === '_aux/f_.txt'));
+      assert.deepStrictEqual(r1.renamed, [{ from: 'COM1.log', to: '_COM1.log' }]);
+      assert.strictEqual(path.basename(r1.target), '_COM1.log');
+    });
+
+    await check('F21 renderer: cerrar una pestana SFTP con transferencias pregunta (TabBar y Ctrl+W), abrir un ejecutable ofrece Download, y la edicion no se solapa', () => {
+      const rd = (...p) => fs.readFileSync(path.join(ROOT, 'src', ...p), 'utf-8');
+      assert.ok(/confirmCloseSftp\(/.test(rd('components', 'TabBar', 'TabBar.jsx')), 'TabBar no pregunta');
+      assert.ok(/confirmCloseSftp\(/.test(rd('App.jsx')), 'Ctrl+W no pregunta');
+      const reg = rd('components', 'SFTP', 'activeTransfers.js');
+      assert.ok(/in progress will be cancelled/.test(reg) && /setActiveTransfers\(/.test(rd("components", "SFTP", "SFTPView.jsx")));
+      const pane = rd('components', 'SFTP', 'FilePane.jsx');
+      assert.ok(/Refusing to open/.test(pane) && /onDownload/.test(pane), 'FilePane no ofrece Download al negarse');
+      assert.ok(/uploadQueue/.test(pane), 'FilePane no serializa las subidas');
+    });
+
     if (results50.length) console.log(`[arnes F] ${results50.join(' · ')}`);
   } finally {
     for (const id of sessions) await sshService.disconnect(id).catch(() => {});

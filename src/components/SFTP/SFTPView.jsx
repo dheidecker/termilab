@@ -5,6 +5,7 @@ import TransferQueue from './TransferQueue';
 import { ConflictDialog } from './dialogs';
 import { fsFor, transfers, edits as editApi } from './fsApi';
 import { joinPath, baseName } from './paths';
+import { setActiveTransfers } from './activeTransfers';
 import './SFTP.css';
 
 const SPLIT_KEY = 'termilab.sftp.split';
@@ -175,6 +176,23 @@ export default function SFTPView({ tab }) {
     enqueue(local, entries, to, targetDir, toSide);
   };
 
+  /* "Download" (offered when a file is not safe to open here): to this
+     computer's Downloads folder, or home if there is none. */
+  const download = async (fromSide, entries) => {
+    const from = infoRef.current[fromSide];
+    if (!from?.ready || !entries.length) return;
+    const local = { endpoint: { kind: 'local' }, kind: 'local', label: 'Downloads' };
+    const lfs = fsFor(local.endpoint);
+    let dir;
+    try {
+      const home = await lfs.home();
+      dir = joinPath('local', home, 'Downloads');
+      const st = await lfs.stat(dir).catch(() => null);
+      if (!st || st.type !== 'directory') { dir = home; local.label = 'Local'; }
+    } catch { return; }
+    enqueue(from, entries, local, dir, other(fromSide));
+  };
+
   /* ─── Scheduler ─── */
   const patch = useCallback((id, fields) => {
     setQueue(q => q.map(it => (it.id === id ? { ...it, ...(typeof fields === 'function' ? fields(it) : fields) } : it)));
@@ -189,7 +207,7 @@ export default function SFTPView({ tab }) {
       transfers.start(item.id, {
         src: item.src, srcPath: item.srcPath, dst: item.dst, dstDir: item.dstDir, conflict: item.conflict,
       }).then((res) => {
-        patch(item.id, (it) => ({ state: 'done', endedAt: Date.now(), bytes: res?.bytes, files: res?.files ?? it.files, transferred: it.total || res?.bytes || 0 }));
+        patch(item.id, (it) => ({ state: 'done', endedAt: Date.now(), bytes: res?.bytes, files: res?.files ?? it.files, transferred: it.total || res?.bytes || 0, renamed: res?.renamed || [] }));
         setRefresh(r => ({ ...r, [item.toSide]: { dir: item.dstDir, n: (r[item.toSide]?.n || 0) + 1 } }));
       }, (err) => {
         const cancelled = queueRef.current.find(i => i.id === item.id)?.cancelRequested || /cancelled/i.test(err?.message || '');
@@ -229,6 +247,11 @@ export default function SFTPView({ tab }) {
   const retryFailed = () => setQueue(q => q.map(i => (i.state === 'error' ? { ...i, state: 'queued', error: null, transferred: 0, speed: 0 } : i)));
   const clearDone = () => setQueue(q => q.filter(i => i.state === 'queued' || i.state === 'running'));
 
+  /* Closing the tab asks first while anything is queued or running. */
+  const activeCount = queue.filter(i => i.state === 'queued' || i.state === 'running').length;
+  useEffect(() => { setActiveTransfers(tab.id, activeCount); }, [tab.id, activeCount]);
+  useEffect(() => () => setActiveTransfers(tab.id, 0), [tab.id]);
+
   /* Tab closed: stop what runs, drop temp copies. Panes close their own connections. */
   useEffect(() => () => {
     for (const i of queueRef.current) if (i.state === 'running') transfers.cancel(i.id).catch(() => {});
@@ -247,6 +270,7 @@ export default function SFTPView({ tab }) {
     onCopyToOther: (entries) => copyToOther(side, entries),
     onDropInternal: (drag, dir) => dropInternal(side, drag, dir),
     onDropFiles: (paths, dir) => dropFiles(side, paths, dir),
+    onDownload: (entries) => download(side, entries),
     dragRef,
     onInfo,
     refreshKey: refresh[side],

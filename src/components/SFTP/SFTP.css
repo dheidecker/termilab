@@ -777,6 +777,9 @@ body.sftp-resizing * {
   animation: fadeIn 0.15s ease;
 }
 .sftp-notice.error { border-color: var(--color-danger); color: var(--color-danger); }
+.sftp-notice.has-action { display: flex; align-items: center; gap: 10px; }
+.sftp-notice.has-action .sftp-notice-text { overflow: hidden; text-overflow: ellipsis; }
+.sftp-notice.has-action .sftp-btn { flex-shrink: 0; }
 
 .sftp-spinner {
   display: inline-block;

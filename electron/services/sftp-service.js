@@ -246,7 +246,7 @@ class SFTPService {
   }
 
   async _deleteTree(sftp, p, attrs) {
-    if (!attrs.isDirectory()) {
+    if (!attrs.isDirectory() || attrs.isSymbolicLink()) {
       try { await this._call(sftp, 'unlink', p); } catch (err) { throw readable(err, p); }
       return;
     }
@@ -257,7 +257,16 @@ class SFTPService {
       if (!isSafeRemoteName(item.filename)) {
         throw new Error(`The server listed an unsafe name in ${p}; nothing more was deleted.`);
       }
-      await this._deleteTree(sftp, `${p}/${item.filename}`, item.attrs);
+      /* Never trust readdir's attrs: a server that stat()s instead of
+         lstat()ing reports a link to a folder AS a folder, and recursing
+         would delete the link's target. lstat each child ourselves. */
+      const child = `${p}/${item.filename}`;
+      let attrs;
+      try { attrs = await this._call(sftp, 'lstat', child); } catch (err) {
+        if (err.code === STATUS.NO_SUCH_FILE) continue;
+        throw readable(err, child);
+      }
+      await this._deleteTree(sftp, child, attrs);
     }
     try { await this._call(sftp, 'rmdir', p); } catch (err) { throw readable(err, p); }
   }

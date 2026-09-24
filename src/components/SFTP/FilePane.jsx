@@ -52,7 +52,7 @@ const COLUMNS = [
  */
 export default function FilePane({
   tabId, side, source, onSourceChange, focused, onFocus,
-  otherLabel, otherReady, onCopyToOther, onDropInternal, onDropFiles, dragRef, onInfo, refreshKey,
+  otherLabel, otherReady, onCopyToOther, onDropInternal, onDropFiles, onDownload, dragRef, onInfo, refreshKey,
   initialPickerOpen = false,
 }) {
   const { state, actions } = useApp();
@@ -92,12 +92,12 @@ export default function FilePane({
   const endpoint = ready ? (kind === 'local' ? { kind: 'local' } : endpointOf({ kind: 'remote', sessionId: conn.sessionId })) : null;
   const fs = useMemo(() => (endpoint ? fsFor(endpoint) : null), [ready, kind, conn.sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const flash = useCallback((text, tone = 'info') => {
-    setNotice({ text, tone, at: Date.now() });
+  const flash = useCallback((text, tone = 'info', action = null) => {
+    setNotice({ text, tone, action, at: Date.now() });
   }, []);
   useEffect(() => {
     if (!notice) return undefined;
-    const t = setTimeout(() => setNotice(null), notice.tone === 'error' ? 6000 : 3000);
+    const t = setTimeout(() => setNotice(null), notice.action ? 12000 : notice.tone === 'error' ? 6000 : 3000);
     return () => clearTimeout(t);
   }, [notice]);
 
@@ -260,6 +260,16 @@ export default function FilePane({
     else openEntry(entry);
   };
 
+  /* main refuses to hand programs and scripts from a server to the OS
+     ("Refusing to open …", sftp-edit-service): offer to download instead. */
+  const refusedOrFlash = (entry, verb, err) => {
+    const msg = err?.message || '';
+    if (/Refusing to open/.test(msg) && onDownload) {
+      flash(`${entry.name} could run as a program, so Termilab will not open it.`, 'error',
+        { label: 'Download', run: () => onDownload([entry]) });
+    } else flash(`Could not ${verb} ${entry.name}: ${msg}`, 'error');
+  };
+
   const openEntry = async (entry) => {
     try {
       if (kind === 'local') await fs.open(entry.path);
@@ -269,7 +279,7 @@ export default function FilePane({
         flash(`Opened ${entry.name}`);
       }
     } catch (err) {
-      flash(`Could not open ${entry.name}: ${err.message}`, 'error');
+      refusedOrFlash(entry, 'open', err);
     }
   };
 
@@ -281,18 +291,31 @@ export default function FilePane({
       setOpenEdits(list => [...list, { editId: r.editId, name: r.name || entry.name, remotePath: entry.path, changed: false, auto: false }]);
       setNotice(null);
     } catch (err) {
-      flash(`Could not edit ${entry.name}: ${err.message}`, 'error');
+      refusedOrFlash(entry, 'edit', err);
     }
   };
 
+  /* One upload per edit at a time. A save while one is in flight asks for
+     exactly one more, which sends the file as it is then (main serializes
+     too; this keeps "busy" honest and skips the redundant middle uploads). */
+  const uploadQueue = useRef(new Map());   // editId -> {again}
   const uploadEdit = useCallback(async (editId) => {
+    const q = uploadQueue.current;
+    if (q.has(editId)) { q.get(editId).again = true; return; }
+    const slot = { again: false };
+    q.set(editId, slot);
     setOpenEdits(list => list.map(x => (x.editId === editId ? { ...x, busy: true, error: null } : x)));
     try {
-      await editApi.upload(editId);
+      do {
+        slot.again = false;
+        await editApi.upload(editId);
+      } while (slot.again);
       setOpenEdits(list => list.map(x => (x.editId === editId ? { ...x, busy: false, changed: false, uploadedAt: Date.now() } : x)));
       reload();
     } catch (err) {
       setOpenEdits(list => list.map(x => (x.editId === editId ? { ...x, busy: false, error: err.message } : x)));
+    } finally {
+      q.delete(editId);
     }
   }, [reload]);
 
@@ -805,7 +828,16 @@ export default function FilePane({
         </>
       )}
 
-      {notice && <div className={`sftp-notice ${notice.tone}`} role="status">{notice.text}</div>}
+      {notice && (
+        <div className={`sftp-notice ${notice.tone}${notice.action ? ' has-action' : ''}`} role="status">
+          <span className="sftp-notice-text">{notice.text}</span>
+          {notice.action && (
+            <button className="sftp-btn sftp-btn-sm" onClick={() => { const run = notice.action.run; setNotice(null); run(); }}>
+              {notice.action.label}
+            </button>
+          )}
+        </div>
+      )}
 
       {menu && (
         <div className="sftp-menu" style={{ top: menu.y, left: menu.x }} onMouseDown={(e) => e.stopPropagation()} role="menu">

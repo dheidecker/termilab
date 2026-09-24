@@ -27,7 +27,8 @@ function statusLine(item) {
   }
   if (state === 'done') {
     const secs = item.endedAt && item.startedAt ? (item.endedAt - item.startedAt) / 1000 : 0;
-    return `${formatSize(item.bytes ?? total)}${item.files > 1 ? ` · ${item.files} files` : ''}${secs >= 1 ? ` in ${formatDuration(secs)}` : ''}`;
+    const renamed = item.renamed?.length ? ` · ${item.renamed.length} renamed for Windows` : '';
+    return `${formatSize(item.bytes ?? total)}${item.files > 1 ? ` · ${item.files} files` : ''}${secs >= 1 ? ` in ${formatDuration(secs)}` : ''}${renamed}`;
   }
   if (state === 'cancelled') return 'Cancelled';
   if (state === 'error') return error || 'Failed';
@@ -92,7 +93,7 @@ export default function TransferQueue({ items, open, onToggle, onCancel, onRetry
                   <div className="sftp-qitem-status">
                     {item.state === 'done' && <CheckIcon className="sftp-q-ok" />}
                     {item.state === 'error' && <AlertIcon className="sftp-q-bad" />}
-                    <span>{statusLine(item)}</span>
+                    <span title={item.renamed?.length ? item.renamed.map(r => `${r.from} → ${r.to}`).join('\n') : undefined}>{statusLine(item)}</span>
                   </div>
                 </div>
                 <div className="sftp-qitem-actions">
