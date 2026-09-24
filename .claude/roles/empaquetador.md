@@ -25,6 +25,36 @@ tuyos — corrige lo que compruebes que ya no es cierto.
   MB y menos de un minuto; universal ≈ 177 MB y unos dos. El universal
   descarga los dos Electron, así que la primera vez tarda más.
 
+## Linux (electron-builder 26, desde 2026-09-24)
+
+- **Se subió a electron-builder 26 por pacman.** En 25.x `FpmTarget.supportsAutoUpdate` era solo
+  `deb`/`rpm`: el paquete pacman salía sin `package-type`, sin `app-update.yml` y sin entrada en
+  `latest-linux.yml`, y además heredaba el `package-type=deb` que el deb deja en el
+  `linux-unpacked` compartido. Parchearlo en 25 eran tres hacks; 26 lo hace nativo.
+- **Cambios de config que exige 26:** `linux.desktop` va dentro de `desktop.entry`, y
+  `win.publisherName` pasó a `win.signtoolOptions.publisherName`. `install-app-deps` sigue
+  funcionando igual (ahora vía `@electron/rebuild`).
+- **Los depends por defecto de pacman en 26 están mal para nosotros** (`ffmpeg`, `re2`, `c-ares`,
+  `libappindicator-gtk3`... copiados del paquete `electron` de Arch, que usa libs del sistema).
+  Por eso `build.pacman.depends` es explícito, derivado de `readelf -d` del binario y comprobado
+  contra la API de archlinux.org (`mesa` da `libgbm`; `libcups` llega vía `gtk3`).
+- **La descripción sale rota en pacman:** fpm recibe `"\n <desc>"` (formato deb) y `.PKGINFO`
+  queda con `pkgdesc` vacío. Se arregla con `pacman.fpm: ["--description", ...]` (fpm se queda
+  con el último).
+- **fpm-pacman necesita `bsdtar`** y no viene empaquetado. Sin sudo en Ubuntu:
+  `apt-get download libarchive-tools && dpkg-deb -x *.deb root`, y `root/usr/bin` al `PATH`.
+  Compresión por defecto: xz (pacman lo acepta).
+- **El `.INSTALL` de pacman no tiene `post_upgrade`**: el symlink `/usr/bin/termilab` y el chmod de
+  `chrome-sandbox` solo corren en la primera instalación. En CachyOS da igual (hay userns, el
+  archivo ya viaja 0755 y el symlink sobrevive a la actualización), pero no es obvio.
+- **El AppImage siempre se construye antes que deb/pacman**, sea cual sea el orden en la CLI, así
+  que nunca hereda `package-type`. Comprobado con `--appimage-extract` en `npm run dist`.
+- **Tiempos:** los tres targets Linux, ~3,5 min en esta máquina. Tamaños 1.11.1: AppImage 108 MB,
+  deb 84 MB, pacman 76 MB.
+- **Validar sin pacman:** `tar -xf x.pacman` saca `.PKGINFO`/`.INSTALL`; para arrancar el binario
+  sin display, `xvfb-run -a ./termilab --no-sandbox --user-data-dir=<tmp>`. Ojo: puede haber un
+  Termilab instalado del dueño corriendo en `/opt/Termilab`, no lo confundas con el tuyo en `pgrep`.
+
 ## Módulos nativos
 
 - El `postinstall` (`electron-builder install-app-deps`) recompila `node-pty` y
@@ -34,7 +64,14 @@ tuyos — corrige lo que compruebes que ya no es cierto.
   reinstalar. Si algún día se invierte el orden, habría que recompilar antes de
   `npm run dev`.
 
+- **`ssh2` viaja con su `sshcrypto.node` compilado para Node (ABI 137), no para Electron (130).**
+  `install-app-deps` no lo recompila (su `binding.gyp` no está en la raíz del paquete). ssh2 lo
+  carga en try/catch y cae a crypto en JS, así que no rompe, pero es más lento. Ya pasaba con 25.
+
 ## Sin comprobar todavía
+
+- **pacman en CachyOS real:** instalar con `pacman -U`, el diálogo de pkexec y la actualización
+  de extremo a extremo no se han probado; solo se validó el paquete por dentro.
 
 - **Nada está firmado ni notarizado.** Los dmg abren en la máquina donde se
   compilaron porque no llevan el atributo de cuarentena; en cualquier otro Mac
