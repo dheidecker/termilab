@@ -274,3 +274,23 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
 - CSS solo-Android en `mobile/web/mobile.css` (el desktop nunca lo carga). Se importa
   ANTES que `src/index.css`: a igual especificidad gana src.
 - Probar en el emulador: `adb shell input text` escribe; KEYCODE_BACK cierra la app.
+
+## Android fase 3 (2026-09-24)
+
+- **Botón atrás = `src/hooks/useBackHandler.js`.** Todo lo que se abre y se cierra (modal,
+  drawer, menú, búsqueda, grupo abierto) registra `useBackHandler(abierto, cerrar)`; lo más
+  reciente se cierra primero. Debajo va `useBackFallback` de `App` (sidebar → plegado,
+  sesión → Hosts, sección → Hosts). Si nadie lo toma, `entry.jsx` hace `exitApp`
+  (moveTaskToBack). **Un modal nuevo sin `useBackHandler` hace que atrás salte de sección
+  con el modal abierto.** En HostList los handlers van con `onHome` (desde una pestaña de
+  sesión atrás va a Hosts, no cierra un grupo que no se ve).
+- **El teclado raw es solo del textarea de xterm** (`.xterm-helper-textarea`): `entry.jsx`
+  avisa a Java en focusin/focusout. Si cambia esa clase o la terminal usa otro input, la
+  terminal vuelve al teclado predictivo ("holalaa").
+- Capacitor encoge el WebView con el teclado (padding del IME en la decor view); `100vh`
+  sigue al WebView. El campo enfocado se centra con `scrollIntoView` desde `entry.jsx`.
+- CDP en el emulador para mirar/pulsar: `adb forward tcp:9333
+  localabstract:webview_devtools_remote_<pid>` + `Runtime.evaluate` (envuelve en IIFE: el
+  ámbito global persiste y un `const` repetido da SyntaxError). Toques de Gboard reales con
+  `input tap`; acentos con `input motionevent DOWN` en la o, esperar, `MOVE`+`UP` sobre la ó.
+  `adb shell input text` con no-ASCII revienta dentro de `input` y no prueba nada.

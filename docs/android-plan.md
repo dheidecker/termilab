@@ -154,3 +154,86 @@ Trampas encontradas:
 Pendiente: el botón atrás cierra la app; el formulario de host no hace scroll al campo
 enfocado sobre el teclado; `allowBackup=false` (fase 3; hoy la DSK de respaldo iría en
 un backup); el copy de Known Hosts sigue citando `~/.ssh/known_hosts`.
+
+## Estado fase 3
+
+Hecho en `feat/android` (2026-09-24). `git diff main -- electron/` sigue vacío.
+
+- **appId `com.rhinlab.termilab`** (decisión del dueño): `capacitor.config.json`, Gradle
+  `namespace`/`applicationId`, paquete Java, strings. El `build.appId` de `package.json`
+  (`com.termilab.app`) es el de **escritorio** y no se tocó: cambiarlo cambia la identidad
+  del instalador de Windows/macOS.
+- **Plugin propio `mobile/plugins/termilab-native/`** (Java, dependencia `file:`; cap sync
+  lo registra). `DeviceKey` + `DeviceKeyResolver`, `SessionService`, `TerminalInputWebView`,
+  `TermilabNativePlugin` (`setSessionCount`, `setTerminalInput`, `exitApp`, evento
+  `backButton`). La política de la DSK está en `DeviceKeyResolver`, sin Android, con JUnit:
+  `cd mobile/android && ./gradlew :termilab-native:testDebugUnitTest` (7 casos).
+- **DSK en Keystore:** clave AES-256 no exportable (`termilab-device-key-wrap`, StrongBox si
+  hay, sin autenticación de usuario) que envuelve una DSK aleatoria de 32 bytes con AES-GCM;
+  el envoltorio va en `shared_prefs/termilab_device_key.xml`. `MainActivity` registra, antes
+  de `super.onCreate()`, un `EnvProvider` en el plugin de Node vendorizado
+  (`CapacitorNodeJS.setEnvProvider`): corre en el hilo del motor justo antes de
+  `node::Start` y mete `TERMILAB_DSK`. Node ya **no** tiene respaldo en archivo: sin DSK,
+  `safeStorage` no está disponible y el login se niega. Un `device-key.json` de fase 1 se
+  envuelve, se persiste (`commit()`) y **solo entonces** se borra. Si el unwrap falla
+  (backup restaurado, clave invalidada, envoltorio corrupto) → DSK nueva y clave de Keystore
+  nueva; lo sellado no se abre, se vuelve a entrar y sale la tarjeta de desbloqueo.
+  Probado en el emulador: `MIGRATED_FROM_FILE` + token del login desellado en el host con
+  la clave del archivo; envoltorio corrompido → `RECREATED_AFTER_UNWRAP_FAILURE` → login →
+  "Unlock this computer" → passphrase → desbloqueado. En el emulador la clave queda en
+  "software keystore" (no hay TEE emulado); en un teléfono debería decir TEE o StrongBox
+  (logcat `TermilabDeviceKey`).
+- **Backups:** `allowBackup="false"`, `fullBackupContent` y `dataExtractionRules` excluyen
+  todos los dominios. `bmgr backupnow` → "Backup is not allowed"; el paquete no tiene el flag
+  `ALLOW_BACKUP`.
+- **Login Google:** `native:open-url` → `@capacitor/browser` (Custom Tab), solo `https:`.
+  Contra `https://termilab.rhinlab.com` la Custom Tab abre `accounts.google.com` ("continue
+  to rhinlab.com") y el sondeo sigue vivo con la app detrás (77 s comprobados). Al terminar
+  el login (bien o mal) la pestaña se cierra sola. **Falta que el dueño complete el login en
+  un teléfono.**
+- **Foreground service** (`specialUse`, con la propiedad del subtipo): Node cuenta las
+  sesiones del `Map` de `ssh-service` (envuelve `ssh:connect`/`ssh:disconnect` y mira
+  `ssh:close`/`ssh:error`) y manda `native:sessions {count, signingIn}`; la página lo pasa a
+  `setSessionCount`. Notificación "Termilab — N sessions active"; `POST_NOTIFICATIONS` se
+  pide una vez, con la primera sesión. Emulador: 2 min 35 s en segundo plano (34 s en Doze
+  forzado), mismo pid, `curProcState=4` (FGS), la sesión sigue haciendo eco al volver;
+  `exit` remoto y cerrar la pestaña paran el servicio.
+- **Atrás:** pila `src/hooks/useBackHandler.js`. Primero lo abierto (formulario de host,
+  drawer de known host, aviso de clave de host = Cancel, formulario de snippet, modales de
+  claves, menús, búsqueda y grupo abierto en Hosts), luego `useBackFallback` de `App`:
+  sidebar desplegado → plegado, pestaña de sesión → Hosts, otra sección → Hosts; en Hosts →
+  `moveTaskToBack` (el proceso sigue, comprobado).
+- **Teclado:** `captureInput` fuera. `TerminalInputWebView` (sustituye al WebView de
+  Capacitor redefiniendo `capacitor_bridge_layout_main.xml` en `app/`) da al IME la
+  `BaseInputConnection` de captureInput **solo** con el textarea de xterm enfocado
+  (focusin/focusout → `setTerminalInput` → `restartInput`). dumpsys: terminal
+  `inputType=0x0`, formulario `inputType=0xc0a1` (texto con autocorrección). Con toques
+  reales en Gboard: "Camión" entra en el formulario (pulsación larga en la o → ó);
+  en la terminal los toques llegan byte a byte, sin duplicados. `adb shell input text` con
+  no-ASCII revienta en el propio `input` (NullPointerException), no llega a la app.
+- **Campo sobre el teclado:** Capacitor rellena la ventana con la altura del IME, así que el
+  WebView encoge; `entry.jsx` hace `scrollIntoView({block:'center'})` del campo enfocado si
+  queda fuera del `visualViewport`.
+- **Known Hosts:** en Android el vacío dice que las claves llegan por sync, sin
+  `~/.ssh/known_hosts`.
+- **Verificación:** `npm run build` y `node scripts/check-main.js` en verde;
+  `npx -y -p node@18 node scripts/check-mobile.js` 12/12 (nuevos M9–M11 y `native:sessions`
+  en M4/M5; control negativo con el shim de fase 2 y sin el recuento → 3 rojos).
+  Capturas en el scratchpad de la sesión, `android-p3/`.
+
+Trampas encontradas:
+1. **Android 15+ corta la red de un proceso en caché** (`resolv: network access blocked`).
+   Con la Custom Tab delante, Termilab pasa a `procState 15` y `/auth/poll` muere con
+   "fetch failed" a los ~7 s. Por eso el servicio también corre mientras hay un login en
+   vuelo, y arranca **antes** de abrir la URL (luego ya estaríamos en segundo plano).
+2. La notificación del servicio que se publica antes de que el usuario conteste a
+   `POST_NOTIFICATIONS` se pierde; al conceder hay que volver a publicarla (`repost`).
+3. `adb shell input text` justo después de un toque en un campo puede perderse: el IME
+   aún no tiene la conexión nueva. Esperar ~1 s.
+4. En el emulador `127.0.0.1:8787` ya estaba ocupado en el host: el servidor de sync falso
+   va en otro puerto con `adb reverse`, y la app de debug lo toma de
+   `am start ... --es TERMILAB_SYNC_URL http://127.0.0.1:<puerto>` (solo si es depurable).
+
+Pendiente: completar el login real en un teléfono; si el usuario vuelve de la Custom Tab
+sin terminar, el sondeo (y la notificación "signing in") dura hasta 10 min — hace falta un
+"cancelar" visible (fase 4); el copy "Unlock this computer" dice *computer* en Android.

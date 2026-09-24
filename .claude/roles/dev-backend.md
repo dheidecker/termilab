@@ -403,3 +403,22 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   lista de omitidos). M1 se pone rojo si no.
 - Un segundo `node::Start` en el mismo proceso aborta (SIGTRAP). Android recrea la
   activity sin matar el proceso: el motor del plugin es estático por proceso (fork).
+
+## Android fase 3 (2026-09-24): nativo
+
+- **La DSK solo llega por env.** Java (`mobile/plugins/termilab-native`, `DeviceKey`) la
+  desenvuelve con el Keystore y `MainActivity` la mete con `CapacitorNodeJS.setEnvProvider`
+  (hook del fork vendorizado, corre en el hilo del motor antes de `node::Start`). En Node no
+  hay respaldo en archivo: sin `TERMILAB_DSK`, `safeStorage` no está y el login se niega (M11).
+  No reintroduzcas `device-key.json`: M9 mira que el bundle ni lo mencione.
+- La migración/borrado del `device-key.json` de fase 1 es Java (`DeviceKeyResolver`, JUnit):
+  el archivo se borra **después** de persistir el envoltorio con `commit()`, nunca antes.
+- **Android 15+ corta la red de un proceso en caché** (logcat `resolv: network access
+  blocked`, `fetch failed` en Node). Cualquier trabajo de red que tenga que seguir con la app
+  detrás necesita el foreground service: hoy, sesiones SSH y el login en vuelo (la Custom Tab
+  deja la app detrás). `main.js` envuelve `ssh:connect`/`ssh:disconnect`/`sync:login` y
+  manda `native:sessions {count, signingIn}`; `signingIn` sale **antes** de abrir la URL.
+- Probar el sync en el emulador: servidor falso del host con `adb reverse tcp:P tcp:P` y
+  `am start -n com.rhinlab.termilab/.MainActivity --es TERMILAB_SYNC_URL http://127.0.0.1:P`
+  (solo builds depurables; Node arranca una vez por proceso, así que `am force-stop` antes).
+  El 8787 del host ya estaba ocupado.
