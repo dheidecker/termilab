@@ -7,6 +7,7 @@ import ViewOptions, { useViewChoice, useSortChoice, sortItems } from '../ViewOpt
 import '../HostList/HostList.css';
 import '../HostForm/HostForm.css';
 import './KnownHosts.css';
+import { useBackHandler } from '../../hooks/useBackHandler';
 
 /**
  * Known Hosts: the server keys this computer trusts (local only, never
@@ -32,6 +33,8 @@ const importSummary = (r) => {
 /* The drawer: same pattern (and classes) as the host editor. */
 export function KnownHostDrawer({ entry, onClose, onDelete, deleting = false }) {
   const [copied, setCopied] = useState(false);
+
+  useBackHandler(true, () => onClose());
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -224,7 +227,9 @@ export default function KnownHosts() {
           <div className="hv-empty">
             <div className="hv-empty-icon"><FingerprintIcon /></div>
             <h3>No known hosts yet</h3>
-            <p>A server is added here the first time you accept its key, or import the ones OpenSSH already trusts from <code>~/.ssh/known_hosts</code>.</p>
+            {FEATURES.knownHostsFileImport
+              ? <p>A server is added here the first time you accept its key, or import the ones OpenSSH already trusts from <code>~/.ssh/known_hosts</code>.</p>
+              : <p>A server is added here the first time you accept its key. Keys you trusted on your other devices arrive with sync.</p>}
             {importButton(true)}
           </div>
         ) : visible.length === 0 ? (

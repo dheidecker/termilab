@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../contexts/AppContext';
+import { useBackHandler } from '../../hooks/useBackHandler';
 import './HostForm.css';
 
 export default function HostForm() {
@@ -44,6 +45,8 @@ export default function HostForm() {
   useEffect(() => {
     labelRef.current?.focus();
   }, []);
+
+  useBackHandler(true, () => actions.closeHostForm());
 
   /* Close on Escape */
   useEffect(() => {

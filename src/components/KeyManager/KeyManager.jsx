@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { FEATURES } from '../../platform';
 import './KeyManager.css';
+import { useBackHandler } from '../../hooks/useBackHandler';
 
 export default function KeyManager() {
   const { state, actions } = useApp();
@@ -13,6 +14,8 @@ export default function KeyManager() {
   const [pasteForm, setPasteForm] = useState({ name: '', content: '' });
   const [copied, setCopied] = useState(false);
   const [pasteError, setPasteError] = useState('');
+  useBackHandler(showGenerate, () => setShowGenerate(false));
+  useBackHandler(showPaste, () => { setShowPaste(false); setPasteError(''); });
 
   const handleImport = async () => {
     try {

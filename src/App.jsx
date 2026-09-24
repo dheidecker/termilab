@@ -15,6 +15,7 @@ import Logs from './components/Logs/Logs';
 import HostKeyPrompt from './components/HostKeyPrompt/HostKeyPrompt';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
 import { FEATURES, IS_ANDROID } from './platform';
+import { useBackFallback } from './hooks/useBackHandler';
 import './App.css';
 
 const SIDEBAR_KEY = 'termilab.sidebar.collapsed';
@@ -31,8 +32,11 @@ function readSidebarCollapsed() {
 function AppContent() {
   const { state, actions } = useApp();
   const { activeSection, tabs, activeTabId, loading, hostFormOpen } = state;
-  const { openLocalTerminal, setActiveTab, removeTab, disconnectSession } = actions;
+  const { openLocalTerminal, setActiveTab, removeTab, disconnectSession, goHome, setActiveSection } = actions;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+
+  /* No session tab selected → the home tab (sidebar + section) is showing */
+  const homeActive = !tabs.some(t => t.id === activeTabId);
 
   const toggleSidebar = () => {
     setSidebarCollapsed(prev => {
@@ -41,6 +45,17 @@ function AppContent() {
       return next;
     });
   };
+
+  /* Android back, once nothing dismissable is open (modals register their own
+     handlers in useBackHandler): expanded sidebar → collapsed, session tab →
+     Hosts, any other section → Hosts. At Hosts it passes, and the app goes to
+     the background (moveTaskToBack, not finish: sessions stay up). */
+  useBackFallback(() => {
+    if (IS_ANDROID && !sidebarCollapsed && homeActive) { toggleSidebar(); return true; }
+    if (!homeActive) { setActiveSection('hosts'); goHome(); return true; }
+    if (activeSection !== 'hosts') { setActiveSection('hosts'); return true; }
+    return false;
+  });
 
   /* ─── Global Keyboard Shortcuts ─── */
   useEffect(() => {
@@ -89,9 +104,6 @@ function AppContent() {
       </div>
     );
   }
-
-  /* No session tab selected → the home tab (sidebar + section) is showing */
-  const homeActive = !tabs.some(t => t.id === activeTabId);
 
   const renderSection = () => {
     switch (activeSection) {

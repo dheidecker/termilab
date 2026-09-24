@@ -12,6 +12,7 @@ import { distroFor, DistroLogo } from '../Icons/distros';
 import { PALETTE, hostColor } from './hostColor';
 import { FEATURES } from '../../platform';
 import './HostList.css';
+import { useBackHandler } from '../../hooks/useBackHandler';
 
 const hostCount = (n) => `${n} ${n === 1 ? 'Host' : 'Hosts'}`;
 /* With a tag filter on, a group card says how many of its hosts match */
@@ -40,6 +41,14 @@ export default function HostList() {
   const searchRef = useRef(null);
   const groupInputRef = useRef(null);
   const newMenuRef = useRef(null);
+
+  /* Android back, innermost first: menus, duplicate review, search, open group.
+     Only while home is showing: from a session tab, back goes home instead. */
+  const onHome = !state.tabs.some(t => t.id === state.activeTabId);
+  useBackHandler(onHome && groupId !== null, () => setGroupId(null));
+  useBackHandler(onHome && search !== '', () => setSearch(''));
+  useBackHandler(onHome && showDuplicates, () => setShowDuplicates(false));
+  useBackHandler(onHome && (!!contextMenu || newMenuOpen), () => { setContextMenu(null); setNewMenuOpen(false); });
 
   /* Same user@host:port saved more than once. */
   const duplicateGroups = useMemo(() => findDuplicateGroups(hosts), [hosts]);
