@@ -5,7 +5,7 @@ import Sidebar from './components/Sidebar/Sidebar';
 import HostList from './components/HostList/HostList';
 import HostForm from './components/HostForm/HostForm';
 import SplitPane from './components/SplitPane/SplitPane';
-import SFTPExplorer from './components/SFTP/SFTPExplorer';
+import SFTPView from './components/SFTP/SFTPView';
 import Snippets from './components/Snippets/Snippets';
 import KeyManager from './components/KeyManager/KeyManager';
 import PortForwarding from './components/PortForwarding/PortForwarding';
@@ -167,7 +167,7 @@ function AppContent() {
           key={tab.id}
           style={{ display: tab.id === activeTabId ? 'flex' : 'none', flex: 1, minHeight: 0 }}
         >
-          <SFTPExplorer tab={tab} />
+          <SFTPView tab={tab} />
         </div>
       ));
   };

@@ -306,3 +306,157 @@ export const PasteIcon = (p) => (
     <line x1="9" y1="15" x2="13" y2="15" />
   </Svg>
 );
+
+/* SFTP: navigation, file types, transfers. */
+export const ArrowRightIcon = (p) => (
+  <Svg {...p}>
+    <line x1="5" y1="12" x2="19" y2="12" />
+    <polyline points="12 5 19 12 12 19" />
+  </Svg>
+);
+
+export const ArrowUpIcon = (p) => (
+  <Svg {...p}>
+    <line x1="12" y1="19" x2="12" y2="5" />
+    <polyline points="5 12 12 5 19 12" />
+  </Svg>
+);
+
+export const RefreshIcon = (p) => (
+  <Svg {...p}>
+    <path d="M20 11a8 8 0 00-14.3-4.9L4 8" />
+    <polyline points="4 3 4 8 9 8" />
+    <path d="M4 13a8 8 0 0014.3 4.9L20 16" />
+    <polyline points="20 21 20 16 15 16" />
+  </Svg>
+);
+
+export const EyeIcon = (p) => (
+  <Svg {...p}>
+    <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />
+    <circle cx="12" cy="12" r="3" />
+  </Svg>
+);
+
+export const EyeOffIcon = (p) => (
+  <Svg {...p}>
+    <path d="M9.9 5.2A9.7 9.7 0 0112 5c6.4 0 10 7 10 7a17 17 0 01-3.1 3.9M6.6 6.6A16.6 16.6 0 002 12s3.6 7 10 7a9.6 9.6 0 005.4-1.6" />
+    <path d="M9.9 9.9a3 3 0 004.2 4.2" />
+    <line x1="3" y1="3" x2="21" y2="21" />
+  </Svg>
+);
+
+export const FolderPlusIcon = (p) => (
+  <Svg {...p}>
+    <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2v11z" />
+    <line x1="12" y1="10.5" x2="12" y2="16.5" />
+    <line x1="9" y1="13.5" x2="15" y2="13.5" />
+  </Svg>
+);
+
+export const FileIcon = (p) => (
+  <Svg {...p}>
+    <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z" />
+    <polyline points="14 3 14 8 19 8" />
+  </Svg>
+);
+
+export const FilePlusIcon = (p) => (
+  <Svg {...p}>
+    <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z" />
+    <polyline points="14 3 14 8 19 8" />
+    <line x1="12" y1="11.5" x2="12" y2="17.5" />
+    <line x1="9" y1="14.5" x2="15" y2="14.5" />
+  </Svg>
+);
+
+export const FileTextIcon = (p) => (
+  <Svg {...p}>
+    <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z" />
+    <polyline points="14 3 14 8 19 8" />
+    <line x1="8.5" y1="13" x2="15.5" y2="13" />
+    <line x1="8.5" y1="16.5" x2="13.5" y2="16.5" />
+  </Svg>
+);
+
+export const FileCodeIcon = (p) => (
+  <Svg {...p}>
+    <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z" />
+    <polyline points="14 3 14 8 19 8" />
+    <polyline points="10 12.5 8 14.5 10 16.5" />
+    <polyline points="14 12.5 16 14.5 14 16.5" />
+  </Svg>
+);
+
+export const FileImageIcon = (p) => (
+  <Svg {...p}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <circle cx="8.5" cy="9.5" r="1.5" />
+    <polyline points="21 16 15.5 11 6 20" />
+  </Svg>
+);
+
+export const FileArchiveIcon = (p) => (
+  <Svg {...p}>
+    <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z" />
+    <polyline points="14 3 14 8 19 8" />
+    <line x1="10" y1="6" x2="10" y2="7" />
+    <line x1="10" y1="9.5" x2="10" y2="10.5" />
+    <rect x="8.5" y="13" width="3" height="4" rx="1" />
+  </Svg>
+);
+
+export const LinkIcon = (p) => (
+  <Svg {...p}>
+    <path d="M10 14a4.5 4.5 0 006.4 0l3-3a4.5 4.5 0 00-6.4-6.4l-1.2 1.2" />
+    <path d="M14 10a4.5 4.5 0 00-6.4 0l-3 3a4.5 4.5 0 006.4 6.4l1.2-1.2" />
+  </Svg>
+);
+
+export const LaptopIcon = (p) => (
+  <Svg {...p}>
+    <rect x="4" y="5" width="16" height="11" rx="1.5" />
+    <line x1="2" y1="19" x2="22" y2="19" />
+  </Svg>
+);
+
+export const LockIcon = (p) => (
+  <Svg {...p}>
+    <rect x="5" y="11" width="14" height="10" rx="2" />
+    <path d="M8 11V7a4 4 0 018 0v4" />
+  </Svg>
+);
+
+export const ExternalLinkIcon = (p) => (
+  <Svg {...p}>
+    <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
+    <polyline points="15 3 21 3 21 9" />
+    <line x1="10" y1="14" x2="21" y2="3" />
+  </Svg>
+);
+
+export const UploadIcon = (p) => (
+  <Svg {...p}>
+    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+    <polyline points="17 8 12 3 7 8" />
+    <line x1="12" y1="3" x2="12" y2="15" />
+  </Svg>
+);
+
+export const DownloadIcon = (p) => (
+  <Svg {...p}>
+    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+    <polyline points="7 10 12 15 17 10" />
+    <line x1="12" y1="15" x2="12" y2="3" />
+  </Svg>
+);
+
+/* Two opposite arrows: a transfer between the panes. */
+export const TransferIcon = (p) => (
+  <Svg {...p}>
+    <polyline points="16 3 20 7 16 11" />
+    <line x1="20" y1="7" x2="4" y2="7" />
+    <polyline points="8 21 4 17 8 13" />
+    <line x1="4" y1="17" x2="20" y2="17" />
+  </Svg>
+);
