@@ -42,6 +42,10 @@ window.electronAPI = createElectronAPI(capacitorTransport(NodeJS), {
     if (wasSigningIn && !signingIn) nativeCall('Browser.close', Browser.close());
     wasSigningIn = signingIn;
   },
+  // updater:install. Java checks the archive (package, versionCode, signing
+  // key), asks for "install unknown apps" if needed and opens the system
+  // installer; replacing the package then ends this process.
+  onInstallApk: ({ path, versionCode }) => TermilabNative.installApk({ path, versionCode }),
   onFatal: (err) => console.error('[termilab]', err.message),
 });
 

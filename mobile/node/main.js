@@ -17,6 +17,11 @@
  *                                                       login in flight changed
  *                                                       (the page drives the
  *                                                       foreground service)
+ *   node -> web  'native:install-apk' {id, path, version, versionCode}
+ *                                                       updater:install: the page
+ *                                                       hands a verified APK to
+ *                                                       TermilabNative.installApk
+ *   web -> node  'native:install-result' {id, ok, error?}
  *
  * Why the handshake: the plugin drops a message whose listener is not
  * registered yet, in both directions (spike finding #2). Node queues what it
@@ -28,11 +33,20 @@
 // signals "ready" to the page as soon as the bridge module loads.
 const bridge = require('bridge');
 const { channel } = bridge;
+const { createUpdater, versionCodeOf } = require('./updater');
 
 // Read the device key and take it out of the environment before loading
 // anything else: nothing in the graph may see it in process.env.
 const DSK = process.env.TERMILAB_DSK || '';
 delete process.env.TERMILAB_DSK;
+
+// From MainActivity (PackageInfo), not from the bundle: the installed
+// versionCode is what the updater compares against. TERMILAB_UPDATE_URL is
+// only ever set by a debuggable build (end-to-end tests of the updater).
+const NATIVE_VERSION_CODE = Number(process.env.TERMILAB_VERSION_CODE) || 0;
+const NATIVE_VERSION_NAME = process.env.TERMILAB_VERSION_NAME || '';
+const UPDATE_URL = process.env.TERMILAB_UPDATE_URL || '';
+const UPDATE_CHECK_DELAY_MS = Number(process.env.TERMILAB_UPDATE_DELAY_MS) || 5000;
 
 const VERSION = typeof __TERMILAB_VERSION__ !== 'undefined' ? __TERMILAB_VERSION__ : '0.0.0-dev';
 const OUTBOX_MAX = 5000;
@@ -137,6 +151,24 @@ channel.addListener('ipc:invoke', async (msg) => {
   }
 });
 
+// updater:install -> the page -> TermilabNative.installApk -> back here.
+const installs = new Map();   // id -> {resolve, reject}
+let installSeq = 0;
+function nativeInstallApk(apk) {
+  return new Promise((resolve, reject) => {
+    const id = ++installSeq;
+    installs.set(id, { resolve, reject });
+    post('native:install-apk', { id, ...apk });
+  });
+}
+channel.addListener('native:install-result', (msg) => {
+  const entry = msg && installs.get(msg.id);
+  if (!entry) return;
+  installs.delete(msg.id);
+  if (msg.ok) entry.resolve(msg.result || null);
+  else entry.reject(new Error(msg.error || 'The installer could not be opened'));
+});
+
 channel.addListener('ipc:send', (msg) => {
   if (shim && msg && typeof msg.channel === 'string') shim.send(msg.channel, msg.args);
 });
@@ -177,17 +209,51 @@ function start() {
     try { return await login(...a); } finally { loginsInFlight--; reportSessions(); }
   });
 
-  // What electron/main.js registers itself. The Android updater is phase 5;
-  // until then these answer like desktop's dev-mode stubs.
-  const { ipcMain } = electron;
-  ipcMain.handle('updater:version', () => VERSION);
-  ipcMain.handle('updater:check', async () => ({ success: false, error: 'Updates are not available on Android yet' }));
-  ipcMain.handle('updater:download', async () => ({ success: false, error: 'Updates are not available on Android yet' }));
-  ipcMain.handle('updater:install', () => {});
+  setupUpdater(electron.ipcMain, shim.mainWindow);
 
   // Back in the foreground: what desktop does on browser-window-focus.
   const syncService = require('../../electron/services/sync-service');
   bridge.onResume(() => syncService.onFocus());
+}
+
+// ─── Updater ───────────────────────────────────────────────
+// What electron/main.js registers itself: the same channels, the same
+// {success, data|error} answers and the same updater:status events.
+
+function setupUpdater(ipcMain, mainWindow) {
+  const version = NATIVE_VERSION_NAME || VERSION;
+  ipcMain.handle('updater:version', () => version);
+
+  let installedVersionCode = NATIVE_VERSION_CODE;
+  if (!installedVersionCode) {
+    try { installedVersionCode = versionCodeOf(version); } catch (_) { installedVersionCode = 0; }
+  }
+  if (UPDATE_URL) console.log(`[Updater] feed override: ${UPDATE_URL}`);
+  const updater = createUpdater({
+    dataPath: bridge.getDataPath(),
+    installedVersionCode,
+    manifestUrl: UPDATE_URL || undefined,
+    emit: (status, data = {}) => {
+      if (!mainWindow.isDestroyed()) mainWindow.webContents.send('updater:status', { status, ...data });
+    },
+    installApk: nativeInstallApk,
+  });
+  // A successful update relaunches us with a higher versionCode: what is left
+  // in updates/ is the APK we just installed (or older). Drop it.
+  const removed = updater.cleanup();
+  if (removed.length) console.log(`[Updater] removed old downloads: ${removed.join(', ')}`);
+
+  const envelope = fn => async () => {
+    try { return { success: true, data: await fn() }; } catch (err) { return { success: false, error: err.message }; }
+  };
+  ipcMain.handle('updater:check', envelope(() => updater.check()));
+  ipcMain.handle('updater:download', envelope(() => updater.download()));
+  ipcMain.handle('updater:install', envelope(() => updater.install()));
+
+  // As on desktop: once, a few seconds after launch (Node starts once per process).
+  setTimeout(() => {
+    updater.check().catch(err => console.error('[Updater] Startup check failed:', err.message));
+  }, UPDATE_CHECK_DELAY_MS);
 }
 
 try {

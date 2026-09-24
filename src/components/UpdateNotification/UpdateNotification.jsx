@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import './UpdateNotification.css';
 
 export default function UpdateNotification() {
-  const [status, setStatus] = useState(null); // null | 'available' | 'downloading' | 'ready'
+  const [status, setStatus] = useState(null); // null | 'available' | 'downloading' | 'ready' | 'error'
   const [info, setInfo] = useState({});
   const [dismissed, setDismissed] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -28,6 +28,12 @@ export default function UpdateNotification() {
         setInfo(prev => ({ ...prev, ...data }));
         setDismissed(false);
         setClosing(false);
+      } else if (data.status === 'error') {
+        // Only over a card already on screen (a failed download or install,
+        // e.g. an APK that fails its sha256 on Android). A failed background
+        // check with nothing shown stays silent, as before.
+        setStatus(prev => (prev ? 'error' : prev));
+        setInfo(prev => ({ ...prev, message: data.message }));
       }
     });
 
@@ -75,6 +81,7 @@ export default function UpdateNotification() {
             {status === 'available' && 'Update Available'}
             {status === 'downloading' && 'Downloading...'}
             {status === 'ready' && 'Ready to Install'}
+            {status === 'error' && 'Update Failed'}
           </span>
         </div>
         <button className="update-close" onClick={dismiss} title="Dismiss">
@@ -93,6 +100,9 @@ export default function UpdateNotification() {
         )}
         {status === 'ready' && (
           <>Termilab <span className="update-version">v{info.version}</span> downloaded. Restart to apply.</>
+        )}
+        {status === 'error' && (
+          <>{info.message || 'The update could not be completed.'}</>
         )}
       </div>
 
@@ -116,6 +126,12 @@ export default function UpdateNotification() {
           <>
             <button className="update-btn update-btn-secondary" onClick={dismiss}>Later</button>
             <button className="update-btn update-btn-primary" onClick={handleInstall}>Restart & Update</button>
+          </>
+        )}
+        {status === 'error' && (
+          <>
+            <button className="update-btn update-btn-secondary" onClick={dismiss}>Close</button>
+            <button className="update-btn update-btn-primary" onClick={handleDownload}>Try Again</button>
           </>
         )}
       </div>

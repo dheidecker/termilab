@@ -27,7 +27,7 @@ const HELLO_EVERY_MS = 250;
  *   transport.send(eventName, payload)   one JSON payload per message
  *   transport.addListener(eventName, cb) cb(payload)
  */
-function createIpc(transport, { onOpenUrl, onSessions, onFatal } = {}) {
+function createIpc(transport, { onOpenUrl, onSessions, onInstallApk, onFatal } = {}) {
   const session = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const pending = new Map();   // id -> {resolve, reject}
   const queue = [];            // [eventName, payload] waiting for 'bridge:ready'
@@ -89,6 +89,17 @@ function createIpc(transport, { onOpenUrl, onSessions, onFatal } = {}) {
 
   listen('native:sessions', (msg) => {
     if (msg && Number.isInteger(msg.count) && onSessions) onSessions(msg.count, msg.signingIn === true);
+  });
+
+  // updater:install: Node verified the APK; the native installer is the page's to call.
+  listen('native:install-apk', (msg) => {
+    if (!msg || msg.id == null || typeof msg.path !== 'string') return;
+    const reply = (body) => post('native:install-result', { id: msg.id, ...body });
+    if (!onInstallApk) { reply({ ok: false, error: 'No installer on this platform' }); return; }
+    Promise.resolve()
+      .then(() => onInstallApk({ path: msg.path, version: msg.version, versionCode: msg.versionCode }))
+      .then(result => reply({ ok: true, result: result || null }))
+      .catch(err => reply({ ok: false, error: (err && err.message) || String(err) }));
   });
 
   // Say hello until Node answers: a hello sent before its listener exists is lost.

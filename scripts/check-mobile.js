@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Arnes del lado Android (fases 1-3). Correrlo con el Node de nodejs-mobile:
+ * Arnes del lado Android (fases 1-5). Correrlo con el Node de nodejs-mobile:
  *
  *   npx -y -p node@18 node scripts/check-mobile.js
  *
@@ -31,7 +31,11 @@
  *        sondeo, el login rechaza y signingIn vuelve a false;
  *      - la fila de teclas extra (src/components/Terminal/mobile/keys.js):
  *        secuencias, modo de cursor de aplicacion y Ctrl/Alt pegajosos;
- *      - la cola: lo que Node emite antes del hello llega igual.
+ *      - la cola: lo que Node emite antes del hello llega igual;
+ *      - el updater (fase 5, mobile/node/updater.js) contra un feed local:
+ *        manifiesto, comparacion de versionCode, 404 = al dia, descarga con
+ *        progreso, sha256 o tamano distintos = rechazado sin dejar archivo,
+ *        install por native:install-apk, y limpieza tras actualizar.
  *
  *  La migracion y el borrado de device-key.json son de Java (DeviceKeyResolver):
  *  cd mobile/android && ./gradlew :termilab-native:testDebugUnitTest
@@ -88,9 +92,11 @@ async function waitFor(what, pred, ms = 5000) {
 
 // ─── El "Capacitor" de mentira: fork + el bridge real ───────
 
-function spawnMobile(bundle, { name, dataDir, syncUrl, dsk }) {
+function spawnMobile(bundle, { name, dataDir, syncUrl, dsk, env: extraEnv }) {
   fs.mkdirSync(dataDir, { recursive: true });
-  const env = { ...process.env, DATADIR: dataDir, NODE_PATH: BUILTIN_MODULES, TERMILAB_SYNC_URL: syncUrl, TERMILAB_DEVICE_NAME: DEVICE_NAME };
+  // The updater checks 5 s after boot: never against GitHub from here.
+  const env = { ...process.env, DATADIR: dataDir, NODE_PATH: BUILTIN_MODULES, TERMILAB_SYNC_URL: syncUrl, TERMILAB_DEVICE_NAME: DEVICE_NAME,
+    TERMILAB_UPDATE_URL: 'http://127.0.0.1:1/latest-android.json', ...(extraEnv || {}) };
   delete env.SSH_AUTH_SOCK;   // si no, ssh2 prueba el agente real de quien corre esto
   if (dsk) env.TERMILAB_DSK = dsk; else delete env.TERMILAB_DSK;
   const child = fork(bundle, [], { env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
@@ -536,6 +542,8 @@ async function main() {
     assert.strictEqual(k.afterUse('locked'), 'locked');
   });
 
+  await updaterChecks(bundle, shimMod);
+
   await sshd.close();
   await srvA.close();
   await srvB.close();
@@ -551,6 +559,181 @@ async function main() {
   const total = results.length;
   console.log(failures ? `\n${failures} de ${total} comprobacion(es) fallidas` : `\nTodo en verde (${total} comprobaciones, Node ${process.version})`);
   process.exit(failures ? 1 : 0);
+}
+
+// ─── Updater (fase 5) ───────────────────────────────────────
+
+function updateFeed() {
+  const http = require('http');
+  const state = { manifestStatus: 200, manifest: null, apk: Buffer.alloc(0), requests: [] };
+  const server = http.createServer((req, res) => {
+    state.requests.push(req.url);
+    if (req.url === '/feed/latest-android.json') {
+      if (state.manifestStatus !== 200) { res.writeHead(state.manifestStatus); return res.end('nope'); }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(typeof state.manifest === 'string' ? state.manifest : JSON.stringify(state.manifest));
+    }
+    if (state.manifest && typeof state.manifest === 'object' && req.url === `/feed/${state.manifest.file}`) {
+      res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': state.apk.length });
+      // In pieces, so there is progress to report.
+      let at = 0;
+      const step = () => {
+        if (at >= state.apk.length) return res.end();
+        res.write(state.apk.subarray(at, at + 64 * 1024));
+        at += 64 * 1024;
+        setImmediate(step);
+      };
+      return step();
+    }
+    res.writeHead(404); res.end();
+  });
+  return {
+    state,
+    listen: () => new Promise(r => server.listen(0, '127.0.0.1', r)),
+    url: () => `http://127.0.0.1:${server.address().port}/feed/latest-android.json`,
+    close: () => new Promise(r => server.close(r)),
+  };
+}
+
+async function updaterChecks(bundle, shimMod) {
+  const U = require(path.join(ROOT, 'mobile', 'node', 'updater.js'));
+  const sha = b => crypto.createHash('sha256').update(b).digest('hex');
+  const apk = crypto.randomBytes(700 * 1024);
+  const good = { version: '1.11.1', versionCode: 1011001, file: 'Termilab-1.11.1-android-arm64.apk', sha256: sha(apk), size: apk.length };
+
+  await check('M14 manifiesto: se valida y versionCode = major*1e6+minor*1e3+patch', () => {
+    assert.strictEqual(U.versionCodeOf('1.11.1'), 1011001);
+    assert.strictEqual(U.versionCodeOf('2.0.0'), 2000000);
+    assert.throws(() => U.versionCodeOf('1.11'), /major.minor.patch/);
+    assert.throws(() => U.versionCodeOf('1.1000.0'), /does not fit/);
+    assert.deepStrictEqual(U.parseManifest(JSON.stringify(good)), good);
+    const bad = patch => () => U.parseManifest(JSON.stringify({ ...good, ...patch }));
+    assert.throws(() => U.parseManifest('{no'), /not valid JSON/);
+    assert.throws(bad({ versionCode: 1011002 }), /does not match/);
+    assert.throws(bad({ file: '../../evil.apk' }), /file name/);
+    assert.throws(bad({ file: 'Termilab.zip' }), /file name/);
+    assert.throws(bad({ sha256: 'ABC' }), /sha256/);
+    assert.throws(bad({ size: 0 }), /size/);
+    assert.throws(bad({ size: 1e12 }), /size/);
+    // The comparison is by versionCode, never by string.
+    assert.strictEqual(U.isNewer({ versionCode: 1011001 }, 1011000), true);
+    assert.strictEqual(U.isNewer({ versionCode: 1011001 }, 1011001), false);
+    assert.strictEqual(U.isNewer({ versionCode: 1010999 }, 1011000), false);
+    assert.strictEqual(U.isNewer({ versionCode: U.versionCodeOf('1.10.0') }, U.versionCodeOf('1.9.9')), true, '1.10.0 > 1.9.9');
+  });
+
+  const feed = updateFeed();
+  await feed.listen();
+  const dir = path.join(tmp, 'movil-U');
+  const updates = path.join(dir, 'updates');
+  const spawnU = (name, code, delay) => spawnMobile(bundle, { name, dataDir: dir, syncUrl: 'http://127.0.0.1:1', dsk: crypto.randomBytes(32).toString('base64'),
+    env: { TERMILAB_UPDATE_URL: feed.url(), TERMILAB_VERSION_CODE: String(code), TERMILAB_VERSION_NAME: '1.11.0', TERMILAB_UPDATE_DELAY_MS: String(delay) } });
+
+  feed.state.manifest = good;
+  feed.state.apk = apk;
+  const Uproc = spawnU('movil-U', 1011000, 300);
+  const installAsks = [];
+  let installAnswer = () => ({ launched: true });
+  const apiU = shimMod.createElectronAPI(Uproc.transport, {
+    onInstallApk: async (req) => { installAsks.push(req); return installAnswer(req); },
+  });
+  const statuses = [];
+  apiU.updater.onStatus(s => statuses.push(s));
+  const since = n => statuses.slice(n).map(s => s.status);
+
+  await check('M15 el chequeo de arranque ve la version nueva; descarga con progreso; install llega al nativo con el APK verificado', async () => {
+    assert.strictEqual(await apiU.updater.getVersion(), '1.11.0', 'updater:version no es el versionName del nativo');
+    await waitFor('available tras el chequeo de arranque', () => statuses.some(s => s.status === 'available'), 5000);
+    assert.deepStrictEqual(since(0), ['checking', 'available']);
+    assert.strictEqual(statuses[1].version, '1.11.1');
+    const n = statuses.length;
+    const done = await apiU.updater.download();
+    assert.strictEqual(done.version, '1.11.1');
+    const dl = statuses.slice(n).filter(s => s.status === 'downloading');
+    assert.ok(dl.length >= 3, `solo ${dl.length} eventos de progreso`);
+    assert.strictEqual(dl[dl.length - 1].percent, 100);
+    assert.ok(dl.every((s, i) => i === 0 || s.percent >= dl[i - 1].percent), 'el progreso retrocede');
+    assert.strictEqual(statuses[statuses.length - 1].status, 'ready');
+    const file = path.join(updates, 'Termilab-1011001.apk');
+    assert.strictEqual(sha(fs.readFileSync(file)), good.sha256);
+    assert.deepStrictEqual(fs.readdirSync(updates), ['Termilab-1011001.apk'], 'queda basura en updates/');
+    const res = await apiU.updater.install();
+    assert.deepStrictEqual(res, { launched: true });
+    assert.strictEqual(installAsks.length, 1);
+    assert.deepStrictEqual(installAsks[0], { path: file, version: '1.11.1', versionCode: 1011001 });
+    // The native side refusing (e.g. "install unknown apps" denied) is an error the UI shows.
+    installAnswer = () => { throw new Error('Allow Termilab to install unknown apps'); };
+    const m = statuses.length;
+    await assert.rejects(apiU.updater.install(), /unknown apps/);
+    assert.deepStrictEqual(statuses.slice(m).map(s => [s.status, s.message]), [['error', 'Allow Termilab to install unknown apps']]);
+    installAnswer = () => ({ launched: true });
+  });
+
+  await check('M16 sha256 o tamano distintos: descarga rechazada, sin APK ni .part; un APK alterado en disco no se instala', async () => {
+    // Same size, one byte changed: only the hash can tell.
+    const tampered = Buffer.from(apk); tampered[1234] ^= 0xff;
+    const bad = { ...good, version: '1.11.2', versionCode: 1011002, file: 'Termilab-1.11.2-android-arm64.apk' };
+    feed.state.manifest = bad; feed.state.apk = tampered;
+    await apiU.updater.check();
+    let n = statuses.length;
+    await assert.rejects(apiU.updater.download(), /sha256 mismatch/);
+    assert.strictEqual(statuses[statuses.length - 1].status, 'error');
+    assert.match(statuses[statuses.length - 1].message, /sha256 mismatch.*refused/);
+    assert.ok(!fs.readdirSync(updates).some(f => f.includes('1011002')), `quedo el APK malo: ${fs.readdirSync(updates)}`);
+    // Longer than announced: cut off, refused.
+    feed.state.apk = Buffer.concat([apk, Buffer.alloc(10)]);
+    await assert.rejects(apiU.updater.download(), /larger than the manifest/);
+    feed.state.apk = apk.subarray(0, apk.length - 10);
+    await assert.rejects(apiU.updater.download(), /bytes, the manifest says/);
+    assert.ok(!fs.readdirSync(updates).some(f => f.includes('1011002')), 'quedo un .part o un APK corto');
+    // A good download, then the file changes on disk before the install.
+    feed.state.apk = apk; feed.state.manifest = { ...bad, sha256: good.sha256, size: good.size };
+    await apiU.updater.check();
+    await apiU.updater.download();
+    const file = path.join(updates, 'Termilab-1011002.apk');
+    fs.writeFileSync(file, tampered);
+    const asked = installAsks.length;
+    n = statuses.length;
+    await assert.rejects(apiU.updater.install(), /sha256 mismatch/);
+    assert.strictEqual(installAsks.length, asked, 'se pidio instalar un APK alterado');
+    assert.ok(!fs.existsSync(file), 'el APK alterado sigue en disco');
+    assert.strictEqual(statuses.slice(n).pop().status, 'error');
+  });
+
+  await check('M17 404 = al dia (sin error); misma version = al dia; 500 = error', async () => {
+    feed.state.manifestStatus = 404;
+    let n = statuses.length;
+    const r = await apiU.updater.check();
+    assert.strictEqual(r.isUpdateAvailable, false);
+    assert.deepStrictEqual(since(n), ['checking', 'up-to-date']);
+    await assert.rejects(apiU.updater.download(), /No update to download/, 'tras un 404 aun se podia descargar lo de antes');
+    feed.state.manifestStatus = 200;
+    feed.state.manifest = { ...good, version: '1.11.0', versionCode: 1011000 };
+    n = statuses.length;
+    assert.strictEqual((await apiU.updater.check()).isUpdateAvailable, false);
+    assert.deepStrictEqual(since(n), ['checking', 'up-to-date']);
+    feed.state.manifestStatus = 500;
+    n = statuses.length;
+    await assert.rejects(apiU.updater.check(), /HTTP 500/);
+    assert.deepStrictEqual(since(n), ['checking', 'error']);
+    feed.state.manifestStatus = 200;
+    feed.state.manifest = '{roto';
+    await assert.rejects(apiU.updater.check(), /not valid JSON/);
+  });
+  await Uproc.stop();
+
+  await check('M18 tras actualizar (arranque con el versionCode nuevo) se borran los APK descargados', async () => {
+    fs.writeFileSync(path.join(updates, 'Termilab-1011001.apk'), apk);
+    fs.writeFileSync(path.join(updates, 'Termilab-1011005.apk.part'), 'x');
+    fs.writeFileSync(path.join(updates, 'Termilab-1011009.apk'), apk);   // newer than what now runs: kept
+    feed.state.manifestStatus = 404;
+    const V = spawnU('movil-U2', 1011001, 60000);
+    const apiV = shimMod.createElectronAPI(V.transport, {});
+    await apiV.updater.getVersion();
+    assert.deepStrictEqual(fs.readdirSync(updates).sort(), ['Termilab-1011009.apk']);
+    await V.stop();
+  });
+  await feed.close();
 }
 
 main().catch(err => {
