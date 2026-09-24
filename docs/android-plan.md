@@ -237,3 +237,79 @@ Trampas encontradas:
 Pendiente: completar el login real en un teléfono; si el usuario vuelve de la Custom Tab
 sin terminar, el sondeo (y la notificación "signing in") dura hasta 10 min — hace falta un
 "cancelar" visible (fase 4); el copy "Unlock this computer" dice *computer* en Android.
+
+## Estado fase 4
+
+Hecho en `feat/android` (2026-09-24). `git diff main -- electron/` sigue vacío y el escritorio
+no cambia: las 7 capturas de escritorio (Hosts oscuro/claro, menú contextual, editor, Settings,
+Snippets, terminal) salen **idénticas byte a byte** antes y después (Chrome headless sobre
+`dist/`, `cmp`).
+
+- **Navegación:** en Android `App` monta otro layout: sin Titlebar/TabBar/Sidebar; barra inferior
+  (`src/components/Mobile/MobileNav.jsx`) Hosts · Snippets · Sessions (badge con el nº de
+  sesiones) · More (Keychain, Known Hosts, Logs, Settings). `activeSection` gana `sessions` y
+  `more`; atrás: página de More → More → Hosts; sesión → Hosts. Pantalla Sessions: fila por
+  pestaña con icono de OS, estado (Connecting/Connected/Disconnected/Failed), toque = abrir,
+  X o deslizar a la izquierda = cerrar (con confirm si está viva). Dentro de una sesión, cabecera
+  propia (`Terminal/mobile/SessionHeader.jsx`): atrás → Hosts, título + user@host, menú
+  (broadcast on/off, restablecer tamaño de letra, cerrar sesión → vuelve a Sessions).
+- **Hosts:** una columna (dos desde 600dp), buscador arriba, grupos como sección de lista, FAB
+  "+" que respeta el grupo abierto, "New group" en la fila de acciones, lápiz siempre visible,
+  pulsación larga → action sheet (Connect, Edit, Duplicate, Delete con confirm). Aviso de
+  duplicados intacto.
+- **Hojas a pantalla completa** con barra atrás/título/acción (`Mobile/MobileScreen.jsx`):
+  editor de host (Save arriba, sin pie), Settings (Save arriba), known host; Logs pasa a filas
+  en rejilla (fecha | host | guardado, y cuenta · dispositivo debajo). Márgenes seguros con
+  `var(--safe-area-inset-*, env(safe-area-inset-*))`: en el emulador (WebView < 140) Capacitor
+  rellena la ventana y las variables valen 0; en ≥ 140 pasa los insets.
+- **Barras del sistema:** iconos claros/oscuros según el tema (`SystemBars.setStyle`) y el fondo
+  de la ventana = `--bg-primary` (`TermilabNative.setWindowBackground`), reaplicados en cada
+  resize (rotación y cambio de tamaño de pantalla los resetean).
+- **Terminal:** fila de teclas extra desplazable (Esc, Tab, Ctrl, Alt, ←↑↓→, |, ~, /, -, Home,
+  End, PgUp, PgDn, Pegar) que no quita el foco al textarea. Ctrl/Alt pegajosos (toque = la
+  siguiente tecla, doble toque = bloqueado). Las teclas entran por `term.input()` → el mismo
+  `onData` que teclear (broadcast incluido); flechas/Home/End en SS3 con
+  `applicationCursorKeysMode`. Pellizco = tamaño de letra (8–28, `localStorage`, compartido por
+  las terminales abiertas; cambiar el tamaño en Settings lo anula). Pulsación larga = seleccionar
+  palabra y arrastrar; barra Copy/Cancel. Portapapeles por `navigator.clipboard` y, si el WebView
+  lo niega (lo niega al leer), `TermilabNative.readClipboard/writeClipboard`. Alto de la app =
+  `visualViewport` (`--app-height`) → ResizeObserver → fit → `ssh:resize`; al encoger, scroll al
+  final. La barra de estado y el "Log" de sesión del escritorio no se muestran en Android.
+- **Copy "computer" → "device"** en Android (`MACHINE*` de `src/platform.js`) en PassphraseCard,
+  SyncPanel, PairingClaim, PairingApprovals, SyncDevices, DuplicateReview, el bloqueo de fusión de
+  HostList y Logs.
+- **Cancelar el login:** en Android "Stop waiting" es **Cancel** y llama a `sync:logout`, que ya
+  pone `_loginAborted`: el sondeo para en ≤ 2 s, el login rechaza, `signingIn` pasa a false, el
+  foreground service y su notificación se van y la Custom Tab se cierra. Sin tocar `electron/`.
+- **Verificación:** `npm run build`, `node scripts/check-main.js` y
+  `npx -y -p node@18 node scripts/check-mobile.js` en verde (14; nuevos M12 = cancelar login a
+  medias con `pollPending` en el servidor falso, M13 = secuencias y modificadores de `keys.js`).
+  Emulador contra un OpenSSH de verdad sin root (`127.0.0.1:2222`, clave pública; el emulador lo
+  ve en `10.0.2.2`): `vi` (i, Esc, ↑, ←, `:wq` → el archivo quedó `aQbc/xyz`, cursor donde
+  tocaba), `top` + Ctrl pegajoso + c → sale; Ctrl+U borra la línea; historial con ↑; Ctrl bloqueado
+  + l → limpia y sigue bloqueado; pegar (`echo pasted-ok` ejecutado); pulsación larga →
+  `getSelection() = "select-me"` → Copy → portapapeles del sistema; pellizco 14 → 22 → 14 px y
+  `stty size` = 23 48 con teclado; landscape 101×14 (sin teclado). A 360dp (720x1600 @320) ninguna
+  pantalla desborda (`scrollWidth = 360` en las 8). Login a medias: notificación "signing in"
+  presente, Cancel → sin notificación, sin `SessionService`, último sondeo 2 s antes del toque.
+  Capturas en el scratchpad de la sesión, `android-p4/`.
+
+Trampas encontradas:
+1. **Una expresión JSX al principio de línea se come el espacio.** Cambiar "two\n computers" por
+   "two\n {MACHINES}" da "twocomputers": JSX descarta el blanco con salto de línea entre texto y
+   `{}`. Va `{' '}{MACHINES}`.
+2. **La pulsación larga del WebView desenfoca el textarea de xterm**: el teclado se cierra, las
+   filas cambian y xterm borra la selección. `user-select: none` + `-webkit-touch-callout: none`
+   en `.terminal-wrapper` lo evita a medias: la selección sobrevive, el teclado sigue cerrándose.
+3. `navigator.clipboard.readText()` da `NotAllowedError` en el WebView aunque venga de un toque
+   (no hay aviso de permisos): hace falta el nativo. Android 13+ enseña su propia burbuja al copiar.
+4. **Rotar o `wm size` resetea el fondo de la decor view y el estilo de las barras** a los del tema
+   (blanco): hay que volver a ponerlos tras cada resize.
+5. Con el teclado en landscape quedan ~120 px: la cabecera de sesión se esconde por debajo de
+   300 px de alto y el subtítulo por debajo de 480.
+6. `adb shell input keyevent` va al elemento enfocado: tras abrir una sesión desde Sessions la
+   terminal no tiene foco (hay que tocarla) y un Enter no llega.
+
+Pendiente: probar teclado, pellizco y selección con los dedos en un teléfono (en el emulador
+el pellizco se probó con `Input.dispatchTouchEvent` por CDP); la pulsación larga cierra el
+teclado; el "Log" de sesión (descarga de un Blob) no está en Android.

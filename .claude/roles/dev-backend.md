@@ -422,3 +422,14 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   `am start -n com.rhinlab.termilab/.MainActivity --es TERMILAB_SYNC_URL http://127.0.0.1:P`
   (solo builds depurables; Node arranca una vez por proceso, así que `am force-stop` antes).
   El 8787 del host ya estaba ocupado.
+
+## Android fase 4 (2026-09-24)
+
+- **El "Cancel" del login en Android es `sync:logout`**: `logout()` pone `_loginAborted` y el
+  bucle de `/auth/poll` lo mira antes y después de cada espera, así que para en ≤ 2 s y el login
+  rechaza con "Inicio de sesion cancelado"; el envoltorio de `sync:login` en `mobile/node/main.js`
+  baja `signingIn` en su `finally`. Si alguien quita ese flag de `logout()` (o hace que logout no
+  toque el login en curso), el Cancel deja el servicio en primer plano 10 min. Lo vigila M12.
+- `scripts/lib/fake-sync-server.js` tiene `hooks.pollPending` (202 para siempre) para eso.
+- Nuevos métodos del plugin nativo (Java): `readClipboard`, `writeClipboard`,
+  `setWindowBackground`. Son de la página, no de Node.
