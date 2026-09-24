@@ -158,15 +158,14 @@ patch must stay ≤ 999. The script fails on an unsigned or debug-signed APK and
 
 Signing: `mobile/android/app/build.gradle` reads env `TERMILAB_KEYSTORE_FILE` +
 `TERMILAB_KEYSTORE_PASSWORD` (+ `TERMILAB_KEY_ALIAS`, `TERMILAB_KEY_PASSWORD`), else a
-`keystore.properties` from `TERMILAB_KEYSTORE_PROPERTIES`, `~/.config/termilab/`, or
-`mobile/android/` (gitignored). The keystore is `~/.config/termilab/termilab-release.jks`.
+`keystore.properties` from `TERMILAB_KEYSTORE_PROPERTIES`, `~/.termilab-signing/`, or
+`mobile/android/` (gitignored). The keystore is `~/.termilab-signing/termilab-release.jks` (kept out of `~/.config/termilab/`, which is the desktop app's `userData`).
 
 > **Lose the keystore (or its password) and no installed Termilab can ever update again**:
 > Android refuses an update signed with another key, so every user would have to uninstall
 > (losing local data) and reinstall. Back up `termilab-release.jks` **and**
 > `keystore.properties` to the owner's password manager and to an offline copy. Never commit
-> them, never print the password. Note `~/.config/termilab/` is also the desktop app's
-> `userData`: wiping the desktop app's data there wipes the keystore too.
+> them, never print the password.
 
 The `updateTest` build type (release + debuggable, `TERMILAB_BUILD_TYPE=updateTest`) exists
 only to test the updater end to end with `am start ... --es TERMILAB_UPDATE_URL <feed>`;

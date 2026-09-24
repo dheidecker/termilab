@@ -21,7 +21,7 @@ def termilabVersionCode = vMajor * 1000000 + vMinor * 1000 + vPatch
 //   1. env TERMILAB_KEYSTORE_FILE + TERMILAB_KEYSTORE_PASSWORD
 //      (+ TERMILAB_KEY_ALIAS, default "termilab"; TERMILAB_KEY_PASSWORD, default = store password)
 //   2. env TERMILAB_KEYSTORE_PROPERTIES = path to a properties file
-//   3. ~/.config/termilab/keystore.properties
+//   3. ~/.termilab-signing/keystore.properties
 //   4. mobile/android/keystore.properties (gitignored)
 // Properties: storeFile, storePassword, keyAlias, keyPassword.
 def releaseSigning = null
@@ -34,7 +34,7 @@ if (System.getenv('TERMILAB_KEYSTORE_FILE')) {
     ]
 } else {
     def candidates = [System.getenv('TERMILAB_KEYSTORE_PROPERTIES'),
-                      "${System.getProperty('user.home')}/.config/termilab/keystore.properties",
+                      "${System.getProperty('user.home')}/.termilab-signing/keystore.properties",
                       rootProject.file('keystore.properties').path].findAll { it }
     def propsFile = candidates.collect { new File(it) }.find { it.isFile() }
     if (propsFile) {
