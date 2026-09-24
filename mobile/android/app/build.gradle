@@ -16,10 +16,10 @@ android {
             universalApk false
         }
     }
-    namespace = "com.termilab.app"
+    namespace = "com.rhinlab.termilab"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.termilab.app"
+        applicationId "com.rhinlab.termilab"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

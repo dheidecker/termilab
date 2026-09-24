@@ -22,3 +22,4 @@ mobile/vendor/.cache/
 # ...but the vendored plugin's prebuilt JS is source here (root `dist/` above would hide it)
 !mobile/vendor/capacitor-nodejs/dist/
 !mobile/vendor/capacitor-nodejs/android/src/main/assets/builtin_modules/bridge/dist/
+mobile/plugins/termilab-native/android/build/

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Arnes del lado Android (fases 1-2). Correrlo con el Node de nodejs-mobile:
+ * Arnes del lado Android (fases 1-3). Correrlo con el Node de nodejs-mobile:
  *
  *   npx -y -p node@18 node scripts/check-mobile.js
  *
@@ -20,9 +20,17 @@
  *      - INTEROP: boveda + host con contrasena + clave SSH creados por un
  *        equipo de escritorio (scripts/lib/desktop-device.js, otro proceso) se
  *        abren en el movil, y al reves; contra el servidor de sync falso;
- *      - la DSK: secretos en reposo en AES-256-GCM, archivo de respaldo, y un
- *        segundo arranque que sigue desbloqueado;
+ *      - la DSK (fase 3: solo por env TERMILAB_DSK, que Java saca del Keystore):
+ *        secretos en reposo en AES-256-GCM, nunca un device-key.json, un
+ *        segundo arranque que sigue desbloqueado, un device-key.json viejo que
+ *        Node ignora, una DSK nueva (el unwrap fallo) que obliga a entrar y
+ *        desbloquear con el passphrase otra vez, y sin DSK: sin secretos;
+ *      - native:sessions: el recuento de sesiones SSH que enciende el
+ *        foreground service;
  *      - la cola: lo que Node emite antes del hello llega igual.
+ *
+ *  La migracion y el borrado de device-key.json son de Java (DeviceKeyResolver):
+ *  cd mobile/android && ./gradlew :termilab-native:testDebugUnitTest
  */
 const assert = require('assert');
 const crypto = require('crypto');
@@ -302,8 +310,12 @@ async function main() {
       assert.ok((out.match(/\.{400}/) || []).length === 1, 'los 400 bytes del burst no llegaron enteros y en orden');
       assert.ok(msgs <= 40, `400 paquetes llegaron en ${msgs} mensajes del puente: no hay lotes`);
 
+      const counts = () => A.stats.received.filter(([e]) => e === 'native:sessions').map(([, p]) => p.count);
+      assert.deepStrictEqual(counts(), [1], `native:sessions tras conectar: ${JSON.stringify(counts())}`);
+
       api.ssh.sendData(sessionId, 'exit\r');
       await waitFor('ssh:close', () => order.includes('close'));
+      await waitFor('native:sessions 0 tras el exit remoto', () => counts().join() === '1,0');
       assert.strictEqual(order.lastIndexOf('data') < order.indexOf('close'), true, 'un ssh:data llego despues de ssh:close');
       const kh = await api.knownHosts.list();
       assert.deepStrictEqual(kh.map(e => [e.host, e.port]), [['127.0.0.1', sshd.port]], 'la clave aceptada no se guardo');
@@ -331,6 +343,15 @@ async function main() {
     srvA.hooks.authorizeUrl = 'https://termilab.example/authorize?code=codigo-arnes';
     await api.sync.login();
     assert.deepStrictEqual(openedUrls, [srvA.hooks.authorizeUrl], 'shell.openExternal no llego a la pagina como native:open-url');
+    // El login en curso mantiene el foreground service: con la Custom Tab delante,
+    // Android 15+ corta la red de un proceso en cache y /auth/poll muere.
+    const ev = A.stats.received.filter(([e]) => e === 'native:sessions').map(([, p]) => p);
+    const iLogin = ev.findIndex(p => p.signingIn === true);
+    const iUrl = A.stats.received.findIndex(([e]) => e === 'native:open-url');
+    const iOn = A.stats.received.findIndex(([e, p]) => e === 'native:sessions' && p.signingIn === true);
+    assert.ok(iLogin >= 0, `ningun native:sessions con signingIn durante el login: ${JSON.stringify(ev)}`);
+    assert.ok(iOn < iUrl, 'signingIn llego despues de abrir la URL: el servicio arrancaria ya en segundo plano');
+    assert.strictEqual(ev[ev.length - 1].signingIn, false, 'signingIn no volvio a false al terminar el login');
     await api.sync.syncNow();
     let st = await api.sync.status();
     assert.strictEqual(st.signedIn, true);
@@ -362,9 +383,10 @@ async function main() {
   });
   await A.stop();
 
-  // ─── Movil B (sin DSK: archivo de respaldo) -> escritorio ─
+  // ─── Movil B -> escritorio ────────────────────────────────
   const dirB = path.join(tmp, 'movil-B');
-  const B = spawnMobile(bundle, { name: 'movil-B', dataDir: dirB, syncUrl: srvB.url(), dsk: null });
+  const dskB = crypto.randomBytes(32).toString('base64');
+  const B = spawnMobile(bundle, { name: 'movil-B', dataDir: dirB, syncUrl: srvB.url(), dsk: dskB });
   const apiB = shimMod.createElectronAPI(B.transport, {});
   let privB = null;
   await check('M7 INTEROP movil->escritorio: boveda, host y clave generada en el movil se abren en escritorio', async () => {
@@ -383,13 +405,13 @@ async function main() {
     assert.strictEqual(d.status.unlocked, true, 'el passphrase del movil no desbloqueo escritorio');
     assert.strictEqual((d.hosts.find(h => h.id === 'host-M') || {}).password, SECRET_M, 'escritorio no descifro la contrasena del host');
     assert.strictEqual((d.keys.find(k => k.id === key.id) || {}).privateKey, privB, 'escritorio no descifro la clave generada en el movil');
-    assert.ok(fs.existsSync(path.join(dirB, 'device-key.json')), 'sin TERMILAB_DSK no se creo device-key.json');
+    assert.ok(!fs.existsSync(path.join(dirB, 'device-key.json')), 'se creo device-key.json: la DSK ya no vive en un archivo');
   });
   await B.stop();
 
-  // ─── Segundo arranque de B: DSK de archivo + cola ─────────
-  const B2 = spawnMobile(bundle, { name: 'movil-B2', dataDir: dirB, syncUrl: srvB.url(), dsk: null });
-  await check('M8 segundo arranque: la DSK de archivo se reutiliza (sigue con sesion y desbloqueado)', async () => {
+  // ─── Segundo arranque de B: la misma DSK por env + cola ───
+  const B2 = spawnMobile(bundle, { name: 'movil-B2', dataDir: dirB, syncUrl: srvB.url(), dsk: dskB });
+  await check('M8 segundo arranque con la misma DSK: sigue con sesion y desbloqueado', async () => {
     await B2.ready;
     // La app vuelve a primer plano ANTES de que la pagina salude: el sync que
     // dispara emite sync:status, y eso tiene que esperar en la cola de Node.
@@ -408,6 +430,58 @@ async function main() {
     assert.strictEqual(host && host.password, SECRET_M);
   });
   await B2.stop();
+
+  // ─── Un device-key.json de fase 1 no manda ────────────────
+  // Java lo migra y lo borra antes de arrancar Node; si alguno sobrevive,
+  // Node no lo lee ni lo reescribe: la DSK es la del env.
+  const legacyFile = path.join(dirB, 'device-key.json');
+  const legacyBody = JSON.stringify({ key: crypto.randomBytes(32).toString('base64'), note: 'fase 1' });
+  fs.writeFileSync(legacyFile, legacyBody);
+  const B3 = spawnMobile(bundle, { name: 'movil-B3', dataDir: dirB, syncUrl: srvB.url(), dsk: dskB });
+  await check('M9 con un device-key.json viejo en DATADIR, Node usa la DSK del env y no toca el archivo', async () => {
+    const apiB3 = shimMod.createElectronAPI(B3.transport, {});
+    const st = await apiB3.sync.status();
+    assert.ok(st.signedIn && st.unlocked, `con la DSK del env deberia seguir desbloqueado: ${JSON.stringify(st)}`);
+    assert.strictEqual(fs.readFileSync(legacyFile, 'utf-8'), legacyBody, 'Node reescribio device-key.json');
+    const src = fs.readFileSync(bundle, 'utf-8');
+    assert.ok(!src.includes('device-key.json'), 'el bundle de Node todavia menciona device-key.json');
+  });
+  await B3.stop();
+  fs.unlinkSync(legacyFile);
+
+  // ─── DSK nueva: el unwrap fallo (backup restaurado, clave invalidada) ─
+  const B4 = spawnMobile(bundle, { name: 'movil-B4', dataDir: dirB, syncUrl: srvB.url(), dsk: crypto.randomBytes(32).toString('base64') });
+  await check('M10 DSK nueva: lo sellado no se abre (_unwrap -> null), se vuelve a entrar y la UI pide el passphrase; con el passphrase, todo vuelve', async () => {
+    const apiB4 = shimMod.createElectronAPI(B4.transport, {});
+    let st = await apiB4.sync.status();
+    assert.strictEqual(st.signedIn, false, `el token sellado con la DSK vieja no deberia abrirse: ${JSON.stringify(st)}`);
+    assert.strictEqual(B4.child.exitCode, null, 'Node murio con secretos ilegibles');
+    await apiB4.sync.login();
+    await apiB4.sync.syncNow();
+    st = await apiB4.sync.status();
+    // PassphraseCard (modo desbloquear) sale con signedIn && vaultExists && !unlocked
+    assert.ok(st.signedIn && st.vaultExists && !st.unlocked, `esperaba "hay boveda, bloqueado" (tarjeta de desbloqueo): ${JSON.stringify(st)}`);
+    await apiB4.sync.unlock(PASS_B);
+    await apiB4.sync.syncNow();
+    st = await apiB4.sync.status();
+    assert.strictEqual(st.unlocked, true, 'el passphrase no desbloqueo con la DSK nueva');
+    const host = (await apiB4.store.getHosts()).find(h => h.id === 'host-M');
+    assert.strictEqual(host && host.password, SECRET_M, 'la contrasena del host no volvio tras desbloquear');
+  });
+  await B4.stop();
+
+  // ─── Sin DSK: sin secretos, y ningun archivo ─────────────
+  const dirC = path.join(tmp, 'movil-C');
+  const C = spawnMobile(bundle, { name: 'movil-C', dataDir: dirC, syncUrl: srvB.url(), dsk: null });
+  await check('M11 sin TERMILAB_DSK: login rechazado limpio, Node vivo, sin device-key.json ni sync-secrets.json', async () => {
+    const apiC = shimMod.createElectronAPI(C.transport, {});
+    await assert.rejects(apiC.sync.login(), /almacen de claves/);
+    assert.deepStrictEqual(await apiC.store.getHosts(), []);
+    assert.strictEqual(C.child.exitCode, null);
+    assert.ok(!fs.existsSync(path.join(dirC, 'device-key.json')), 'sin DSK se creo device-key.json');
+    assert.ok(!fs.existsSync(path.join(dirC, 'data', 'sync-secrets.json')), 'sin DSK se guardaron secretos');
+  });
+  await C.stop();
 
   await sshd.close();
   await srvA.close();

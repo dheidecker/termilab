@@ -13,6 +13,10 @@
  *   web -> node  'ipc:send'      {channel, args}        ipcRenderer.send
  *   node -> web  'ipc:event'     {channel, args}        webContents.send
  *   node -> web  'native:open-url' {url}                shell.openExternal
+ *   node -> web  'native:sessions' {count, signingIn}   open SSH sessions / sync
+ *                                                       login in flight changed
+ *                                                       (the page drives the
+ *                                                       foreground service)
  *
  * Why the handshake: the plugin drops a message whose listener is not
  * registered yet, in both directions (spike finding #2). Node queues what it
@@ -74,6 +78,30 @@ function postEvent(eventChannel, ...args) {
   }
   if (pendingData.size) flushData();
   post('ipc:event', { channel: eventChannel, args });
+  // ssh-service sends ssh:close/ssh:error and only then drops the session.
+  if (eventChannel === 'ssh:close' || eventChannel === 'ssh:error') setImmediate(reportSessions);
+}
+
+// ─── Open sessions -> foreground service ───────────────────
+// Counted from ssh-service's own map, the only place that knows when a session
+// really ends (remote exit, network drop, disconnect). The page turns the count
+// into TermilabNative.setSessionCount; Node cannot reach Java directly.
+//
+// A sync login in flight needs it too: the Custom Tab puts Termilab in the
+// background, Android 15+ cuts the network of a cached process ("network
+// access blocked" in resolv), and the /auth/poll loop dies with "fetch failed".
+
+let sshService = null;
+let loginsInFlight = 0;
+let lastSessions = null;
+
+function reportSessions(force = false) {
+  const count = sshService ? sshService.sessions.size : 0;
+  const signingIn = loginsInFlight > 0;
+  const key = `${count}/${signingIn}`;
+  if (!force && key === lastSessions) return;
+  lastSessions = key;
+  post('native:sessions', { count, signingIn });
 }
 
 // ─── Inbound ───────────────────────────────────────────────
@@ -93,6 +121,8 @@ channel.addListener('bridge:hello', (msg) => {
     const queued = outbox.splice(0);
     for (const [eventName, payload] of queued) post(eventName, payload);
   }
+  // A recreated page starts at zero: tell it what is still open.
+  if (shim && !first) reportSessions(true);
 });
 
 channel.addListener('ipc:invoke', async (msg) => {
@@ -132,6 +162,20 @@ function start() {
   // After configure(): store-service resolves its data dir when it is loaded.
   const { registerIpcHandlers } = require('../../electron/ipc-handlers');
   registerIpcHandlers(shim.mainWindow);
+
+  sshService = require('../../electron/services/ssh-service');
+  for (const ch of ['ssh:connect', 'ssh:disconnect']) {
+    const original = shim.handlers.get(ch);
+    shim.handlers.set(ch, async (...a) => {
+      try { return await original(...a); } finally { reportSessions(); }
+    });
+  }
+  const login = shim.handlers.get('sync:login');
+  shim.handlers.set('sync:login', async (...a) => {
+    loginsInFlight++;
+    reportSessions();   // before openExternal: the service starts while we are still in front
+    try { return await login(...a); } finally { loginsInFlight--; reportSessions(); }
+  });
 
   // What electron/main.js registers itself. The Android updater is phase 5;
   // until then these answer like desktop's dev-mode stubs.

@@ -27,7 +27,7 @@ const HELLO_EVERY_MS = 250;
  *   transport.send(eventName, payload)   one JSON payload per message
  *   transport.addListener(eventName, cb) cb(payload)
  */
-function createIpc(transport, { onOpenUrl, onFatal } = {}) {
+function createIpc(transport, { onOpenUrl, onSessions, onFatal } = {}) {
   const session = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const pending = new Map();   // id -> {resolve, reject}
   const queue = [];            // [eventName, payload] waiting for 'bridge:ready'
@@ -85,6 +85,10 @@ function createIpc(transport, { onOpenUrl, onFatal } = {}) {
 
   listen('native:open-url', (msg) => {
     if (msg && typeof msg.url === 'string' && onOpenUrl) onOpenUrl(msg.url);
+  });
+
+  listen('native:sessions', (msg) => {
+    if (msg && Number.isInteger(msg.count) && onSessions) onSessions(msg.count, msg.signingIn === true);
   });
 
   // Say hello until Node answers: a hello sent before its listener exists is lost.

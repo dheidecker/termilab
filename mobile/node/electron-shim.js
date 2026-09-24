@@ -10,9 +10,7 @@
  * created the moment the module is loaded.
  */
 const crypto = require('crypto');
-const fs = require('fs');
 const os = require('os');
-const path = require('path');
 
 let dataPath = null;
 let postEvent = () => {};   // (channel, ...args) -> bridge 'ipc:event'
@@ -125,33 +123,22 @@ const safeStorage = {
 };
 
 /**
- * The DSK for this phase. Phase 3 moves it to the Android Keystore: Kotlin keeps
- * it wrapped by a Keystore key and hands it over in env TERMILAB_DSK.
+ * The DSK comes only from env TERMILAB_DSK: the app unwraps it with its Android
+ * Keystore key (mobile/plugins/termilab-native, DeviceKey.java) and hands it to
+ * the Node thread at start. There is no file fallback any more: phase 1's
+ * `<DATADIR>/device-key.json` is migrated into the Keystore wrap and deleted by
+ * the Java side before Node starts, and nothing here may recreate it.
  *
- * TODO(fase 3): drop the file fallback. A key sitting next to the data it
- * protects only keeps the token/master key out of casual copies (backups, a
- * `run-as` dump of one file); it is NOT hardware-backed.
+ * Without a DSK safeStorage reports "not available": crypto-service then keeps
+ * no secrets (login refuses to proceed) instead of storing them unprotected.
  */
-function loadDeviceKey(fromEnv, dir) {
-  if (fromEnv) {
-    const key = Buffer.from(fromEnv, 'base64');
-    if (key.length !== 32) throw new Error('TERMILAB_DSK must be 32 bytes, base64');
-    return key;
+function loadDeviceKey(fromEnv) {
+  if (!fromEnv) {
+    console.error('[electron-shim] no TERMILAB_DSK: secure storage unavailable (sync login is disabled)');
+    return null;
   }
-  const file = path.join(dir, 'device-key.json');
-  try {
-    const saved = JSON.parse(fs.readFileSync(file, 'utf-8'));
-    const key = Buffer.from(saved.key, 'base64');
-    if (key.length === 32) return key;
-  } catch (err) {
-    if (err.code !== 'ENOENT') console.error('[electron-shim] device key unreadable, generating a new one:', err.message);
-  }
-  const key = crypto.randomBytes(32);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({
-    key: key.toString('base64'),
-    note: 'TODO(fase 3): temporary. This key moves to the Android Keystore.',
-  }), { mode: 0o600 });
+  const key = Buffer.from(fromEnv, 'base64');
+  if (key.length !== 32) throw new Error('TERMILAB_DSK must be 32 bytes, base64');
   return key;
 }
 
@@ -180,7 +167,7 @@ function patchOs(deviceName) {
  * @param {string} opts.dataPath   bridge.getDataPath(): app-private, survives updates
  * @param {(channel: string, ...args: any[]) => void} opts.postEvent
  * @param {(url: string) => void} opts.openUrl
- * @param {string} [opts.dsk]      base64 device key; see loadDeviceKey
+ * @param {string} [opts.dsk]      base64 device key (env TERMILAB_DSK); see loadDeviceKey
  * @param {string} opts.deviceName
  * @param {string} [opts.version]
  */
@@ -189,7 +176,7 @@ function configure(opts) {
   postEvent = opts.postEvent;
   openUrl = opts.openUrl;
   appVersion = opts.version || appVersion;
-  deviceKey = loadDeviceKey(opts.dsk, dataPath);
+  deviceKey = loadDeviceKey(opts.dsk);
   patchOs(opts.deviceName);
 }
 

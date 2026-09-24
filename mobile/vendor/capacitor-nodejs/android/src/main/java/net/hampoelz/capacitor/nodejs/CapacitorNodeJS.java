@@ -35,6 +35,22 @@ public class CapacitorNodeJS {
     private static NodeProcess nodeProcess;
     private static volatile CapacitorNodeJS current;
 
+    /**
+     * Termilab fork: extra environment for the Node process, computed on the
+     * engine thread right before node::Start (off the UI thread: the app's
+     * provider unwraps the device key with the Android Keystore). Set it before
+     * the activity's super.onCreate(), which is when this plugin loads.
+     */
+    public interface EnvProvider {
+        Map<String, String> env(Context context);
+    }
+
+    private static volatile EnvProvider envProvider;
+
+    public static void setEnvProvider(EnvProvider provider) {
+        envProvider = provider;
+    }
+
     protected CapacitorNodeJS(Context context, CapacitorNodeJSPlugin.PluginEventNotifier eventNotifier) {
         this.context = context;
         this.preferences = context.getSharedPreferences(CapacitorNodeJSPlugin.PREFS_TAG, Context.MODE_PRIVATE);
@@ -195,6 +211,16 @@ public class CapacitorNodeJS {
                 // Not every ROM exposes it; the model is the fallback.
             }
             nodeEnv.putAll(env);
+            // Termilab fork: the app's env (TERMILAB_DSK) last, so nothing overrides it.
+            final EnvProvider provider = envProvider;
+            if (provider != null) {
+                try {
+                    final Map<String, String> extra = provider.env(context.getApplicationContext());
+                    if (extra != null) nodeEnv.putAll(extra);
+                } catch (Exception e) {
+                    Logger.error(CapacitorNodeJSPlugin.LOGGER_TAG, "The app's Node.js environment provider failed.", e);
+                }
+            }
 
             nodeProcess.start(projectMainPath, args, nodeEnv, cachePath);
             callWrapper.resolve();

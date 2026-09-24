@@ -2,5 +2,11 @@
 include ':capacitor-android'
 project(':capacitor-android').projectDir = new File('../../node_modules/@capacitor/android/capacitor')
 
+include ':capacitor-browser'
+project(':capacitor-browser').projectDir = new File('../../node_modules/@capacitor/browser/android')
+
 include ':capacitor-nodejs'
 project(':capacitor-nodejs').projectDir = new File('../vendor/capacitor-nodejs/android')
+
+include ':termilab-native'
+project(':termilab-native').projectDir = new File('../plugins/termilab-native/android')

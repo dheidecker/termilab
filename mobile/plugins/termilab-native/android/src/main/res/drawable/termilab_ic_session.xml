@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status bar icon for the sessions notification: a terminal prompt ">_". -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M4.7,6.3L3.3,7.7 7.6,12 3.3,16.3 4.7,17.7 10.4,12zM11,16h9v2h-9z" />
+</vector>
