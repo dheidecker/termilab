@@ -17,7 +17,7 @@
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "vite build && electron-builder",
     "pack": "vite build && electron-builder --dir",
-    "dist": "vite build && electron-builder --linux deb AppImage",
+    "dist": "vite build && electron-builder --linux deb AppImage pacman",
     "dist:mac": "vite build && electron-builder --mac dmg",
     "dist:mac:universal": "vite build && electron-builder --mac dmg --universal",
     "dist:all": "vite build && electron-builder --linux --win --mac",
@@ -28,7 +28,7 @@
     "@xterm/addon-search": "^0.15.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
-    "electron-updater": "^6.3.9",
+    "electron-updater": "^6.8.9",
     "node-pty": "^1.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -38,7 +38,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.0",
     "electron": "^33.2.0",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "^26.16.1",
     "vite": "^6.0.0",
     "vite-plugin-electron": "^0.28.8",
     "vite-plugin-electron-renderer": "^0.14.6",
@@ -67,16 +67,38 @@
     "linux": {
       "target": [
         "AppImage",
-        "deb"
+        "deb",
+        "pacman"
       ],
       "category": "Development",
       "icon": "assets/icon.png",
       "desktop": {
-        "Name": "Termilab",
-        "Comment": "A modern SSH client",
-        "Terminal": "false",
-        "Type": "Application"
+        "entry": {
+          "Name": "Termilab",
+          "Comment": "A modern SSH client",
+          "Terminal": "false",
+          "Type": "Application"
+        }
       }
+    },
+    "pacman": {
+      "depends": [
+        "gtk3",
+        "nss",
+        "libnotify",
+        "libxss",
+        "libxtst",
+        "xdg-utils",
+        "at-spi2-core",
+        "util-linux-libs",
+        "libsecret",
+        "alsa-lib",
+        "mesa"
+      ],
+      "fpm": [
+        "--description",
+        "Termilab — A modern SSH client for managing your servers"
+      ]
     },
     "mac": {
       "target": [
@@ -90,7 +112,9 @@
         "nsis"
       ],
       "icon": "assets/icon.png",
-      "publisherName": "Termilab"
+      "signtoolOptions": {
+        "publisherName": "Termilab"
+      }
     },
     "nsis": {
       "oneClick": false,

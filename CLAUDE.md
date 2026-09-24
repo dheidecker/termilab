@@ -9,7 +9,7 @@ npm install            # also runs electron-builder install-app-deps (rebuilds n
 npm run dev            # THE dev command — Vite serves the renderer AND launches Electron
 npm run build          # frontend + electron bundles only, no packaging
 npm run pack           # unpacked app in release/, for testing packaging
-npm run dist           # Linux .deb + .AppImage
+npm run dist           # Linux .deb + .AppImage + .pacman (Arch/CachyOS)
 npm run dist:mac       # macOS .dmg
 npm run dist:all       # Linux + Windows + macOS
 ```
@@ -144,4 +144,13 @@ halves drift silently and nothing in the build catches it.
 `electron-updater` checks GitHub Releases on startup (5s delay) and surfaces the result in
 Settings → About. In dev the updater IPC handlers are registered as stubs so that panel doesn't
 crash. Publishing: bump `version` in `package.json`, build, then `gh release create` with the
-artifacts from `release/`.
+artifacts from `release/`. For Linux that is **four files**: `Termilab-<v>.AppImage`,
+`termilab_<v>_amd64.deb`, `termilab-<v>.pacman` and `latest-linux.yml` (one yml lists all three
+packages; each install picks its own by extension). Leave one out and that format silently stops
+updating.
+
+Each Linux package carries `resources/package-type` (`deb` / `pacman`; the AppImage has none), and
+that file alone decides which updater class runs: `DebUpdater` → `dpkg -i`, `PacmanUpdater` →
+`pacman -U`, both through a pkexec password prompt, then relaunch. **Keep the `.pacman` extension**:
+`PacmanUpdater` finds its asset in the yml by that suffix, so renaming it to `.pkg.tar.zst` breaks
+the match. Building the pacman target needs `bsdtar` on `PATH` (Debian/Ubuntu: `libarchive-tools`).
