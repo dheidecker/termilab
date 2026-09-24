@@ -4,6 +4,47 @@ apply plugin: 'com.android.application'
 // build passes -PtermilabAbis=x86_64 (scripts/android-debug.js).
 def termilabAbis = (project.findProperty('termilabAbis') ?: 'arm64-v8a,x86_64').split(',').collect { it.trim() }
 
+// Version: the root package.json, the same number as desktop. versionCode =
+// major*1e6 + minor*1e3 + patch (the Node updater compares these). Tests can
+// build another version with -PtermilabVersion=1.11.0; never commit that.
+def termilabVersion = (project.findProperty('termilabVersion') ?:
+    new groovy.json.JsonSlurper().parse(rootProject.file('../../package.json')).version).toString()
+def versionMatch = (termilabVersion =~ /^(\d+)\.(\d+)\.(\d+)$/)
+if (!versionMatch.matches()) throw new GradleException("termilab: version '${termilabVersion}' is not major.minor.patch")
+def (vMajor, vMinor, vPatch) = [versionMatch.group(1), versionMatch.group(2), versionMatch.group(3)].collect { it as int }
+if (vMinor > 999 || vPatch > 999) throw new GradleException("termilab: minor/patch above 999 do not fit the versionCode")
+def termilabVersionCode = vMajor * 1000000 + vMinor * 1000 + vPatch
+
+// Release signing. The keystore lives OUTSIDE the repo; losing it means no
+// more updates for anyone who installed Termilab (Android refuses an update
+// signed with another key). Looked up in this order:
+//   1. env TERMILAB_KEYSTORE_FILE + TERMILAB_KEYSTORE_PASSWORD
+//      (+ TERMILAB_KEY_ALIAS, default "termilab"; TERMILAB_KEY_PASSWORD, default = store password)
+//   2. env TERMILAB_KEYSTORE_PROPERTIES = path to a properties file
+//   3. ~/.config/termilab/keystore.properties
+//   4. mobile/android/keystore.properties (gitignored)
+// Properties: storeFile, storePassword, keyAlias, keyPassword.
+def releaseSigning = null
+if (System.getenv('TERMILAB_KEYSTORE_FILE')) {
+    releaseSigning = [
+        storeFile: System.getenv('TERMILAB_KEYSTORE_FILE'),
+        storePassword: System.getenv('TERMILAB_KEYSTORE_PASSWORD'),
+        keyAlias: System.getenv('TERMILAB_KEY_ALIAS') ?: 'termilab',
+        keyPassword: System.getenv('TERMILAB_KEY_PASSWORD') ?: System.getenv('TERMILAB_KEYSTORE_PASSWORD'),
+    ]
+} else {
+    def candidates = [System.getenv('TERMILAB_KEYSTORE_PROPERTIES'),
+                      "${System.getProperty('user.home')}/.config/termilab/keystore.properties",
+                      rootProject.file('keystore.properties').path].findAll { it }
+    def propsFile = candidates.collect { new File(it) }.find { it.isFile() }
+    if (propsFile) {
+        def props = new Properties()
+        propsFile.withInputStream { props.load(it) }
+        releaseSigning = [storeFile: props.storeFile, storePassword: props.storePassword,
+                          keyAlias: props.keyAlias ?: 'termilab', keyPassword: props.keyPassword ?: props.storePassword]
+    }
+}
+
 android {
     // Same NDK as the capacitor-nodejs plugin. Without it here too, AGP cannot
     // strip the plugin's .so files ("Unable to strip") and ships them unstripped.
@@ -17,13 +58,24 @@ android {
         }
     }
     namespace = "com.rhinlab.termilab"
+    // Native libs compressed in the APK and extracted at install. Measured on
+    // the arm64 release (2026-09-24): 55.1 MB stored vs 19.7 MB compressed
+    // (libnode.so is 50 MB). 16 KB pages still hold: zipalign -c -P 16 passes
+    // and every LOAD segment stays 0x4000 (scripts/android-apk.js checks both).
+    // The price is ~51 MB extracted on the device; the download (the updater
+    // pulls every release over the phone's connection) is what we optimise.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = (project.findProperty('termilabLegacyPackaging') ?: 'true').toBoolean()
+        }
+    }
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
         applicationId "com.rhinlab.termilab"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode termilabVersionCode
+        versionName termilabVersion
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -31,10 +83,33 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (releaseSigning) {
+            release {
+                storeFile file(releaseSigning.storeFile)
+                storePassword releaseSigning.storePassword
+                keyAlias releaseSigning.keyAlias
+                keyPassword releaseSigning.keyPassword
+            }
+        }
+    }
     buildTypes {
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // R8: checked on the emulator (boot, SSH, sync UI, updater install).
+            // The Node plugin's JNI callback needs its keep rule (proguard-rules.pro).
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (releaseSigning) signingConfig signingConfigs.release
+        }
+        // The release build, debuggable: same key, same packaging, so it can
+        // update to (and be updated by) a real release. Only for the updater's
+        // end-to-end test: MainActivity honours TERMILAB_UPDATE_URL only in a
+        // debuggable build. Never publish one.
+        updateTest {
+            initWith release
+            debuggable true
+            matchingFallbacks = ['release']
         }
     }
 }

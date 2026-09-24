@@ -25,6 +25,7 @@
     "mobile:node": "node scripts/build-mobile-node.js",
     "android:sync": "npm run mobile:web && npm run mobile:node && node scripts/fetch-libnode.js && cap sync android",
     "android:debug": "npm run android:sync && node scripts/android-debug.js",
+    "android:apk": "npm run android:sync && node scripts/android-apk.js",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

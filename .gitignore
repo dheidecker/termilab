@@ -23,3 +23,7 @@ mobile/vendor/.cache/
 !mobile/vendor/capacitor-nodejs/dist/
 !mobile/vendor/capacitor-nodejs/android/src/main/assets/builtin_modules/bridge/dist/
 mobile/plugins/termilab-native/android/build/
+# Release signing: never in the repo (see CLAUDE.md, Releasing)
+*.jks
+*.keystore
+keystore.properties

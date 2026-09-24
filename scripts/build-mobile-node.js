@@ -23,7 +23,8 @@ const DEFAULT_OUT = path.join(ROOT, 'dist-mobile', 'nodejs', 'index.js');
 
 async function build(outfile = DEFAULT_OUT) {
   const esbuild = require('esbuild');
-  const { version } = require(path.join(ROOT, 'package.json'));
+  // TERMILAB_VERSION: build another version for the updater's tests (scripts/android-apk.js).
+  const version = process.env.TERMILAB_VERSION || require(path.join(ROOT, 'package.json')).version;
   await esbuild.build({
     entryPoints: [path.join(ROOT, 'mobile', 'node', 'main.js')],
     outfile,
