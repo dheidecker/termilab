@@ -387,3 +387,64 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   `closeAllForQuit` (espera inserts en vuelo + lock, tope 2 s, luego sync) y
   vuelve a `app.quit()`; `quitCleanupDone` evita el bucle. Con
   `updater:install` no se retiene (el updater lleva su quit). K16.
+
+## Android: Node bajo nodejs-mobile (fases 1–2, 2026-09)
+
+- `electron/` no se toca para Android: `mobile/node/electron-shim.js` es `electron` en el
+  bundle (alias de esbuild). `configure()` antes de requerir nada de `electron/`
+  (store-service fija su ruta en el constructor).
+- `app.getPath('userData')` = DATADIR del plugin; los servicios le añaden `data/`.
+  La DSK de respaldo vive en `DATADIR/device-key.json`, **fuera** de `data/`.
+- El arnés es `npx -y -p node@18 node scripts/check-mobile.js`: arranca el BUNDLE real
+  con fork() y el `bridge` real del plugin (fuera de Android habla por process.send).
+  El padre tira los mensajes sin listener como el plugin: por eso caza la cola.
+- `scripts/lib/fake-sync-server.js` es ahora compartido por los dos arneses.
+- Canal nuevo en preload = canal nuevo en `mobile/web/electron-api-shim.js` (o en la
+  lista de omitidos). M1 se pone rojo si no.
+- Un segundo `node::Start` en el mismo proceso aborta (SIGTRAP). Android recrea la
+  activity sin matar el proceso: el motor del plugin es estático por proceso (fork).
+
+## Android fase 3 (2026-09-24): nativo
+
+- **La DSK solo llega por env.** Java (`mobile/plugins/termilab-native`, `DeviceKey`) la
+  desenvuelve con el Keystore y `MainActivity` la mete con `CapacitorNodeJS.setEnvProvider`
+  (hook del fork vendorizado, corre en el hilo del motor antes de `node::Start`). En Node no
+  hay respaldo en archivo: sin `TERMILAB_DSK`, `safeStorage` no está y el login se niega (M11).
+  No reintroduzcas `device-key.json`: M9 mira que el bundle ni lo mencione.
+- La migración/borrado del `device-key.json` de fase 1 es Java (`DeviceKeyResolver`, JUnit):
+  el archivo se borra **después** de persistir el envoltorio con `commit()`, nunca antes.
+- **Android 15+ corta la red de un proceso en caché** (logcat `resolv: network access
+  blocked`, `fetch failed` en Node). Cualquier trabajo de red que tenga que seguir con la app
+  detrás necesita el foreground service: hoy, sesiones SSH y el login en vuelo (la Custom Tab
+  deja la app detrás). `main.js` envuelve `ssh:connect`/`ssh:disconnect`/`sync:login` y
+  manda `native:sessions {count, signingIn}`; `signingIn` sale **antes** de abrir la URL.
+- Probar el sync en el emulador: servidor falso del host con `adb reverse tcp:P tcp:P` y
+  `am start -n com.rhinlab.termilab/.MainActivity --es TERMILAB_SYNC_URL http://127.0.0.1:P`
+  (solo builds depurables; Node arranca una vez por proceso, así que `am force-stop` antes).
+  El 8787 del host ya estaba ocupado.
+
+## Android fase 4 (2026-09-24)
+
+- **El "Cancel" del login en Android es `sync:logout`**: `logout()` pone `_loginAborted` y el
+  bucle de `/auth/poll` lo mira antes y después de cada espera, así que para en ≤ 2 s y el login
+  rechaza con "Inicio de sesion cancelado"; el envoltorio de `sync:login` en `mobile/node/main.js`
+  baja `signingIn` en su `finally`. Si alguien quita ese flag de `logout()` (o hace que logout no
+  toque el login en curso), el Cancel deja el servicio en primer plano 10 min. Lo vigila M12.
+- `scripts/lib/fake-sync-server.js` tiene `hooks.pollPending` (202 para siempre) para eso.
+- Nuevos métodos del plugin nativo (Java): `readClipboard`, `writeClipboard`,
+  `setWindowBackground`. Son de la página, no de Node.
+
+## Android fase 5: updater (2026-09-24)
+
+- `mobile/node/updater.js` es Node puro (sin `electron`): el arnés lo requiere directamente
+  (M14) y además por el bundle (M15–M18). `setupUpdater` en `mobile/node/main.js` registra
+  `updater:*` con el sobre `{success, data|error}` de `main.js` de escritorio.
+- El versionCode instalado llega de Java (`TERMILAB_VERSION_CODE`/`_NAME`, PackageInfo), no del
+  bundle. `TERMILAB_UPDATE_URL` lo pone MainActivity solo si la app es depurable.
+- **`spawnMobile` del arnés fija `TERMILAB_UPDATE_URL` a `127.0.0.1:1`**: sin eso cada proceso
+  del arnés consultaría GitHub a los 5 s. `TERMILAB_UPDATE_DELAY_MS` acorta/alarga ese chequeo.
+- Instalar es de la página (Node no llega a Java): `native:install-apk {id,…}` →
+  `TermilabNative.installApk` → `native:install-result {id, ok, error}`. Java vuelve a
+  comprobar paquete, versionCode y firma: no quites esa capa "porque Node ya verificó el sha".
+- La limpieza de `updates/` es al arrancar (todo lo que no sea más nuevo que lo instalado, y los
+  `.part`), porque tras instalar el proceso muere y no hay "después".

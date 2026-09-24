@@ -14,19 +14,33 @@ import KnownHosts from './components/KnownHosts/KnownHosts';
 import Logs from './components/Logs/Logs';
 import HostKeyPrompt from './components/HostKeyPrompt/HostKeyPrompt';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
+import { FEATURES, IS_ANDROID } from './platform';
+import { useBackFallback } from './hooks/useBackHandler';
+import MobileNav, { MORE_SECTIONS } from './components/Mobile/MobileNav';
+import MobileScreen, { MobileTopBar } from './components/Mobile/MobileScreen';
+import SessionsScreen from './components/Mobile/SessionsScreen';
+import MoreScreen from './components/Mobile/MoreScreen';
 import './App.css';
 
 const SIDEBAR_KEY = 'termilab.sidebar.collapsed';
 
+/* On a phone the full-width sidebar eats half the screen: start collapsed
+   there unless the user expanded it before. Desktop default unchanged. */
 function readSidebarCollapsed() {
-  try { return window.localStorage.getItem(SIDEBAR_KEY) === '1'; } catch { return false; }
+  try {
+    const saved = window.localStorage.getItem(SIDEBAR_KEY);
+    return saved === null ? IS_ANDROID : saved === '1';
+  } catch { return IS_ANDROID; }
 }
 
 function AppContent() {
   const { state, actions } = useApp();
   const { activeSection, tabs, activeTabId, loading, hostFormOpen } = state;
-  const { openLocalTerminal, setActiveTab, removeTab, disconnectSession } = actions;
+  const { openLocalTerminal, setActiveTab, removeTab, disconnectSession, goHome, setActiveSection } = actions;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+
+  /* No session tab selected → the home tab (sidebar + section) is showing */
+  const homeActive = !tabs.some(t => t.id === activeTabId);
 
   const toggleSidebar = () => {
     setSidebarCollapsed(prev => {
@@ -36,11 +50,23 @@ function AppContent() {
     });
   };
 
+  /* Android back, once nothing dismissable is open (modals register their own
+     handlers in useBackHandler): a page under More → More, session tab →
+     Hosts, any other section → Hosts. At Hosts it passes, and the app goes to
+     the background (moveTaskToBack, not finish: sessions stay up). */
+  useBackFallback(() => {
+    /* Android has no sidebar: a More page goes back to More, then Hosts */
+    if (IS_ANDROID && homeActive && MORE_SECTIONS.includes(activeSection)) { setActiveSection('more'); return true; }
+    if (!homeActive) { setActiveSection('hosts'); goHome(); return true; }
+    if (activeSection !== 'hosts') { setActiveSection('hosts'); return true; }
+    return false;
+  });
+
   /* ─── Global Keyboard Shortcuts ─── */
   useEffect(() => {
     const handler = (e) => {
       // Ctrl+T → New local terminal
-      if (e.ctrlKey && !e.shiftKey && e.key === 't') {
+      if (e.ctrlKey && !e.shiftKey && e.key === 't' && FEATURES.localTerminal) {
         e.preventDefault();
         openLocalTerminal();
       }
@@ -84,9 +110,6 @@ function AppContent() {
     );
   }
 
-  /* No session tab selected → the home tab (sidebar + section) is showing */
-  const homeActive = !tabs.some(t => t.id === activeTabId);
-
   const renderSection = () => {
     switch (activeSection) {
       case 'keychain': return <div className="app-section-column"><KeyManager /></div>;
@@ -95,6 +118,28 @@ function AppContent() {
       case 'known-hosts': return <KnownHosts />;
       case 'logs': return <Logs />;
       case 'settings': return <Settings fullPage />;
+      case 'hosts':
+      default: return <HostList />;
+    }
+  };
+
+  /* Android: bottom-nav screens, and the More pages with a back bar */
+  const backToMore = () => setActiveSection('more');
+  const renderMobileSection = () => {
+    switch (activeSection) {
+      case 'snippets':
+        return (
+          <div className="m-screen">
+            <MobileTopBar title="Snippets" />
+            <div className="m-screen-body"><div className="app-section-column"><Snippets /></div></div>
+          </div>
+        );
+      case 'sessions': return <SessionsScreen />;
+      case 'more': return <MoreScreen />;
+      case 'keychain': return <MobileScreen title="Keychain" onBack={backToMore}><div className="app-section-column"><KeyManager /></div></MobileScreen>;
+      case 'known-hosts': return <MobileScreen title="Known Hosts" onBack={backToMore}><KnownHosts /></MobileScreen>;
+      case 'logs': return <MobileScreen title="Logs" onBack={backToMore}><Logs /></MobileScreen>;
+      case 'settings': return <div className="m-screen"><Settings fullPage onBack={backToMore} /></div>;
       case 'hosts':
       default: return <HostList />;
     }
@@ -126,6 +171,24 @@ function AppContent() {
         </div>
       ));
   };
+
+  if (IS_ANDROID) {
+    return (
+      <div className={`app app-mobile${homeActive ? ' app-mobile-home' : ' app-mobile-session'}`}>
+        <div className="app-body">
+          <div className="app-home" style={{ display: homeActive ? 'flex' : 'none' }}>
+            <main className="app-section">{renderMobileSection()}</main>
+          </div>
+          <div className="app-view" style={{ display: homeActive ? 'none' : 'flex' }}>
+            {renderAllTerminals()}
+          </div>
+        </div>
+        {homeActive && <MobileNav />}
+        {hostFormOpen && <HostForm />}
+        <HostKeyPrompt />
+      </div>
+    );
+  }
 
   return (
     <div className="app">

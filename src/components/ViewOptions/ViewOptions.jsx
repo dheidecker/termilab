@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { GridIcon, ListIcon, TagIcon, SortIcon, CheckIcon } from '../Icons/icons';
 import './ViewOptions.css';
+import { useBackHandler } from '../../hooks/useBackHandler';
 
 /**
  * Termius-style icon buttons at the right of a section's action row:
@@ -74,6 +75,7 @@ function IconMenu({ icon, label, highlighted = false, children }) {
     setOpen(false);
     if (refocus) buttonRef.current?.focus();
   }, []);
+  useBackHandler(open, () => close(false));
 
   useEffect(() => {
     if (!open) return undefined;

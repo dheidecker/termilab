@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { errorMessage, formatRelative, formatAbsolute, platformLabel, toDeviceList } from './helpers';
 import './Sync.css';
+import { MACHINE } from '../../platform';
 
 /**
  * Every device holding a token for this account. Revoking one kills its token
@@ -90,7 +91,7 @@ export default function SyncDevices({ lastSyncAt, pendingPairings }) {
                 <div className="sync-device-body">
                   <div className="sync-device-name">
                     <span>{device.name || 'Unnamed device'}</span>
-                    {device.current && <span className="sync-badge sync-badge-current">This computer</span>}
+                    {device.current && <span className="sync-badge sync-badge-current">This {MACHINE}</span>}
                     {device.revoked && <span className="sync-badge sync-badge-revoked">Revoked</span>}
                   </div>
                   <div className="sync-device-meta" title={formatAbsolute(device.last_seen_at) || undefined}>
@@ -114,7 +115,7 @@ export default function SyncDevices({ lastSyncAt, pendingPairings }) {
                 <div className="sync-device-confirm">
                   <p className="sync-text">
                     {device.current
-                      ? 'This is the computer you are using. Revoking it signs Termilab out here and stops syncing; you would have to sign in and pair this computer again.'
+                      ? `This is the ${MACHINE} you are using. Revoking it signs Termilab out here and stops syncing; you would have to sign in and pair this ${MACHINE} again.`
                       : `“${device.name || 'That device'}” will lose its token immediately and stop syncing. Your data stays on it until you remove it there.`}
                   </p>
                   <div className="sync-actions">
@@ -125,7 +126,7 @@ export default function SyncDevices({ lastSyncAt, pendingPairings }) {
                     >
                       {busyId === device.id
                         ? 'Revoking…'
-                        : device.current ? 'Yes, disconnect this computer' : 'Revoke device'}
+                        : device.current ? `Yes, disconnect this ${MACHINE}` : 'Revoke device'}
                     </button>
                     <button
                       className="sync-btn sync-btn-ghost"

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AlertIcon, FingerprintIcon } from '../Icons/icons';
 import { displayHost, keyTypeLabel } from '../KnownHosts/format';
 import './HostKeyPrompt.css';
+import { useBackHandler } from '../../hooks/useBackHandler';
 
 /**
  * The dialog main opens when a server's host key is unknown or has changed
@@ -26,6 +27,9 @@ export function HostKeyDialog({ prompt, busy = false, error = null, queued = 0, 
   useEffect(() => {
     (warn ? cancelRef : acceptRef).current?.focus();
   }, [prompt.requestId, warn]);
+
+  /* Back = Cancel, never accept. While an answer is in flight it is swallowed. */
+  useBackHandler(true, () => { if (!busy) onCancel(); });
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); onCancel(); } };

@@ -10,7 +10,10 @@ import {
 import ViewOptions, { useViewChoice, useSortChoice, sortItems } from '../ViewOptions/ViewOptions';
 import { distroFor, DistroLogo } from '../Icons/distros';
 import { PALETTE, hostColor } from './hostColor';
+import { FEATURES, IS_ANDROID, MACHINE } from '../../platform';
+import ActionSheet from '../Mobile/ActionSheet';
 import './HostList.css';
+import { useBackHandler } from '../../hooks/useBackHandler';
 
 const hostCount = (n) => `${n} ${n === 1 ? 'Host' : 'Hosts'}`;
 /* With a tag filter on, a group card says how many of its hosts match */
@@ -36,9 +39,19 @@ export default function HostList() {
   const [newGroupName, setNewGroupName] = useState('');
   const [showDuplicates, setShowDuplicates] = useState(false);
   const [dragTarget, setDragTarget] = useState(null);
+  /* Android: long-press on a host card opens this instead of the context menu */
+  const [sheetHost, setSheetHost] = useState(null);
   const searchRef = useRef(null);
   const groupInputRef = useRef(null);
   const newMenuRef = useRef(null);
+
+  /* Android back, innermost first: menus, duplicate review, search, open group.
+     Only while home is showing: from a session tab, back goes home instead. */
+  const onHome = !state.tabs.some(t => t.id === state.activeTabId);
+  useBackHandler(onHome && groupId !== null, () => setGroupId(null));
+  useBackHandler(onHome && search !== '', () => setSearch(''));
+  useBackHandler(onHome && showDuplicates, () => setShowDuplicates(false));
+  useBackHandler(onHome && (!!contextMenu || newMenuOpen), () => { setContextMenu(null); setNewMenuOpen(false); });
 
   /* Same user@host:port saved more than once. */
   const duplicateGroups = useMemo(() => findDuplicateGroups(hosts), [hosts]);
@@ -63,7 +76,7 @@ export default function HostList() {
     : state.sync.loading || !syncStatus
       ? 'Checking sync status…'
       : syncStatus.signedIn && !syncStatus.unlocked
-        ? 'Unlock this computer in Settings → Sync first. Until then Termilab cannot tell which of these passwords are sealed by another computer, and a merge would delete them there too.'
+        ? `Unlock this ${MACHINE} in Settings → Sync first. Until then Termilab cannot tell which of these passwords are sealed by another ${MACHINE}, and a merge would delete them there too.`
         : null;
 
   /* A group that was deleted (here or by sync) while we were inside it */
@@ -170,6 +183,8 @@ export default function HostList() {
   const handleContextMenu = (e, host) => {
     e.preventDefault();
     e.stopPropagation();
+    /* A long-press fires contextmenu on Android: an action sheet, not a menu */
+    if (IS_ANDROID) { setSheetHost(host); return; }
     /* Keep the menu on screen near the right and bottom edges */
     const x = Math.min(e.clientX, window.innerWidth - 200);
     const y = Math.min(e.clientY, window.innerHeight - 250);
@@ -348,9 +363,15 @@ export default function HostList() {
           </div>
         )}
 
-        {/* Action row */}
+        {/* Action row (Android: the FAB makes hosts, so only "New group" here) */}
         <div className="hv-actions">
-          <div className="hv-split" ref={newMenuRef}>
+          {IS_ANDROID && (
+            <button className="hv-btn" onClick={handleNewGroup}>
+              <GroupIcon />
+              New group
+            </button>
+          )}
+          {!IS_ANDROID && <div className="hv-split" ref={newMenuRef}>
             <button className="hv-btn hv-btn-primary hv-split-main" onClick={() => openHostForm(null, newHostDefaults)}>
               <ServerIcon />
               New host
@@ -373,11 +394,13 @@ export default function HostList() {
                 </button>
               </div>
             )}
-          </div>
-          <button className="hv-btn" onClick={openLocalTerminal}>
-            <TerminalIcon />
-            Terminal
-          </button>
+          </div>}
+          {FEATURES.localTerminal && (
+            <button className="hv-btn" onClick={openLocalTerminal}>
+              <TerminalIcon />
+              Terminal
+            </button>
+          )}
 
           <div className="hv-actions-spacer" />
 
@@ -507,6 +530,32 @@ export default function HostList() {
         )}
       </div>
 
+      {IS_ANDROID && (
+        <button
+          className="m-fab"
+          onClick={() => openHostForm(null, newHostDefaults)}
+          aria-label={currentGroup ? `New host in ${currentGroup.label}` : 'New host'}
+        >
+          <PlusIcon />
+        </button>
+      )}
+      {sheetHost && (
+        <ActionSheet
+          title={hostName(sheetHost)}
+          subtitle={`${sheetHost.username}@${sheetHost.hostname}${sheetHost.port && sheetHost.port !== 22 ? `:${sheetHost.port}` : ''}`}
+          onClose={() => setSheetHost(null)}
+          actions={[
+            { id: 'connect', label: 'Connect', Icon: TerminalIcon, onSelect: () => handleConnect(sheetHost) },
+            { id: 'edit', label: 'Edit', Icon: PencilIcon, onSelect: () => openHostForm(sheetHost) },
+            { id: 'duplicate', label: 'Duplicate', Icon: CopyIcon, onSelect: () => saveHost({ ...sheetHost, id: undefined, label: `${sheetHost.label} (copy)` }) },
+            {
+              id: 'delete', label: 'Delete', Icon: TrashIcon, danger: true,
+              onSelect: () => { if (window.confirm(`Delete "${hostName(sheetHost)}"?`)) deleteHost(sheetHost.id); },
+            },
+          ]}
+        />
+      )}
+
       {/* Context menu */}
       {contextMenu && (
         <div
@@ -520,9 +569,11 @@ export default function HostList() {
           <button className="host-context-menu-item" onClick={ctxNewSession}>
             <SessionIcon /> New Session
           </button>
-          <button className="host-context-menu-item" onClick={ctxSftp}>
-            <FolderIcon /> Open SFTP
-          </button>
+          {FEATURES.sftp && (
+            <button className="host-context-menu-item" onClick={ctxSftp}>
+              <FolderIcon /> Open SFTP
+            </button>
+          )}
           <div className="host-context-separator" />
           <button className="host-context-menu-item" onClick={ctxEdit}>
             <PencilIcon /> Edit

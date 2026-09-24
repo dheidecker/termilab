@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
+import { FEATURES, IS_ANDROID } from '../../platform';
+import { MobileTopBar } from '../Mobile/MobileScreen';
 import { FingerprintIcon, SearchIcon, CloseIcon, ImportIcon, TrashIcon, CopyIcon } from '../Icons/icons';
 import { displayHost, keyTypeLabel } from './format';
 import ViewOptions, { useViewChoice, useSortChoice, sortItems } from '../ViewOptions/ViewOptions';
 import '../HostList/HostList.css';
 import '../HostForm/HostForm.css';
 import './KnownHosts.css';
+import { useBackHandler } from '../../hooks/useBackHandler';
 
 /**
  * Known Hosts: the server keys this computer trusts (local only, never
@@ -32,6 +35,8 @@ const importSummary = (r) => {
 export function KnownHostDrawer({ entry, onClose, onDelete, deleting = false }) {
   const [copied, setCopied] = useState(false);
 
+  useBackHandler(true, () => onClose());
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', onKey);
@@ -49,12 +54,12 @@ export function KnownHostDrawer({ entry, onClose, onDelete, deleting = false }) 
   return (
     <div className="host-form-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <aside className="host-form" role="dialog" aria-modal="true" aria-label="Known host">
-        <div className="host-form-header">
+        {IS_ANDROID ? <MobileTopBar title="Known Host" onBack={onClose} /> : <div className="host-form-header">
           <h2>Known Host</h2>
           <button className="host-form-close-btn" onClick={onClose} aria-label="Close">
             <CloseIcon />
           </button>
-        </div>
+        </div>}
         <div className="host-form-body">
           <div className="kh-drawer-title">
             <div className="hv-icon kh-icon"><FingerprintIcon /></div>
@@ -167,7 +172,8 @@ export default function KnownHosts() {
     { label: e => `${displayHost(e.host, e.port)} ${e.keyType}`, date: e => e.addedAt }
   );
 
-  const importButton = (primary) => (
+  /* Android has no ~/.ssh/known_hosts to read */
+  const importButton = (primary) => FEATURES.knownHostsFileImport && (
     <button className={`hv-btn ${primary ? 'hv-btn-primary' : ''}`} onClick={handleImport} disabled={importing}>
       <ImportIcon />
       {importing ? 'Importing…' : 'Import'}
@@ -222,7 +228,9 @@ export default function KnownHosts() {
           <div className="hv-empty">
             <div className="hv-empty-icon"><FingerprintIcon /></div>
             <h3>No known hosts yet</h3>
-            <p>A server is added here the first time you accept its key, or import the ones OpenSSH already trusts from <code>~/.ssh/known_hosts</code>.</p>
+            {FEATURES.knownHostsFileImport
+              ? <p>A server is added here the first time you accept its key, or import the ones OpenSSH already trusts from <code>~/.ssh/known_hosts</code>.</p>
+              : <p>A server is added here the first time you accept its key. Keys you trusted on your other devices arrive with sync.</p>}
             {importButton(true)}
           </div>
         ) : visible.length === 0 ? (

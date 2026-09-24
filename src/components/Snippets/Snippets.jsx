@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import './Snippets.css';
+import { useBackHandler } from '../../hooks/useBackHandler';
 
 export default function Snippets() {
   const { state, actions } = useApp();
@@ -36,6 +37,7 @@ export default function Snippets() {
     setEditingSnippet(null);
     setForm({ name: '', command: '', description: '' });
   };
+  useBackHandler(formOpen, closeForm);
 
   const handleSave = async () => {
     if (!form.name.trim() || !form.command.trim()) return;

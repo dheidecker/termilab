@@ -1,0 +1,46 @@
+{
+  "name": "capacitor-nodejs",
+  "version": "1.0.0-beta.10",
+  "description": "A full-fledged Node.js runtime for Capacitor apps",
+  "type": "module",
+  "main": "dist/plugin.cjs.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "unpkg": "dist/plugin.js",
+  "files": [
+    "android/src/main/",
+    "android/libnode/",
+    "android/build.gradle",
+    "android/CMakeLists.txt",
+    "assets/",
+    "dist/",
+    "ios/Plugin/",
+    "CapacitorNodejs.podspec"
+  ],
+  "author": "Rene Hampölz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hampoelz/Capacitor-NodeJS.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hampoelz/Capacitor-NodeJS/issues"
+  },
+  "keywords": [
+    "capacitor",
+    "plugin",
+    "native"
+  ],
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "ios": {
+      "src": "ios"
+    },
+    "android": {
+      "src": "android"
+    }
+  },
+  "termilabVendored": "Vendored from the v1.0.0-beta.10 release tarball. devDependencies/scripts removed: npm installs a file: dependency's devDependencies too. libnode/ comes from scripts/fetch-libnode.js."
+}

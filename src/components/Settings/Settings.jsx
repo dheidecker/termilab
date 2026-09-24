@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { getThemeList } from '../../themes/terminal-themes';
 import SyncPanel from '../Sync/SyncPanel';
+import { IS_ANDROID } from '../../platform';
+import { MobileTopBar } from '../Mobile/MobileScreen';
 import './Settings.css';
 
 const ACCENT_COLORS = [
@@ -22,7 +24,8 @@ const TABS = [
   { id: 'about', label: 'About', icon: 'M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM12 16v-4M12 8h.01' },
 ];
 
-export default function Settings({ fullPage = false }) {
+/* onBack: Android only, the page's top bar (back / Settings / Save) */
+export default function Settings({ fullPage = false, onBack }) {
   const { state, dispatch, actions } = useApp();
   const [settings, setSettings] = useState(state.settings);
   const [activeTab, setActiveTab] = useState('general');
@@ -147,9 +150,17 @@ export default function Settings({ fullPage = false }) {
     e.target.value = '';
   };
 
+  const mobileBar = IS_ANDROID && onBack;
+
   return (
     <div className={`settings-panel ${fullPage ? 'full-page' : ''}`}>
-      {fullPage ? (
+      {mobileBar ? (
+        <MobileTopBar
+          title="Settings"
+          onBack={onBack}
+          action={activeTab !== 'about' ? { label: saved ? 'Saved' : 'Save', onClick: handleSave } : null}
+        />
+      ) : fullPage ? (
         <div className="settings-full-header">
           <h2>Settings</h2>
           <p>Customize your Termilab experience</p>
@@ -509,7 +520,7 @@ export default function Settings({ fullPage = false }) {
         )}
       </div>
 
-      {activeTab !== 'about' && (
+      {activeTab !== 'about' && !mobileBar && (
         <div className="settings-save-bar">
           <button className={`settings-save-btn ${saved ? 'saved' : ''}`} onClick={handleSave}>
             {saved ? '✓ Saved!' : 'Save Settings'}

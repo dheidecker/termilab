@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Overrides Capacitor's layout of the same name (app resources win over the
+  library's) to swap in TerminalInputWebView: the keyboard goes raw only while
+  the terminal has focus. Keep the id: Bridge looks the WebView up by R.id.webview.
+-->
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <com.rhinlab.termilab.nativeplugin.TerminalInputWebView
+        android:id="@+id/webview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

@@ -5,6 +5,7 @@ import { distroFor, DistroLogo } from '../Icons/distros';
 import { endpointKey, rankForKeeping } from '../HostList/duplicates';
 import { parseQuickConnect } from '../HostList/quickConnect';
 import { hostColor } from '../HostList/hostColor';
+import { FEATURES, MACHINE } from '../../platform';
 import '../HostList/HostList.css';
 import './Logs.css';
 
@@ -83,12 +84,13 @@ export default function Logs() {
   }, [items, newestFirst]);
 
   const reconnect = async (entry) => {
-    if (entry.type === 'local') { openLocalTerminal(); return; }
+    if (entry.type === 'local') { if (FEATURES.localTerminal) openLocalTerminal(); return; }
     const saved = savedHostFor(entry);
     const host = saved || parseQuickConnect(`${entry.username}@${entry.hostname}:${entry.port || 22}`);
     if (!host) return;
     try {
-      if (entry.type === 'sftp') await openSFTPTab(host);
+      /* No SFTP on Android: an SFTP entry reopens as a terminal */
+      if (entry.type === 'sftp' && FEATURES.sftp) await openSFTPTab(host);
       else await connectToHost(host);
     } catch (err) {
       console.error('Reconnect failed:', err);
@@ -119,7 +121,7 @@ export default function Logs() {
   };
 
   const clear = async () => {
-    if (!window.confirm('Clear the whole connection history on this computer? This cannot be undone.')) return;
+    if (!window.confirm(`Clear the whole connection history on this ${MACHINE}? This cannot be undone.`)) return;
     try {
       await clearConnectionLogs();
       setItems([]);
@@ -182,7 +184,7 @@ export default function Logs() {
           <div className="hv-empty">
             <div className="hv-empty-icon"><ClockIcon /></div>
             <h3>No connections yet</h3>
-            <p>Every SSH, SFTP and local terminal session you open on this computer shows up here, with when it started and ended. Nothing you type is recorded.</p>
+            <p>Every SSH, SFTP and local terminal session you open on this {MACHINE} shows up here, with when it started and ended. Nothing you type is recorded.</p>
           </div>
         ) : (
           <table className="lg-table">

@@ -1,0 +1,19 @@
+{
+  "name": "termilab-native",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Termilab's own Android glue: device key in the Keystore, the sessions foreground service, back button, terminal-scoped keyboard.",
+  "license": "MIT",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle"
+  ],
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    }
+  }
+}

@@ -262,3 +262,73 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   solo `os` bajo lock y devuelve el host o null). No vuelvas a
   `saveHost({...fresh, os})`: pisaba lo que un pull de sync acababa de
   escribir (contraseña incluida) y lo subía. El arnés K15 mira el fuente.
+
+## Android (fases 1–2, 2026-09)
+
+- `src/platform.js`: `IS_ANDROID` y `FEATURES`. Todo flag es `true` en escritorio; gatea
+  con `FEATURES.x &&`, no con el atributo `hidden` (un `display:flex` del CSS lo pisa).
+- En Android `window.electronAPI` **no tiene** `sftp`, `portForward`, `localShell`,
+  `window` ni `dialog`: una entrada sin gatear revienta, a propósito.
+- `mobile/web/entry.jsx` instala el shim y luego `import()` de `src/main.jsx`: los
+  imports estáticos se elevan y varios módulos leen `electronAPI` al evaluarse.
+- CSS solo-Android en `mobile/web/mobile.css` (el desktop nunca lo carga). Se importa
+  ANTES que `src/index.css`: a igual especificidad gana src.
+- Probar en el emulador: `adb shell input text` escribe; KEYCODE_BACK cierra la app.
+
+## Android fase 3 (2026-09-24)
+
+- **Botón atrás = `src/hooks/useBackHandler.js`.** Todo lo que se abre y se cierra (modal,
+  drawer, menú, búsqueda, grupo abierto) registra `useBackHandler(abierto, cerrar)`; lo más
+  reciente se cierra primero. Debajo va `useBackFallback` de `App` (sidebar → plegado,
+  sesión → Hosts, sección → Hosts). Si nadie lo toma, `entry.jsx` hace `exitApp`
+  (moveTaskToBack). **Un modal nuevo sin `useBackHandler` hace que atrás salte de sección
+  con el modal abierto.** En HostList los handlers van con `onHome` (desde una pestaña de
+  sesión atrás va a Hosts, no cierra un grupo que no se ve).
+- **El teclado raw es solo del textarea de xterm** (`.xterm-helper-textarea`): `entry.jsx`
+  avisa a Java en focusin/focusout. Si cambia esa clase o la terminal usa otro input, la
+  terminal vuelve al teclado predictivo ("holalaa").
+- Capacitor encoge el WebView con el teclado (padding del IME en la decor view); `100vh`
+  sigue al WebView. El campo enfocado se centra con `scrollIntoView` desde `entry.jsx`.
+- CDP en el emulador para mirar/pulsar: `adb forward tcp:9333
+  localabstract:webview_devtools_remote_<pid>` + `Runtime.evaluate` (envuelve en IIFE: el
+  ámbito global persiste y un `const` repetido da SyntaxError). Toques de Gboard reales con
+  `input tap`; acentos con `input motionevent DOWN` en la o, esperar, `MOVE`+`UP` sobre la ó.
+  `adb shell input text` con no-ASCII revienta dentro de `input` y no prueba nada.
+
+## Android fase 4: UI móvil (2026-09-24)
+
+- **En Android `App` monta otro árbol** (rama `if (IS_ANDROID)` en `App.jsx`): sin Titlebar,
+  TabBar ni Sidebar; `MobileNav` abajo y `renderMobileSection()`. `activeSection` admite
+  `sessions` y `more`; `MORE_SECTIONS` (MobileNav.jsx) decide qué ilumina More y adónde va atrás.
+  Una sección nueva que deba verse en Android va en los dos `renderSection`.
+- **CSS en dos sitios:** componentes solo-Android (`m-*`) en `src/components/Mobile/Mobile.css`
+  (el bundle de escritorio lo carga, pero ninguna clase coincide); retoques de componentes
+  compartidos en `mobile/web/mobile.css`, **siempre** con prefijo `html[data-platform='android']`
+  (lo pone `entry.jsx`): así nunca llegan al escritorio y ganan en especificidad aunque ese
+  archivo cargue antes.
+- **Paridad de escritorio = `cmp` de PNG**: `desk-shots.mjs` (scratchpad de la sesión) hace 7
+  capturas de `dist/` con Chrome headless por CDP; son deterministas (dos pasadas iguales byte a
+  byte), así que antes/después idénticos prueba que el escritorio no cambió. Ojo con los
+  selectores en lista: `querySelector('.a, [aria-label="Close"]')` devuelve el primero **del
+  documento** (el botón de cerrar la ventana), no el del primer selector.
+- **Una expresión JSX al principio de línea se come el espacio**: "two\n  {MACHINES}" = "twocomputers".
+  Al cambiar palabras de un texto por constantes, `{' '}{X}` en esos casos (y revisar los de final
+  de línea).
+- **Terminal:** las teclas extra entran por `term.input(seq, true)`, que dispara `onData` de forma
+  síncrona: el mismo camino que teclear (broadcast incluido). `bypassRef` evita que los Ctrl/Alt
+  pegajosos (que modifican lo que teclea el teclado, en `inputFilterRef`) se apliquen dos veces.
+  Botones de la fila: `onMouseDown={preventDefault}` y la acción en `onClick`, o el textarea pierde
+  el foco y el teclado se cierra en cada tecla.
+- `navigator.clipboard.readText()` → `NotAllowedError` en el WebView: `mobile/clipboard.js` cae a
+  `window.__termilabNative.readClipboard()` (el plugin; `src/` nunca importa Capacitor).
+- La pulsación larga del WebView desenfoca el textarea: teclado fuera → filas cambian → xterm borra
+  la selección. `user-select:none` + `touch-callout:none` en `.terminal-wrapper` hacen que la
+  selección sobreviva. Al encoger filas xterm no sigue el prompt: `onResize → scrollToBottom`.
+- Para mirar la terminal por CDP: `document.querySelector('.terminal-wrapper').__xterm` (solo
+  Android). Pellizco sin dedos: `Input.dispatchTouchEvent` con dos `touchPoints`.
+- **Probar de verdad (vim, top, historial)** necesita un shell real: `scripts/lib/ssh-test-server.js`
+  es un shell de juguete. Un `sshd` de OpenSSH sin root vale: `-f` con `HostKey`, `PidFile`,
+  `AuthorizedKeysFile` propios, `UsePAM no`, `StrictModes no`, `ListenAddress 127.0.0.1`, puerto
+  2222; el emulador lo ve en `10.0.2.2`. La clave privada se mete con
+  `electronAPI.store.pasteKey({name, privateKeyContent})` por CDP.
+- `pkill -f <patrón>` dentro de un comando que contiene ese patrón se mata a sí mismo (exit 144).

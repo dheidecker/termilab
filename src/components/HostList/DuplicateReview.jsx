@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { hasCredential, mergeInto, sealedMembers } from './duplicates';
+import { MACHINE, MACHINES } from '../../platform';
 
 /**
  * Review and merge hosts that point at the same `user@host:port`. One card per
@@ -16,8 +17,8 @@ export default function DuplicateReview({ duplicateGroups, groupsById, undecrypt
         <button className="dup-btn dup-btn-ghost" onClick={onClose}>Close</button>
       </div>
       <p className="dup-review-intro">
-        Usually a host created on two computers before they synced. Keep one — it takes the group,
-        tags and credential the others add — and the rest are removed from all your computers.
+        Usually a host created on two {MACHINES} before they synced. Keep one — it takes the group,
+        tags and credential the others add — and the rest are removed from all your {MACHINES}.
       </p>
       {mergeBlockedReason && <div className="dup-note dup-note-warn">{mergeBlockedReason}</div>}
       {duplicateGroups.map(group => (
@@ -48,7 +49,7 @@ function DuplicateGroup({ group, groupsById, sealed, mergeBlocked, onMerge }) {
   const merge = async () => {
     const names = others.map(h => `“${h.label || h.hostname}”`).join(', ');
     const ok = window.confirm(
-      `Keep “${survivor.label || survivor.hostname}” and delete ${names} from every computer you sync?`
+      `Keep “${survivor.label || survivor.hostname}” and delete ${names} from every ${MACHINE} you sync?`
     );
     if (!ok) return;
     setBusy(true);
@@ -82,7 +83,7 @@ function DuplicateGroup({ group, groupsById, sealed, mergeBlocked, onMerge }) {
                 <span className="dup-member-meta">
                   {groupLabel(h.groupId)}
                   {' · '}
-                  {isSealed ? 'password sealed by another computer' : hasCredential(h) ? (h.authType === 'key' ? 'key' : 'password') : 'no credential'}
+                  {isSealed ? `password sealed by another ${MACHINE}` : hasCredential(h) ? (h.authType === 'key' ? 'key' : 'password') : 'no credential'}
                   {h.createdAt ? ` · added ${new Date(h.createdAt).toLocaleDateString()}` : ''}
                 </span>
               </span>
@@ -95,8 +96,8 @@ function DuplicateGroup({ group, groupsById, sealed, mergeBlocked, onMerge }) {
         <div className="dup-note dup-note-warn">
           Can’t merge yet: {sealed.map(h => `“${h.label || h.hostname}”`).join(', ')} still{' '}
           {sealed.length === 1 ? 'has its password' : 'have their passwords'} sealed by another
-          computer, which holds the only readable copy. Merging now would delete it there too.
-          Update that computer and unlock it with the account passphrase, then come back.
+          {' '}{MACHINE}, which holds the only readable copy. Merging now would delete it there too.
+          Update that {MACHINE} and unlock it with the account passphrase, then come back.
         </div>
       ) : (
         <>

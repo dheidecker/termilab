@@ -1,0 +1,640 @@
+/* Mobile.css — components that only Android renders (bottom nav, top bars,
+   sheets, Sessions/More, the terminal's header and extra keys). Every class
+   is m-*, so the desktop bundle carries these rules without matching
+   anything. Overrides of shared components live in mobile/web/mobile.css. */
+
+/* ─── Top bar ─── */
+.m-topbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 56px;
+  padding: 0 4px;
+  flex-shrink: 0;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-secondary);
+}
+
+.m-topbar-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-xl);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 8px;
+}
+
+.m-topbar-gap {
+  width: 4px;
+  flex-shrink: 0;
+}
+
+.m-topbar-action {
+  min-height: 44px;
+  min-width: 64px;
+  padding: 0 16px;
+  margin-right: 4px;
+  border-radius: var(--radius-lg);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: var(--font-size-base);
+  font-weight: 600;
+}
+
+.m-topbar-action:disabled {
+  opacity: 0.5;
+}
+
+.m-icon-btn {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--text-primary);
+}
+
+.m-icon-btn:active {
+  background: var(--hover-overlay);
+}
+
+.m-icon-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* ─── Screen ─── */
+.m-screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+}
+
+.m-screen-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ─── Bottom nav ─── */
+.m-nav {
+  display: flex;
+  flex-shrink: 0;
+  /* bg-primary, like the window behind the gesture bar (entry.jsx) */
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border-primary);
+  padding-bottom: var(--m-safe-bottom, 0px);
+}
+
+.m-nav-item {
+  flex: 1;
+  min-width: 0;
+  min-height: 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+}
+
+.m-nav-item.active {
+  color: var(--accent);
+}
+
+.m-nav-icon {
+  position: relative;
+  width: 56px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 15px;
+  transition: background var(--transition-base);
+}
+
+.m-nav-item.active .m-nav-icon {
+  background: var(--accent-muted);
+}
+
+.m-nav-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.m-badge {
+  position: absolute;
+  top: -3px;
+  right: 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--color-danger);
+  color: #fff;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.m-badge-inline {
+  position: static;
+}
+
+/* ─── FAB ─── */
+.m-fab {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  box-shadow: var(--shadow-lg);
+  z-index: 20;
+}
+
+.m-fab svg {
+  width: 26px;
+  height: 26px;
+}
+
+/* ─── Action sheet ─── */
+.m-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 6000;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+
+.m-sheet {
+  width: 100%;
+  max-width: 560px;
+  background: var(--bg-elevated);
+  border-radius: 16px 16px 0 0;
+  box-shadow: var(--shadow-xl);
+  padding: 8px 8px calc(8px + var(--m-safe-bottom, 0px));
+  animation: slideInUp 0.2s ease;
+}
+
+.m-sheet-grip {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--overlay-strong);
+  margin: 4px auto 8px;
+}
+
+.m-sheet-head {
+  padding: 4px 12px 10px;
+  border-bottom: 1px solid var(--border-primary);
+  margin-bottom: 4px;
+  min-width: 0;
+}
+
+.m-sheet-title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-sheet-sub {
+  font-size: var(--font-size-md);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-sheet-item,
+.m-sheet-cancel {
+  width: 100%;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 14px;
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-lg);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.m-sheet-item:active,
+.m-sheet-cancel:active {
+  background: var(--hover-overlay);
+}
+
+.m-sheet-item svg {
+  width: 20px;
+  height: 20px;
+  color: var(--text-secondary);
+}
+
+.m-sheet-item.danger,
+.m-sheet-item.danger svg {
+  color: var(--color-danger);
+}
+
+.m-sheet-cancel {
+  justify-content: center;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-primary);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+/* ─── Sessions ─── */
+.m-session-list,
+.m-more-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px 16px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.m-session-row-wrap {
+  position: relative;
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--color-danger);
+}
+
+.m-session-row-under {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 20px;
+  color: #fff;
+  font-weight: 600;
+}
+
+.m-session-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--bg-card);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-card);
+  transition: transform 0.18s ease;
+  touch-action: pan-y;
+}
+
+.m-session-open {
+  flex: 1;
+  min-width: 0;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 4px 10px 12px;
+  text-align: left;
+}
+
+.m-session-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.m-session-name {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-session-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-md);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-session-close {
+  margin-right: 6px;
+  color: var(--text-secondary);
+}
+
+.m-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+  background: var(--text-tertiary);
+}
+
+.m-status-connected { background: var(--color-success); }
+.m-status-connecting { background: var(--color-warning); }
+.m-status-failed { background: var(--color-danger); }
+
+/* ─── More ─── */
+.m-more-item {
+  width: 100%;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-card);
+  text-align: left;
+}
+
+.m-more-item:active {
+  background: var(--bg-card-hover);
+}
+
+.m-more-icon {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
+.m-more-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.m-more-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.m-more-label {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.m-more-sub {
+  font-size: var(--font-size-md);
+  color: var(--text-secondary);
+}
+
+.m-more-chevron {
+  width: 18px;
+  height: 18px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+/* ─── Session header ─── */
+.m-session-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 52px;
+  padding: 0 2px;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.m-session-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 4px;
+}
+
+.m-session-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-session-sub {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-broadcast-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  background: var(--color-warning-muted);
+  color: var(--color-warning);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.m-broadcast-pill svg {
+  width: 13px;
+  height: 13px;
+}
+
+.m-menu-anchor {
+  position: relative;
+}
+
+.m-menu {
+  position: absolute;
+  top: 46px;
+  right: 4px;
+  min-width: 240px;
+  max-width: calc(100vw - 16px);
+  padding: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  z-index: 200;
+}
+
+.m-menu-item {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.m-menu-item:active {
+  background: var(--hover-overlay);
+}
+
+.m-menu-danger {
+  color: var(--color-danger);
+}
+
+/* ─── Extra keys ─── */
+.m-extra-keys {
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+}
+
+.m-extra-keys-scroll {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.m-extra-keys-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.m-key {
+  flex-shrink: 0;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 10px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: pan-x;
+}
+
+.m-key:active {
+  background: var(--bg-elevated);
+}
+
+.m-key-armed {
+  background: var(--accent-muted);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Locked: a solid fill, so "held" is not confused with "next key only" */
+.m-key-locked {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  box-shadow: none;
+}
+
+.m-key-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* ─── Selection bar (long-press) ─── */
+.m-selection-bar {
+  position: absolute;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: 24px;
+  box-shadow: var(--shadow-lg);
+  z-index: 150;
+}
+
+.m-chip {
+  min-height: 40px;
+  min-width: 72px;
+  padding: 0 16px;
+  border-radius: 20px;
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+.m-chip-primary {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+/* ─── Short screens (landscape phone, keyboard up): every row counts ─── */
+@media (max-height: 480px) {
+  .m-session-header {
+    min-height: 44px;
+  }
+
+  .m-session-sub {
+    display: none;
+  }
+
+  .m-topbar {
+    min-height: 48px;
+  }
+}
+
+/* Landscape with the keyboard up leaves ~120px: the header would take half.
+   Back is still the system gesture. */
+@media (max-height: 300px) {
+  .m-session-header {
+    display: none;
+  }
+}

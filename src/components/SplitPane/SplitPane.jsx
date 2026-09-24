@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import TerminalView from '../Terminal/TerminalView';
 import { useApp } from '../../contexts/AppContext';
+import { FEATURES } from '../../platform';
 import './SplitPane.css';
 
 /*
@@ -291,12 +292,14 @@ export default function SplitPane({ tab }) {
               height: rect.height,
             } : { position: 'absolute', top: 0, left: 0, width: 0, height: 0, overflow: 'hidden' }}
           >
-            <PaneToolbar
-              onSplitH={() => splitPane(panePath, 'horizontal')}
-              onSplitV={() => splitPane(panePath, 'vertical')}
-              onClose={() => closePane(panePath)}
-              canClose={isMultiPane}
-            />
+            {FEATURES.splitPanes && (
+              <PaneToolbar
+                onSplitH={() => splitPane(panePath, 'horizontal')}
+                onSplitV={() => splitPane(panePath, 'vertical')}
+                onClose={() => closePane(panePath)}
+                canClose={isMultiPane}
+              />
+            )}
             <TerminalView tab={paneTab} />
           </div>
         );

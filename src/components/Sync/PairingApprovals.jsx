@@ -3,6 +3,7 @@ import { useApp } from '../../contexts/AppContext';
 import DigitCode from './DigitCode';
 import { errorMessage, platformLabel, toPendingList } from './helpers';
 import './Sync.css';
+import { MACHINE, MACHINES } from '../../platform';
 
 /**
  * Shown on a device that already holds the master key when another device is
@@ -118,7 +119,7 @@ export default function PairingApprovals({ count, onHandled }) {
     try {
       await syncPairingReject(item.id);
       if (!mounted.current) return;
-      onHandled?.('Rejected. That device got nothing: your keys and passwords never left this computer.');
+      onHandled?.(`Rejected. That device got nothing: your keys and passwords never left this ${MACHINE}.`);
       await load();
       await refreshSyncStatus();
     } catch (err) {
@@ -136,7 +137,7 @@ export default function PairingApprovals({ count, onHandled }) {
       </div>
 
       <p className="sync-text">
-        This happens in two steps, and the second one is yours to judge: first both computers show
+        This happens in two steps, and the second one is yours to judge: first both {MACHINES} show
         the same six digits, then you say whether they match.
       </p>
 
@@ -167,7 +168,7 @@ export default function PairingApprovals({ count, onHandled }) {
             {!accepted && (
               <>
                 <p className="sync-text">
-                  Accepting only sends this computer's public key, so both screens can show the same
+                  Accepting only sends this {MACHINE}'s public key, so both screens can show the same
                   six digits. Nothing is decryptable by that device until you compare them.
                 </p>
                 <div className="sync-actions">
@@ -197,7 +198,7 @@ export default function PairingApprovals({ count, onHandled }) {
                 <DigitCode digits={item.digits} size="xl" />
                 <p className="sync-text">
                   If the two screens show different digits, someone is sitting between the two
-                  computers — reject.
+                  {' '}{MACHINES} — reject.
                 </p>
                 <p className="sync-text">
                   Confirming lets <strong>{name}</strong> decrypt your SSH private keys and the
@@ -225,8 +226,8 @@ export default function PairingApprovals({ count, onHandled }) {
             {accepted && !item.digits && (
               <div className="sync-verify">
                 <p className="sync-text sync-text-warn">
-                  The six digits for this request are not available on this computer any more, so
-                  there is nothing to compare. Reject it and pair again with both computers in
+                  The six digits for this request are not available on this {MACHINE} any more, so
+                  there is nothing to compare. Reject it and pair again with both {MACHINES} in
                   front of you.
                 </p>
                 <div className="sync-actions">

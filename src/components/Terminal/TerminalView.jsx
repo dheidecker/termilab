@@ -6,6 +6,13 @@ import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import { useApp } from '../../contexts/AppContext';
 import { getTheme } from '../../themes/terminal-themes';
+import { IS_ANDROID } from '../../platform';
+import ExtraKeys, { useStickyModifiers } from './mobile/ExtraKeys';
+import SessionHeader from './mobile/SessionHeader';
+import { applyModifiers, keySequence } from './mobile/keys';
+import { attachTouch, readPinchedFont, writePinchedFont, FONT_EVENT } from './mobile/touch';
+import { readClipboard, writeClipboard } from './mobile/clipboard';
+import { sessionStatus } from '../Mobile/sessions';
 import './TerminalView.css';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
@@ -28,6 +35,20 @@ export default function TerminalView({ tab }) {
   const activeTabIdRef = useRef(state.activeTabId);
   const broadcastRef = useRef(state.broadcast);
   const tabsRef = useRef(state.tabs);
+  /* Android: sticky Ctrl/Alt from the extra-keys row modify what the soft
+     keyboard types; keys the row itself sends skip that (bypassRef). */
+  const modifiers = useStickyModifiers();
+  const inputFilterRef = useRef(null);
+  const bypassRef = useRef(false);
+  const [hasSelection, setHasSelection] = useState(false);
+  inputFilterRef.current = IS_ANDROID ? (data) => {
+    if (bypassRef.current) return data;
+    const mods = modifiers.peek();
+    if (!mods.ctrl && !mods.alt) return data;
+    const r = applyModifiers(data, mods);
+    if (r.used) modifiers.spend();
+    return r.data;
+  } : null;
 
   /* Keep broadcast & tabs refs in sync with state */
   useEffect(() => { broadcastRef.current = state.broadcast; }, [state.broadcast]);
@@ -37,6 +58,9 @@ export default function TerminalView({ tab }) {
 
   /* Terminal settings from app */
   const termSettings = state.settings?.terminal || {};
+  const termSettingsRef = useRef(termSettings);
+  termSettingsRef.current = termSettings;
+  const lastSettingsFontRef = useRef(undefined);
 
   useEffect(() => {
     /* For SSH tabs: wait until sessionId is available (connecting is done) */
@@ -48,7 +72,7 @@ export default function TerminalView({ tab }) {
 
     const term = new Terminal({
       fontFamily: termSettings.fontFamily || 'JetBrains Mono, Consolas, monospace',
-      fontSize: termSettings.fontSize || 14,
+      fontSize: (IS_ANDROID && readPinchedFont()) || termSettings.fontSize || 14,
       cursorStyle: termSettings.cursorStyle || 'block',
       cursorBlink: true,
       scrollback: termSettings.scrollback || 5000,
@@ -107,8 +131,9 @@ export default function TerminalView({ tab }) {
       return true;
     });
 
-    /* Right-click → paste */
-    containerRef.current.addEventListener('contextmenu', (e) => {
+    /* Right-click → paste (on Android a long-press is a contextmenu too:
+       there it selects instead, see mobile/touch.js) */
+    if (!IS_ANDROID) containerRef.current.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       navigator.clipboard.readText().then(text => {
         if (text) {
@@ -121,6 +146,26 @@ export default function TerminalView({ tab }) {
         }
       });
     });
+
+    /* Android: pinch zoom, long-press selection, and the size other
+       terminals were pinched to. */
+    let detachTouch = null;
+    const onPinchedFont = (e) => {
+      const size = e.detail || termSettingsRef.current.fontSize || 14;
+      if (term.options.fontSize !== size) term.options.fontSize = size;
+      requestAnimationFrame(() => { try { fitAddon.fit(); } catch (err) { /* ignore */ } });
+    };
+    if (IS_ANDROID) {
+      detachTouch = attachTouch(term, () => fitAddon.fit(), containerRef.current);
+      /* For checks over CDP on the emulator (selection, modes); page-local */
+      containerRef.current.__xterm = term;
+      term.onSelectionChange(() => setHasSelection(term.hasSelection()));
+      /* The keyboard or a rotation shrinks the rows: keep the prompt in view */
+      term.onResize(() => term.scrollToBottom());
+      window.addEventListener(FONT_EVENT, onPinchedFont);
+    }
+    /* Input from the keyboard, after the sticky modifiers */
+    const filterInput = (data) => (inputFilterRef.current ? inputFilterRef.current(data) : data);
 
     /* Fit after a small delay */
     requestAnimationFrame(() => {
@@ -192,7 +237,8 @@ export default function TerminalView({ tab }) {
             term.clear();
 
             /* Terminal -> local shell */
-            term.onData((data) => {
+            term.onData((raw) => {
+              const data = filterInput(raw);
               if (sessionIdRef.current) {
                 window.electronAPI.localShell.write(sessionIdRef.current, data);
               }
@@ -247,6 +293,8 @@ export default function TerminalView({ tab }) {
         window.electronAPI.ssh.onClose((sid) => {
           if (mountedRef.current && sid === sessionIdRef.current) {
             setConnected(false);
+            /* The Sessions screen shows it as disconnected */
+            if (IS_ANDROID) dispatch({ type: 'UPDATE_TAB', payload: { id: tab.id, closed: true } });
             term.writeln('\r\n\x1b[90m[Connection closed]\x1b[0m');
           }
         });
@@ -258,7 +306,8 @@ export default function TerminalView({ tab }) {
         });
 
         /* Terminal -> SSH */
-        term.onData((data) => {
+        term.onData((raw) => {
+          const data = filterInput(raw);
           if (sessionIdRef.current) {
             window.electronAPI.ssh.sendData(sessionIdRef.current, data);
           }
@@ -336,6 +385,8 @@ export default function TerminalView({ tab }) {
       initializedRef.current = false;  // Allow re-init on StrictMode remount
       ro.disconnect();
       document.removeEventListener('keydown', keyHandler);
+      if (detachTouch) detachTouch();
+      window.removeEventListener(FONT_EVENT, onPinchedFont);
       term.dispose();
     };
 
@@ -351,7 +402,13 @@ export default function TerminalView({ tab }) {
     const term = termRef.current;
     if (!term) return;
 
-    const newFontSize = termSettings.fontSize || 14;
+    /* Android: a pinched size wins until Settings changes the size */
+    const settingsFont = termSettings.fontSize || 14;
+    if (IS_ANDROID && lastSettingsFontRef.current !== undefined && lastSettingsFontRef.current !== settingsFont) {
+      writePinchedFont(null);
+    }
+    lastSettingsFontRef.current = settingsFont;
+    const newFontSize = (IS_ANDROID && readPinchedFont()) || settingsFont;
     const newFontFamily = termSettings.fontFamily || 'JetBrains Mono, Consolas, monospace';
     const newCursorStyle = termSettings.cursorStyle || 'block';
 
@@ -394,10 +451,45 @@ export default function TerminalView({ tab }) {
     '--terminal-bg': getTheme(termSettings.theme || 'github-dark').background,
   };
 
+  /* ─── Android: header, extra keys, selection ─── */
+  const inject = (term, fn) => {
+    bypassRef.current = true;
+    try { fn(); } finally { bypassRef.current = false; }
+  };
+  const sendKey = (id) => {
+    const term = termRef.current;
+    if (!term) return;
+    const mods = modifiers.peek();
+    const seq = keySequence(id, { appCursor: !!term.modes?.applicationCursorKeysMode, ...mods });
+    if (mods.ctrl || mods.alt) modifiers.spend();
+    /* term.input fires onData synchronously: same path as typing, so
+       broadcast and everything else downstream see it */
+    inject(term, () => term.input(seq, true));
+  };
+  const pasteClipboard = async () => {
+    const text = await readClipboard();
+    const term = termRef.current;
+    if (term && text) inject(term, () => term.paste(text));
+  };
+  const copySelection = async () => {
+    const term = termRef.current;
+    if (!term) return;
+    await writeClipboard(term.getSelection());
+    term.clearSelection();
+  };
+  const mobileHeader = IS_ANDROID ? (
+    <SessionHeader
+      tab={tab}
+      status={sessionStatus(tab)}
+      onResetZoom={() => writePinchedFont(null)}
+    />
+  ) : null;
+
   /* Show loading overlay for SSH connecting state */
   if (!isLocal && (tab.connecting || (!tab.sessionId && !tab.error))) {
     return (
       <div className="terminal-container" style={containerStyle}>
+        {mobileHeader}
         <div className="terminal-connecting">
           <div className="terminal-connecting-spinner" />
           <div className="terminal-connecting-text">Connecting to {tab.label || 'host'}...</div>
@@ -417,6 +509,7 @@ export default function TerminalView({ tab }) {
   if (tab.error) {
     return (
       <div className="terminal-container" style={containerStyle}>
+        {mobileHeader}
         <div className="terminal-connecting">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--color-danger)" strokeWidth="2">
             <circle cx="12" cy="12" r="10"/>
@@ -436,6 +529,7 @@ export default function TerminalView({ tab }) {
 
   return (
     <div className="terminal-container" style={containerStyle}>
+      {mobileHeader}
       {showSearch && (
         <div className="terminal-search">
           <input
@@ -473,8 +567,16 @@ export default function TerminalView({ tab }) {
 
       <div className="terminal-wrapper" ref={containerRef} />
 
-      {/* ─── Bottom Bar: Status ─── */}
-      <div className="terminal-bottom-bar">
+      {IS_ANDROID && hasSelection && (
+        <div className="m-selection-bar">
+          <button type="button" className="m-chip m-chip-primary" onMouseDown={(e) => e.preventDefault()} onClick={copySelection}>Copy</button>
+          <button type="button" className="m-chip" onMouseDown={(e) => e.preventDefault()} onClick={() => termRef.current?.clearSelection()}>Cancel</button>
+        </div>
+      )}
+      {IS_ANDROID && <ExtraKeys modifiers={modifiers} onKey={sendKey} onPaste={pasteClipboard} />}
+
+      {/* ─── Bottom Bar: Status (desktop; on Android the header says it) ─── */}
+      {!IS_ANDROID && <div className="terminal-bottom-bar">
         <div className="terminal-status">
           <span className={`terminal-status-dot ${connected ? '' : 'disconnected'}`} />
           <span>
@@ -530,7 +632,7 @@ export default function TerminalView({ tab }) {
             </button>
           )}
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

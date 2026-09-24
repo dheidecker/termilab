@@ -1,0 +1,14 @@
+{
+  "appId": "com.rhinlab.termilab",
+  "appName": "Termilab",
+  "webDir": "dist-mobile",
+  "loggingBehavior": "none",
+  "android": {
+    "path": "mobile/android"
+  },
+  "plugins": {
+    "CapacitorNodeJS": {
+      "nodeDir": "nodejs"
+    }
+  }
+}

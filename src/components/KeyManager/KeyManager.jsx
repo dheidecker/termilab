@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
+import { FEATURES } from '../../platform';
 import './KeyManager.css';
+import { useBackHandler } from '../../hooks/useBackHandler';
 
 export default function KeyManager() {
   const { state, actions } = useApp();
@@ -12,6 +14,8 @@ export default function KeyManager() {
   const [pasteForm, setPasteForm] = useState({ name: '', content: '' });
   const [copied, setCopied] = useState(false);
   const [pasteError, setPasteError] = useState('');
+  useBackHandler(showGenerate, () => setShowGenerate(false));
+  useBackHandler(showPaste, () => { setShowPaste(false); setPasteError(''); });
 
   const handleImport = async () => {
     try {
@@ -77,14 +81,16 @@ export default function KeyManager() {
       <div className="key-manager-header">
         <h2>Keychain</h2>
         <div className="key-manager-actions">
-          <button className="key-import-btn" onClick={handleImport}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            Import
-          </button>
+          {FEATURES.keyFileImport && (
+            <button className="key-import-btn" onClick={handleImport}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              Import
+            </button>
+          )}
           <button className="key-generate-btn" onClick={() => setShowGenerate(true)}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="12" y1="5" x2="12" y2="19" />

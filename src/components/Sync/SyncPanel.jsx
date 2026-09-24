@@ -6,6 +6,7 @@ import PairingApprovals from './PairingApprovals';
 import PassphraseCard from './PassphraseCard';
 import { errorMessage, formatRelative, formatAbsolute } from './helpers';
 import './Sync.css';
+import { IS_ANDROID, MACHINE, MACHINES } from '../../platform';
 
 /* The browser sign-in link the sync API mints is good for ten minutes. */
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
@@ -102,6 +103,22 @@ export default function SyncPanel() {
     setLoginHint('Stopped waiting. If you did finish in the browser, press Refresh status.');
   };
 
+  /* Android: a real cancel. logout() sets the service's abort flag, so the
+     /auth/poll loop stops within one interval, the login promise rejects, and
+     mobile/node/main.js drops `signingIn`: the foreground service (and its
+     "signing in" notification) stops and the Custom Tab closes. Nothing was
+     stored yet, so there is nothing else for logout to undo. */
+  const handleCancelLogin = async () => {
+    stopWaiting();
+    setLoginHint(null);
+    setLoginError(null);
+    try {
+      await actions.syncLogout();
+    } catch (err) {
+      if (mounted.current) setLoginError(errorMessage(err, 'Could not cancel the sign-in.'));
+    }
+  };
+
   const handleRefresh = async () => {
     setActionError(null);
     await actions.refreshSyncStatus();
@@ -159,7 +176,7 @@ export default function SyncPanel() {
       <div className="sync-card sync-card-muted">
         <p className="sync-text">
           Sync is not available in this build. Hosts, groups, snippets and keys stay on this
-          computer only.
+          {' '}{MACHINE} only.
         </p>
       </div>
     );
@@ -180,7 +197,7 @@ export default function SyncPanel() {
     return (
       <div className="sync-card">
         <p className="sync-text">
-          Keep your hosts, groups, snippets and keys on every computer you use. Sign-in happens in
+          Keep your hosts, groups, snippets and keys on every {MACHINE} you use. Sign-in happens in
           your browser: Termilab never sees your Google account, only a device token you can revoke
           from any of your devices.
         </p>
@@ -195,13 +212,19 @@ export default function SyncPanel() {
             <div className="sync-waiting-body">
               <strong>Finish signing in in your browser</strong>
               <span className="sync-text-dim">
-                This window updates on its own when you are done.
+                {IS_ANDROID ? 'This screen' : 'This window'} updates on its own when you are done.
                 {deadline ? ` The link expires in ${formatCountdown(deadline - now)}.` : ''}
               </span>
             </div>
-            <button className="sync-btn sync-btn-ghost" onClick={handleStopWaiting}>
-              Stop waiting
-            </button>
+            {IS_ANDROID ? (
+              <button className="sync-btn sync-btn-ghost" onClick={handleCancelLogin}>
+                Cancel
+              </button>
+            ) : (
+              <button className="sync-btn sync-btn-ghost" onClick={handleStopWaiting}>
+                Stop waiting
+              </button>
+            )}
           </div>
         ) : (
           <div className="sync-actions">
@@ -244,7 +267,7 @@ export default function SyncPanel() {
           <div className="sync-account-body">
             <div className="sync-account-email">{status.email || 'Signed in'}</div>
             <div className="sync-account-meta">
-              <span>{status.deviceName || 'This computer'}</span>
+              <span>{status.deviceName || `This ${MACHINE}`}</span>
               <span className="sync-dot" aria-hidden="true">·</span>
               <span title={lastSyncTitle || undefined}>
                 {status.syncing
@@ -316,7 +339,7 @@ export default function SyncPanel() {
       ) : (
         <div className="sync-actions">
           <button className="sync-btn sync-btn-ghost" onClick={() => setShowPairing(true)}>
-            Pair from another computer instead
+            Pair from another {MACHINE} instead
           </button>
         </div>
       ))}
@@ -345,18 +368,18 @@ function SecretsNotice({ withheld, blocked, undecryptable, unlocked }) {
         {blocked > 0 && (
           <span>
             <strong>
-              {blocked} saved password{plural(blocked)} arrived from your other computers still
+              {blocked} saved password{plural(blocked)} arrived from your other {MACHINES} still
               encrypted.
             </strong>{' '}
-            The hosts are here; the passwords open once this computer is unlocked.
+            The hosts are here; the passwords open once this {MACHINE} is unlocked.
           </span>
         )}
         {withheld > 0 && (
           <span>
             <strong>
-              {withheld} saved password{plural(withheld)} stayed on this computer.
+              {withheld} saved password{plural(withheld)} stayed on this {MACHINE}.
             </strong>{' '}
-            Termilab only backs them up encrypted, and this computer is not unlocked yet.
+            Termilab only backs them up encrypted, and this {MACHINE} is not unlocked yet.
           </span>
         )}
         {/* Not sync-text-dim: --text-tertiary lands at 3.5:1 on this background,
@@ -373,9 +396,9 @@ function SecretsNotice({ withheld, blocked, undecryptable, unlocked }) {
     <div className="sync-secrets">
       <span>
         <strong>{stuck} item{plural(stuck)} can’t be opened here yet.</strong>{' '}
-        Another computer encrypted {it ? 'it' : 'them'} with its own old key, before this account
-        had a passphrase. {it ? 'It opens' : 'They open'} once that computer is updated to this
-        version and unlocked with the same passphrase. That computer still has the original, so
+        Another {MACHINE} encrypted {it ? 'it' : 'them'} with its own old key, before this account
+        had a passphrase. {it ? 'It opens' : 'They open'} once that {MACHINE} is updated to this
+        version and unlocked with the same passphrase. That {MACHINE} still has the original, so
         nothing was lost.
       </span>
     </div>
