@@ -1,13 +1,68 @@
-const fs = require('fs');
-const fsp = require('fs/promises');
 const path = require('path');
 const sshService = require('./ssh-service');
+const { formatPermissions } = require('./local-fs-service');
+
+const posix = path.posix;
+
+/**
+ * SFTP over an SSH session that ssh-service already holds.
+ *
+ * The session can be a terminal's (the SFTP pane reuses it when one is open
+ * for that host) or one opened just for SFTP (`ssh:connect` with
+ * purpose:'sftp', which skips the shell). Either way the SFTP channel is
+ * opened lazily here and cached per sessionId; several panes on the same
+ * session share it (the protocol is request/response with ids).
+ *
+ * Remote paths are POSIX, absolute, NUL-free. Names that create something
+ * are one segment. Names in a listing that are not a single safe segment are
+ * dropped: an SFTP server decides what readdir returns, and "../x" from a
+ * hostile one must never reach a local path.join (see transfer-service).
+ */
+
+const STATUS = { NO_SUCH_FILE: 2, PERMISSION_DENIED: 3, FAILURE: 4 };
+
+/** One POSIX path segment: what a remote listing may contain and a create may use. */
+function isSafeRemoteName(name) {
+  return typeof name === 'string' && !!name && name !== '.' && name !== '..'
+    && !name.includes('/') && !name.includes('\0');
+}
+
+function checkRemotePath(p) {
+  if (typeof p !== 'string' || !p) throw new Error('A remote path is required.');
+  if (p.includes('\0')) throw new Error('The path contains a NUL byte.');
+  if (!p.startsWith('/')) throw new Error(`Not an absolute remote path: ${p}`);
+  const n = posix.normalize(p);
+  return n.length > 1 && n.endsWith('/') ? n.slice(0, -1) : n;
+}
+
+function checkRemoteName(name) {
+  if (!isSafeRemoteName(name)) throw new Error(`"${name}" is not a valid name.`);
+  return name;
+}
+
+function typeOfAttrs(attrs) {
+  if (attrs.isDirectory()) return 'directory';
+  if (attrs.isSymbolicLink()) return 'symlink';
+  if (attrs.isFile()) return 'file';
+  return 'other';
+}
+
+function readable(err, what) {
+  if (!err) return err;
+  let msg = err.message;
+  if (err.code === STATUS.NO_SUCH_FILE) msg = 'No such file or folder';
+  else if (err.code === STATUS.PERMISSION_DENIED) msg = 'Permission denied';
+  const out = new Error(`${msg}: ${what}`);
+  out.code = err.code;
+  return out;
+}
 
 class SFTPService {
   constructor() {
-    /** @type {Map<string, any>} */
+    /** @type {Map<string, any>} sessionId -> ssh2 SFTP */
     this.sftpSessions = new Map();
-    /** @type {import('electron').BrowserWindow | null} */
+    /** @type {Map<string, Promise>} sessionId -> channel being opened */
+    this._opening = new Map();
     this.mainWindow = null;
   }
 
@@ -25,327 +80,226 @@ class SFTPService {
     }
   }
 
-  async _getSFTP(sessionId) {
-    // Return cached SFTP session if available
-    if (this.sftpSessions.has(sessionId)) {
-      return this.sftpSessions.get(sessionId);
-    }
+  /** The SFTP channel for a session, opened once even under concurrent calls. */
+  async getSFTP(sessionId) {
+    if (this.sftpSessions.has(sessionId)) return this.sftpSessions.get(sessionId);
+    if (this._opening.has(sessionId)) return this._opening.get(sessionId);
 
     const client = sshService.getClient(sessionId);
-    if (!client) {
-      throw new Error(`No active SSH session found for ID: ${sessionId}`);
-    }
+    if (!client) throw new Error('The SSH connection for this pane is closed. Reconnect to continue.');
 
-    return new Promise((resolve, reject) => {
+    const p = new Promise((resolve, reject) => {
       client.sftp((err, sftp) => {
-        if (err) {
-          return reject(new Error(`Failed to open SFTP session: ${err.message}`));
-        }
-
-        sftp.on('end', () => {
-          this.sftpSessions.delete(sessionId);
+        if (err) return reject(new Error(`Could not start SFTP on this server: ${err.message}`));
+        const drop = () => {
+          if (this.sftpSessions.get(sessionId) === sftp) this.sftpSessions.delete(sessionId);
+        };
+        sftp.on('end', drop);
+        sftp.on('close', drop);
+        sftp.on('error', (e) => {
+          console.error(`[SFTPService] SFTP session error for ${sessionId}:`, e.message);
+          drop();
         });
-
-        sftp.on('close', () => {
-          this.sftpSessions.delete(sessionId);
-        });
-
-        sftp.on('error', (err) => {
-          console.error(`[SFTPService] SFTP session error for ${sessionId}:`, err.message);
-          this.sftpSessions.delete(sessionId);
-        });
-
         this.sftpSessions.set(sessionId, sftp);
         resolve(sftp);
       });
     });
-  }
-
-  async list(sessionId, remotePath) {
-    const sftp = await this._getSFTP(sessionId);
-
-    return new Promise((resolve, reject) => {
-      sftp.readdir(remotePath, (err, list) => {
-        if (err) {
-          return reject(new Error(`Failed to list directory "${remotePath}": ${err.message}`));
-        }
-
-        const entries = list.map(item => {
-          const attrs = item.attrs;
-          // Determine file type
-          let type = 'file';
-          if (attrs.isDirectory()) type = 'directory';
-          else if (attrs.isSymbolicLink()) type = 'symlink';
-          else if (attrs.isBlockDevice()) type = 'block-device';
-          else if (attrs.isCharacterDevice()) type = 'char-device';
-          else if (attrs.isFIFO()) type = 'fifo';
-          else if (attrs.isSocket()) type = 'socket';
-
-          return {
-            name: item.filename,
-            path: remotePath === '/' ? `/${item.filename}` : `${remotePath}/${item.filename}`,
-            type,
-            size: attrs.size,
-            modifyTime: attrs.mtime * 1000,
-            accessTime: attrs.atime * 1000,
-            mode: attrs.mode,
-            uid: attrs.uid,
-            gid: attrs.gid,
-            permissions: this._formatPermissions(attrs.mode),
-            isHidden: item.filename.startsWith('.'),
-          };
-        });
-
-        // Sort: directories first, then alphabetically
-        entries.sort((a, b) => {
-          if (a.type === 'directory' && b.type !== 'directory') return -1;
-          if (a.type !== 'directory' && b.type === 'directory') return 1;
-          return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-        });
-
-        resolve(entries);
-      });
-    });
-  }
-
-  async download(sessionId, remotePath, localPath) {
-    const sftp = await this._getSFTP(sessionId);
-
-    // Get file size for progress tracking
-    const stats = await this._stat(sftp, remotePath);
-    const totalSize = stats.size;
-
-    return new Promise((resolve, reject) => {
-      const readStream = sftp.createReadStream(remotePath);
-      const writeStream = fs.createWriteStream(localPath);
-      let transferred = 0;
-
-      readStream.on('data', (chunk) => {
-        transferred += chunk.length;
-        const progress = totalSize > 0 ? Math.round((transferred / totalSize) * 100) : 0;
-        this._send('sftp:transfer-progress', {
-          sessionId,
-          remotePath,
-          localPath,
-          direction: 'download',
-          transferred,
-          total: totalSize,
-          progress,
-        });
-      });
-
-      readStream.on('error', (err) => {
-        writeStream.destroy();
-        // Clean up partial file
-        try { fs.unlinkSync(localPath); } catch (_) { /* ignore */ }
-        reject(new Error(`Download failed for "${remotePath}": ${err.message}`));
-      });
-
-      writeStream.on('error', (err) => {
-        readStream.destroy();
-        try { fs.unlinkSync(localPath); } catch (_) { /* ignore */ }
-        reject(new Error(`Failed to write local file "${localPath}": ${err.message}`));
-      });
-
-      writeStream.on('finish', () => {
-        resolve({
-          remotePath,
-          localPath,
-          size: transferred,
-        });
-      });
-
-      readStream.pipe(writeStream);
-    });
-  }
-
-  async upload(sessionId, localPath, remotePath) {
-    const sftp = await this._getSFTP(sessionId);
-
-    // Get local file size for progress
-    const localStats = await fsp.stat(localPath);
-    const totalSize = localStats.size;
-
-    return new Promise((resolve, reject) => {
-      const readStream = fs.createReadStream(localPath);
-      const writeStream = sftp.createWriteStream(remotePath);
-      let transferred = 0;
-
-      readStream.on('data', (chunk) => {
-        transferred += chunk.length;
-        const progress = totalSize > 0 ? Math.round((transferred / totalSize) * 100) : 0;
-        this._send('sftp:transfer-progress', {
-          sessionId,
-          remotePath,
-          localPath,
-          direction: 'upload',
-          transferred,
-          total: totalSize,
-          progress,
-        });
-      });
-
-      readStream.on('error', (err) => {
-        writeStream.destroy();
-        reject(new Error(`Failed to read local file "${localPath}": ${err.message}`));
-      });
-
-      writeStream.on('error', (err) => {
-        readStream.destroy();
-        reject(new Error(`Upload failed for "${remotePath}": ${err.message}`));
-      });
-
-      writeStream.on('close', () => {
-        resolve({
-          remotePath,
-          localPath,
-          size: transferred,
-        });
-      });
-
-      readStream.pipe(writeStream);
-    });
-  }
-
-  async mkdir(sessionId, remotePath) {
-    const sftp = await this._getSFTP(sessionId);
-
-    return new Promise((resolve, reject) => {
-      sftp.mkdir(remotePath, (err) => {
-        if (err) {
-          return reject(new Error(`Failed to create directory "${remotePath}": ${err.message}`));
-        }
-        resolve({ path: remotePath });
-      });
-    });
-  }
-
-  async delete(sessionId, remotePath, isDirectory) {
-    const sftp = await this._getSFTP(sessionId);
-
-    if (isDirectory) {
-      await this._deleteDirectory(sftp, remotePath);
-    } else {
-      await this._deleteFile(sftp, remotePath);
+    this._opening.set(sessionId, p);
+    try {
+      return await p;
+    } finally {
+      this._opening.delete(sessionId);
     }
-    return { path: remotePath };
   }
 
-  async _deleteFile(sftp, remotePath) {
+  _call(sftp, method, ...args) {
     return new Promise((resolve, reject) => {
-      sftp.unlink(remotePath, (err) => {
-        if (err) {
-          return reject(new Error(`Failed to delete file "${remotePath}": ${err.message}`));
-        }
-        resolve();
-      });
+      sftp[method](...args, (err, result) => (err ? reject(err) : resolve(result)));
     });
   }
 
-  async _deleteDirectory(sftp, remotePath) {
-    // Recursively delete directory contents first
-    const entries = await new Promise((resolve, reject) => {
-      sftp.readdir(remotePath, (err, list) => {
-        if (err) return reject(new Error(`Failed to read directory "${remotePath}": ${err.message}`));
-        resolve(list);
-      });
-    });
-
-    for (const entry of entries) {
-      const entryPath = `${remotePath}/${entry.filename}`;
-      if (entry.attrs.isDirectory()) {
-        await this._deleteDirectory(sftp, entryPath);
-      } else {
-        await this._deleteFile(sftp, entryPath);
-      }
-    }
-
-    return new Promise((resolve, reject) => {
-      sftp.rmdir(remotePath, (err) => {
-        if (err) {
-          return reject(new Error(`Failed to remove directory "${remotePath}": ${err.message}`));
-        }
-        resolve();
-      });
-    });
-  }
-
-  async rename(sessionId, oldPath, newPath) {
-    const sftp = await this._getSFTP(sessionId);
-
-    return new Promise((resolve, reject) => {
-      sftp.rename(oldPath, newPath, (err) => {
-        if (err) {
-          return reject(new Error(`Failed to rename "${oldPath}" to "${newPath}": ${err.message}`));
-        }
-        resolve({ oldPath, newPath });
-      });
-    });
-  }
-
-  async stat(sessionId, remotePath) {
-    const sftp = await this._getSFTP(sessionId);
-    const stats = await this._stat(sftp, remotePath);
-
-    let type = 'file';
-    if (stats.isDirectory()) type = 'directory';
-    else if (stats.isSymbolicLink()) type = 'symlink';
-
+  _entry(dir, name, attrs) {
+    const full = dir === '/' ? `/${name}` : `${dir}/${name}`;
+    const type = typeOfAttrs(attrs);
     return {
-      path: remotePath,
+      name,
+      path: full,
       type,
-      size: stats.size,
-      modifyTime: stats.mtime * 1000,
-      accessTime: stats.atime * 1000,
-      mode: stats.mode,
-      uid: stats.uid,
-      gid: stats.gid,
-      permissions: this._formatPermissions(stats.mode),
+      size: type === 'directory' ? null : attrs.size,
+      modifyTime: attrs.mtime * 1000,
+      mode: attrs.mode,
+      uid: attrs.uid,
+      gid: attrs.gid,
+      permissions: formatPermissions(attrs.mode),
+      isHidden: name.startsWith('.'),
     };
   }
 
-  _stat(sftp, remotePath) {
-    return new Promise((resolve, reject) => {
-      sftp.stat(remotePath, (err, stats) => {
-        if (err) {
-          return reject(new Error(`Failed to stat "${remotePath}": ${err.message}`));
+  async list(sessionId, remotePath) {
+    const dir = checkRemotePath(remotePath);
+    const sftp = await this.getSFTP(sessionId);
+    let list;
+    try {
+      list = await this._call(sftp, 'readdir', dir);
+    } catch (err) {
+      throw readable(err, dir);
+    }
+    const entries = [];
+    for (const item of list) {
+      if (!isSafeRemoteName(item.filename)) continue;
+      entries.push(this._entry(dir, item.filename, item.attrs));
+    }
+    // Symlinks: is it a folder we can enter? A few at a time.
+    const links = entries.filter(e => e.type === 'symlink');
+    for (let i = 0; i < links.length; i += 16) {
+      await Promise.all(links.slice(i, i + 16).map(async (e) => {
+        try {
+          const st = await this._call(sftp, 'stat', e.path);
+          e.linkType = st.isDirectory() ? 'directory' : 'file';
+          if (!st.isDirectory()) e.size = st.size;
+        } catch (_) {
+          e.linkType = 'broken';
         }
-        resolve(stats);
-      });
-    });
+      }));
+    }
+    return entries;
   }
 
-  _formatPermissions(mode) {
-    if (mode === undefined || mode === null) return '----------';
-    const perms = [
-      (mode & 0o400) ? 'r' : '-',
-      (mode & 0o200) ? 'w' : '-',
-      (mode & 0o100) ? 'x' : '-',
-      (mode & 0o040) ? 'r' : '-',
-      (mode & 0o020) ? 'w' : '-',
-      (mode & 0o010) ? 'x' : '-',
-      (mode & 0o004) ? 'r' : '-',
-      (mode & 0o002) ? 'w' : '-',
-      (mode & 0o001) ? 'x' : '-',
-    ];
-    return perms.join('');
+  /** Absolute form of a path; realpath('.') is the login directory. */
+  async realpath(sessionId, remotePath = '.') {
+    if (typeof remotePath !== 'string' || remotePath.includes('\0')) throw new Error('Invalid path.');
+    const sftp = await this.getSFTP(sessionId);
+    try {
+      return await this._call(sftp, 'realpath', remotePath || '.');
+    } catch (err) {
+      throw readable(err, remotePath);
+    }
+  }
+
+  /** The entry (lstat), or null when nothing is there. */
+  async stat(sessionId, remotePath) {
+    const p = checkRemotePath(remotePath);
+    const sftp = await this.getSFTP(sessionId);
+    try {
+      const attrs = await this._call(sftp, 'lstat', p);
+      return this._entry(posix.dirname(p), posix.basename(p) || '/', attrs);
+    } catch (err) {
+      if (err.code === STATUS.NO_SUCH_FILE) return null;
+      throw readable(err, p);
+    }
+  }
+
+  async mkdir(sessionId, dir, name) {
+    const p = posix.join(checkRemotePath(dir), checkRemoteName(name));
+    const sftp = await this.getSFTP(sessionId);
+    if (await this._exists(sftp, p)) throw new Error(`"${name}" already exists here.`);
+    try {
+      await this._call(sftp, 'mkdir', p);
+    } catch (err) {
+      throw readable(err, p);
+    }
+    return { path: p };
+  }
+
+  async createFile(sessionId, dir, name) {
+    const p = posix.join(checkRemotePath(dir), checkRemoteName(name));
+    const sftp = await this.getSFTP(sessionId);
+    let handle;
+    try {
+      handle = await this._call(sftp, 'open', p, 'wx');
+    } catch (err) {
+      if (err.code === STATUS.FAILURE && await this._exists(sftp, p)) throw new Error(`"${name}" already exists here.`);
+      throw readable(err, p);
+    }
+    await this._call(sftp, 'close', handle).catch(() => {});
+    return { path: p };
+  }
+
+  /** Same directory, new name. Refuses to replace something that is there. */
+  async rename(sessionId, remotePath, newName) {
+    const from = checkRemotePath(remotePath);
+    const to = posix.join(posix.dirname(from), checkRemoteName(newName));
+    if (to === from) return { path: to };
+    const sftp = await this.getSFTP(sessionId);
+    if (await this._exists(sftp, to)) throw new Error(`"${newName}" already exists here.`);
+    try {
+      await this._call(sftp, 'rename', from, to);
+    } catch (err) {
+      throw readable(err, from);
+    }
+    return { path: to };
+  }
+
+  /** Permanent. Folders recursively; symlinks are unlinked, never followed. */
+  async delete(sessionId, remotePath) {
+    const p = checkRemotePath(remotePath);
+    if (p === '/') throw new Error('Refusing to delete the root of the server.');
+    const sftp = await this.getSFTP(sessionId);
+    let attrs;
+    try {
+      attrs = await this._call(sftp, 'lstat', p);
+    } catch (err) {
+      throw readable(err, p);
+    }
+    await this._deleteTree(sftp, p, attrs);
+    return { path: p };
+  }
+
+  async _deleteTree(sftp, p, attrs) {
+    if (!attrs.isDirectory()) {
+      try { await this._call(sftp, 'unlink', p); } catch (err) { throw readable(err, p); }
+      return;
+    }
+    let list;
+    try { list = await this._call(sftp, 'readdir', p); } catch (err) { throw readable(err, p); }
+    for (const item of list) {
+      if (item.filename === '.' || item.filename === '..') continue;
+      if (!isSafeRemoteName(item.filename)) {
+        throw new Error(`The server listed an unsafe name in ${p}; nothing more was deleted.`);
+      }
+      await this._deleteTree(sftp, `${p}/${item.filename}`, item.attrs);
+    }
+    try { await this._call(sftp, 'rmdir', p); } catch (err) { throw readable(err, p); }
+  }
+
+  async chmod(sessionId, remotePath, mode) {
+    const p = checkRemotePath(remotePath);
+    if (!Number.isInteger(mode) || mode < 0 || mode > 0o7777) throw new Error('Invalid permissions.');
+    const sftp = await this.getSFTP(sessionId);
+    try {
+      await this._call(sftp, 'chmod', p, mode);
+    } catch (err) {
+      throw readable(err, p);
+    }
+    return { path: p, mode };
+  }
+
+  async _exists(sftp, p) {
+    try {
+      await this._call(sftp, 'lstat', p);
+      return true;
+    } catch (err) {
+      if (err.code === STATUS.NO_SUCH_FILE) return false;
+      throw readable(err, p);
+    }
   }
 
   closeSFTP(sessionId) {
     const sftp = this.sftpSessions.get(sessionId);
     if (sftp) {
-      try {
-        sftp.end();
-      } catch (_) { /* ignore */ }
+      try { sftp.end(); } catch (_) { /* ignore */ }
       this.sftpSessions.delete(sessionId);
     }
   }
 
   closeAll() {
-    for (const [sessionId] of this.sftpSessions) {
-      this.closeSFTP(sessionId);
-    }
+    for (const [sessionId] of this.sftpSessions) this.closeSFTP(sessionId);
   }
 }
 
 module.exports = new SFTPService();
+module.exports.checkRemotePath = checkRemotePath;
+module.exports.checkRemoteName = checkRemoteName;
+module.exports.isSafeRemoteName = isSafeRemoteName;
+module.exports.readable = readable;
+module.exports.STATUS = STATUS;

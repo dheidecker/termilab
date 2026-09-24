@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 /**
  * Unwrap the { success, data, error } envelope produced by wrapHandler()
@@ -86,22 +86,86 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // ─── SFTP ─────────────────────────────────────────────
+  // Desktop only (the Android shim omits the namespace). Remote operations
+  // take an ssh sessionId: a terminal's, or one from ssh.connect with
+  // purpose:'sftp' (no shell). Paths are absolute POSIX; mkdir/createFile/
+  // rename take a directory (or path) plus ONE name segment.
   sftp: {
     list: (sessionId, path) => invoke('sftp:list', sessionId, path),
-    download: (sessionId, remotePath) => invoke('sftp:download', sessionId, remotePath),
-    upload: (sessionId, remotePath) => invoke('sftp:upload', sessionId, remotePath),
-    mkdir: (sessionId, path) => invoke('sftp:mkdir', sessionId, path),
-    delete: (sessionId, path, isDirectory) => invoke('sftp:delete', sessionId, path, isDirectory),
-    rename: (sessionId, oldPath, newPath) => invoke('sftp:rename', sessionId, oldPath, newPath),
+    realpath: (sessionId, path) => invoke('sftp:realpath', sessionId, path),
+    /* entry or null when nothing is there (lstat) */
     stat: (sessionId, path) => invoke('sftp:stat', sessionId, path),
+    mkdir: (sessionId, dir, name) => invoke('sftp:mkdir', sessionId, dir, name),
+    createFile: (sessionId, dir, name) => invoke('sftp:create-file', sessionId, dir, name),
+    rename: (sessionId, path, newName) => invoke('sftp:rename', sessionId, path, newName),
+    /* Permanent, recursive for folders */
+    delete: (sessionId, path) => invoke('sftp:delete', sessionId, path),
+    chmod: (sessionId, path, mode) => invoke('sftp:chmod', sessionId, path, mode),
+
+    /* Transfers. spec = {src, srcPath, dst, dstDir, name?, conflict?: 'overwrite'|'rename'}
+       with src/dst = {kind:'local'} | {kind:'remote', sessionId}. Resolves
+       {id, bytes, files, skipped, target}; rejects on error or cancel. */
+    transferStart: (id, spec) => invoke('sftp:transfer-start', id, spec),
+    transferCancel: (id) => invoke('sftp:transfer-cancel', id),
+    /* {id, transferred, total, files, filesDone, current} */
     onTransferProgress: (callback) => {
       const listener = (event, progress) => callback(progress);
       ipcRenderer.on('sftp:transfer-progress', listener);
       return listener;
     },
-    removeAllListeners: () => {
-      ipcRenderer.removeAllListeners('sftp:transfer-progress');
+    offTransferProgress: (listener) => {
+      if (listener) ipcRenderer.removeListener('sftp:transfer-progress', listener);
     },
+
+    /* Remote files through a temp copy owned by `owner` (the SFTP tab id).
+       cleanup(owner) stops its watchers and deletes its temp folder. */
+    openRemote: (sessionId, path, owner) => invoke('sftp:open-remote', sessionId, path, owner),
+    editStart: (sessionId, path, owner) => invoke('sftp:edit-start', sessionId, path, owner),
+    editUpload: (editId) => invoke('sftp:edit-upload', editId),
+    editStop: (editId) => invoke('sftp:edit-stop', editId),
+    cleanup: (owner) => invoke('sftp:cleanup', owner),
+    /* {editId, owner, type:'changed', name, remotePath} */
+    onEditEvent: (callback) => {
+      const listener = (event, payload) => callback(payload);
+      ipcRenderer.on('sftp:edit-event', listener);
+      return listener;
+    },
+    offEditEvent: (listener) => {
+      if (listener) ipcRenderer.removeListener('sftp:edit-event', listener);
+    },
+
+    /* The pane's ssh session went away ('ssh:close'). Its own listener, so a
+       pane can detach just that one (ssh.removeAllListeners would deafen
+       every terminal). */
+    onSessionClose: (callback) => {
+      const listener = (event, sessionId) => callback(sessionId);
+      ipcRenderer.on('ssh:close', listener);
+      return listener;
+    },
+    offSessionClose: (listener) => {
+      if (listener) ipcRenderer.removeListener('ssh:close', listener);
+    },
+
+    /* Absolute path of a File dropped from the OS file manager. Electron 32+
+       removed File.path; webUtils is the replacement. */
+    pathForFile: (file) => {
+      try { return webUtils.getPathForFile(file) || null; } catch (_) { return null; }
+    },
+  },
+
+  // ─── Local filesystem (SFTP Local pane) ────────────────
+  // Absolute paths; names are one segment; trash() uses the OS trash.
+  localFs: {
+    home: () => invoke('local-fs:home'),
+    list: (dir) => invoke('local-fs:list', dir),
+    stat: (p) => invoke('local-fs:stat', p),
+    mkdir: (dir, name) => invoke('local-fs:mkdir', dir, name),
+    createFile: (dir, name) => invoke('local-fs:create-file', dir, name),
+    rename: (p, newName) => invoke('local-fs:rename', p, newName),
+    trash: (p) => invoke('local-fs:trash', p),
+    copy: (src, dstDir, name) => invoke('local-fs:copy', src, dstDir, name),
+    chmod: (p, mode) => invoke('local-fs:chmod', p, mode),
+    open: (p) => invoke('local-fs:open', p),
   },
 
   // ─── Store ────────────────────────────────────────────
