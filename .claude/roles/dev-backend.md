@@ -387,3 +387,19 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   `closeAllForQuit` (espera inserts en vuelo + lock, tope 2 s, luego sync) y
   vuelve a `app.quit()`; `quitCleanupDone` evita el bucle. Con
   `updater:install` no se retiene (el updater lleva su quit). K16.
+
+## Android: Node bajo nodejs-mobile (fases 1–2, 2026-09)
+
+- `electron/` no se toca para Android: `mobile/node/electron-shim.js` es `electron` en el
+  bundle (alias de esbuild). `configure()` antes de requerir nada de `electron/`
+  (store-service fija su ruta en el constructor).
+- `app.getPath('userData')` = DATADIR del plugin; los servicios le añaden `data/`.
+  La DSK de respaldo vive en `DATADIR/device-key.json`, **fuera** de `data/`.
+- El arnés es `npx -y -p node@18 node scripts/check-mobile.js`: arranca el BUNDLE real
+  con fork() y el `bridge` real del plugin (fuera de Android habla por process.send).
+  El padre tira los mensajes sin listener como el plugin: por eso caza la cola.
+- `scripts/lib/fake-sync-server.js` es ahora compartido por los dos arneses.
+- Canal nuevo en preload = canal nuevo en `mobile/web/electron-api-shim.js` (o en la
+  lista de omitidos). M1 se pone rojo si no.
+- Un segundo `node::Start` en el mismo proceso aborta (SIGTRAP). Android recrea la
+  activity sin matar el proceso: el motor del plugin es estático por proceso (fork).
