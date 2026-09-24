@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { useBackHandler } from '../../hooks/useBackHandler';
+import { IS_ANDROID } from '../../platform';
+import { MobileTopBar } from '../Mobile/MobileScreen';
 import './HostForm.css';
 
 export default function HostForm() {
@@ -119,7 +121,14 @@ export default function HostForm() {
   return (
     <div className="host-form-overlay" onClick={handleOverlayClick}>
       <div className="host-form">
-        <div className="host-form-header">
+        {/* Android: a full-screen sheet with back / title / save on top */}
+        {IS_ANDROID ? (
+          <MobileTopBar
+            title={editingHost ? 'Edit Host' : 'New Host'}
+            onBack={actions.closeHostForm}
+            action={{ label: 'Save', onClick: handleSave }}
+          />
+        ) : <div className="host-form-header">
           <h2>{editingHost ? 'Edit Host' : 'New Host'}</h2>
           <button className="host-form-close-btn" onClick={actions.closeHostForm}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -127,7 +136,7 @@ export default function HostForm() {
               <line x1="6" y1="18" x2="18" y2="6" />
             </svg>
           </button>
-        </div>
+        </div>}
 
         <div className="host-form-body">
           <div className="host-form-group">
@@ -278,12 +287,12 @@ export default function HostForm() {
           </div>
         </div>
 
-        <div className="host-form-footer">
+        {!IS_ANDROID && <div className="host-form-footer">
           <button className="host-form-cancel" onClick={actions.closeHostForm}>Cancel</button>
           <button className="host-form-save" onClick={handleSave}>
             {editingHost ? 'Save Changes' : 'Create Host'}
           </button>
-        </div>
+        </div>}
       </div>
     </div>
   );

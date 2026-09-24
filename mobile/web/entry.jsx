@@ -8,7 +8,7 @@
  * sessions -> foreground service, back button, terminal-scoped keyboard,
  * focused form field kept above the keyboard.
  */
-import { registerPlugin } from '@capacitor/core';
+import { registerPlugin, SystemBars, SystemBarsStyle } from '@capacitor/core';
 import { Browser } from '@capacitor/browser';
 import { NodeJS } from 'capacitor-nodejs';
 import { createElectronAPI, capacitorTransport } from './electron-api-shim';
@@ -16,6 +16,11 @@ import { handleBack } from '../../src/hooks/useBackHandler';
 import './mobile.css';
 
 const TermilabNative = registerPlugin('TermilabNative');
+// src/ reaches the plugin only through this (clipboard fallback in
+// src/components/Terminal/mobile/clipboard.js); it never imports Capacitor.
+window.__termilabNative = TermilabNative;
+// Android-only CSS in mobile.css hangs off this attribute.
+document.documentElement.dataset.platform = 'android';
 let wasSigningIn = false;
 
 const nativeCall = (what, promise) => Promise.resolve(promise).catch(err => console.error(`[termilab] ${what}:`, err && err.message));
@@ -88,5 +93,42 @@ const scheduleReveal = (ms) => { clearTimeout(revealTimer); revealTimer = setTim
 document.addEventListener('focusin', (e) => { if (isField(e.target)) scheduleReveal(350); }, true);
 if (window.visualViewport) window.visualViewport.addEventListener('resize', () => scheduleReveal(60));
 window.addEventListener('resize', () => scheduleReveal(60));
+
+// ─── Layout height follows the visual viewport ───────────────
+// The soft keyboard shrinks it (Capacitor pads the window by the IME height);
+// the terminal's ResizeObserver then refits and resizes the remote pty.
+// Rotation lands here too.
+function syncAppHeight() {
+  const vv = window.visualViewport;
+  const h = Math.round(vv ? vv.height : window.innerHeight);
+  document.documentElement.style.setProperty('--app-height', `${h}px`);
+  // A focused field can scroll the page itself; the app never scrolls as a whole.
+  if (window.scrollY) window.scrollTo(0, 0);
+}
+syncAppHeight();
+if (window.visualViewport) window.visualViewport.addEventListener('resize', syncAppHeight);
+window.addEventListener('resize', syncAppHeight);
+window.addEventListener('orientationchange', () => setTimeout(syncAppHeight, 250));
+
+// ─── System bars follow the app theme ────────────────────────
+// AppContext stamps data-theme on <html>. Icons light on dark and vice versa,
+// and the window behind the bars (visible where Capacitor pads the WebView)
+// takes the app background instead of the theme's white.
+function syncSystemBars() {
+  const light = document.documentElement.dataset.theme === 'light';
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg-primary').trim();
+  nativeCall('SystemBars.setStyle', SystemBars.setStyle({ style: light ? SystemBarsStyle.Light : SystemBarsStyle.Dark }));
+  if (/^#[0-9a-f]{6}$/i.test(bg)) nativeCall('setWindowBackground', TermilabNative.setWindowBackground({ color: bg }));
+}
+new MutationObserver(syncSystemBars).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+syncSystemBars();
+// A rotation re-applies the window's theme (white behind the bars, dark icons):
+// set both again once it settles.
+let barsTimer = null;
+window.addEventListener('orientationchange', () => { clearTimeout(barsTimer); barsTimer = setTimeout(syncSystemBars, 400); });
+window.matchMedia('(orientation: landscape)').addEventListener('change', () => { clearTimeout(barsTimer); barsTimer = setTimeout(syncSystemBars, 400); });
+// Any other configuration change that resizes the window (display size,
+// split screen) does the same.
+window.addEventListener('resize', () => { clearTimeout(barsTimer); barsTimer = setTimeout(syncSystemBars, 400); });
 
 import('../../src/main.jsx');

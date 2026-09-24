@@ -16,6 +16,10 @@ import HostKeyPrompt from './components/HostKeyPrompt/HostKeyPrompt';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
 import { FEATURES, IS_ANDROID } from './platform';
 import { useBackFallback } from './hooks/useBackHandler';
+import MobileNav, { MORE_SECTIONS } from './components/Mobile/MobileNav';
+import MobileScreen, { MobileTopBar } from './components/Mobile/MobileScreen';
+import SessionsScreen from './components/Mobile/SessionsScreen';
+import MoreScreen from './components/Mobile/MoreScreen';
 import './App.css';
 
 const SIDEBAR_KEY = 'termilab.sidebar.collapsed';
@@ -47,11 +51,12 @@ function AppContent() {
   };
 
   /* Android back, once nothing dismissable is open (modals register their own
-     handlers in useBackHandler): expanded sidebar → collapsed, session tab →
+     handlers in useBackHandler): a page under More → More, session tab →
      Hosts, any other section → Hosts. At Hosts it passes, and the app goes to
      the background (moveTaskToBack, not finish: sessions stay up). */
   useBackFallback(() => {
-    if (IS_ANDROID && !sidebarCollapsed && homeActive) { toggleSidebar(); return true; }
+    /* Android has no sidebar: a More page goes back to More, then Hosts */
+    if (IS_ANDROID && homeActive && MORE_SECTIONS.includes(activeSection)) { setActiveSection('more'); return true; }
     if (!homeActive) { setActiveSection('hosts'); goHome(); return true; }
     if (activeSection !== 'hosts') { setActiveSection('hosts'); return true; }
     return false;
@@ -118,6 +123,28 @@ function AppContent() {
     }
   };
 
+  /* Android: bottom-nav screens, and the More pages with a back bar */
+  const backToMore = () => setActiveSection('more');
+  const renderMobileSection = () => {
+    switch (activeSection) {
+      case 'snippets':
+        return (
+          <div className="m-screen">
+            <MobileTopBar title="Snippets" />
+            <div className="m-screen-body"><div className="app-section-column"><Snippets /></div></div>
+          </div>
+        );
+      case 'sessions': return <SessionsScreen />;
+      case 'more': return <MoreScreen />;
+      case 'keychain': return <MobileScreen title="Keychain" onBack={backToMore}><div className="app-section-column"><KeyManager /></div></MobileScreen>;
+      case 'known-hosts': return <MobileScreen title="Known Hosts" onBack={backToMore}><KnownHosts /></MobileScreen>;
+      case 'logs': return <MobileScreen title="Logs" onBack={backToMore}><Logs /></MobileScreen>;
+      case 'settings': return <div className="m-screen"><Settings fullPage onBack={backToMore} /></div>;
+      case 'hosts':
+      default: return <HostList />;
+    }
+  };
+
   /* Session views stay mounted while hidden so terminals keep their state */
   const renderAllTerminals = () => {
     return tabs
@@ -144,6 +171,24 @@ function AppContent() {
         </div>
       ));
   };
+
+  if (IS_ANDROID) {
+    return (
+      <div className={`app app-mobile${homeActive ? ' app-mobile-home' : ' app-mobile-session'}`}>
+        <div className="app-body">
+          <div className="app-home" style={{ display: homeActive ? 'flex' : 'none' }}>
+            <main className="app-section">{renderMobileSection()}</main>
+          </div>
+          <div className="app-view" style={{ display: homeActive ? 'none' : 'flex' }}>
+            {renderAllTerminals()}
+          </div>
+        </div>
+        {homeActive && <MobileNav />}
+        {hostFormOpen && <HostForm />}
+        <HostKeyPrompt />
+      </div>
+    );
+  }
 
   return (
     <div className="app">

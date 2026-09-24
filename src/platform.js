@@ -21,3 +21,9 @@ export const FEATURES = {
   knownHostsFileImport: !IS_ANDROID, // reads ~/.ssh/known_hosts
   keyFileImport: !IS_ANDROID,       // needs a native file dialog
 };
+
+/* What the sync and unlock copy calls the machine it runs on. Desktop keeps
+   "computer" word for word; a phone is a "device". */
+export const MACHINE = IS_ANDROID ? 'device' : 'computer';
+export const MACHINES = IS_ANDROID ? 'devices' : 'computers';
+export const MACHINE_TITLE = IS_ANDROID ? 'Device' : 'Computer';

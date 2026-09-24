@@ -1,17 +1,367 @@
 /*
- * Android-only overrides, loaded by mobile/web/entry.jsx (never by desktop).
- * Phase 2 scope: usable, not designed. The real mobile layout is phase 4.
+ * Android-only overrides of shared components, loaded by mobile/web/entry.jsx
+ * (never by desktop). entry.jsx sets <html data-platform="android">; every
+ * rule hangs off that attribute, which also lifts it above the component CSS
+ * that loads after this file. Styles of the Android-only components (m-*)
+ * are in src/components/Mobile/Mobile.css.
  */
-html, body, #root {
-  overflow-x: hidden;
-  max-width: 100vw;
+
+/* Safe areas. targetSdk 36 is edge-to-edge. On WebViews >= Chromium 140
+   Capacitor passes the insets through (env() and its --safe-area-inset-*
+   agree); on older ones it pads the WebView and both are 0. */
+html[data-platform='android'] {
+  --m-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --m-safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --m-safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+  --m-safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+  --titlebar-height: 0px;
 }
 
-/* Toolbars built for a 760px column wrap instead of pushing icons off-screen */
-.hv-actions {
+html[data-platform='android'],
+html[data-platform='android'] body,
+html[data-platform='android'] #root {
+  overflow: hidden;
+  max-width: 100vw;
+  overscroll-behavior: none;
+}
+
+html[data-platform='android'] body {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ─── Shell: height from visualViewport (entry.jsx), bars inside safe areas ─── */
+html[data-platform='android'] .app,
+html[data-platform='android'] .app-loading {
+  height: var(--app-height, 100vh);
+  width: 100%;
+}
+
+html[data-platform='android'] .app-mobile {
+  padding: var(--m-safe-top) var(--m-safe-right) 0 var(--m-safe-left);
+}
+
+/* No bottom nav inside a session: the extra keys sit on the gesture bar's inset */
+html[data-platform='android'] .app-mobile-session {
+  padding-bottom: var(--m-safe-bottom);
+}
+
+html[data-platform='android'] .app-section {
+  position: relative;
+}
+
+html[data-platform='android'] .app-section-column {
+  padding: 12px 12px 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ─── Hosts ─── */
+html[data-platform='android'] .hv-top {
+  padding: 12px 12px 4px;
+  gap: 10px;
+  min-width: 0;
+}
+
+html[data-platform='android'] .hv-search {
+  height: 48px;
+}
+
+html[data-platform='android'] .hv-search input {
+  font-size: 16px;
+  min-width: 0;
+}
+
+html[data-platform='android'] .hv-connect-btn {
+  min-height: 38px;
+}
+
+html[data-platform='android'] .hv-search-clear {
+  width: 40px;
+  height: 40px;
+}
+
+html[data-platform='android'] .hv-actions {
   flex-wrap: wrap;
   row-gap: 8px;
-}
-.hv-top, .app-section, .app-section-column {
   min-width: 0;
+}
+
+html[data-platform='android'] .hv-btn,
+html[data-platform='android'] .vo-btn {
+  min-height: 44px;
+}
+
+html[data-platform='android'] .vo-btn {
+  min-width: 44px;
+}
+
+html[data-platform='android'] .hv-scroll {
+  padding: 8px 12px 96px;   /* room under the last card for the FAB */
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-platform='android'] .hv-grid,
+html[data-platform='android'] .hv-grid.hv-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+@media (min-width: 600px) {
+  html[data-platform='android'] .hv-grid,
+  html[data-platform='android'] .hv-grid.hv-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+html[data-platform='android'] .hv-card {
+  min-height: 68px;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+html[data-platform='android'] .hv-card:hover {
+  transform: none;
+  box-shadow: none;
+  background: var(--bg-card);
+}
+
+html[data-platform='android'] .hv-card:active {
+  background: var(--bg-card-hover);
+}
+
+/* The list view's address column does not fit a phone: the subtitle has it */
+html[data-platform='android'] .hv-row-address {
+  display: none;
+}
+
+/* No hover on touch: the edit button is always there, and finger-sized */
+html[data-platform='android'] .hv-card-edit {
+  opacity: 1;
+  width: 44px;
+  height: 44px;
+  margin: -8px -4px -8px 0;
+}
+
+html[data-platform='android'] .hv-crumb {
+  min-height: 44px;
+}
+
+html[data-platform='android'] .hv-breadcrumb {
+  flex-wrap: wrap;
+}
+
+html[data-platform='android'] .dup-banner {
+  min-height: 48px;
+}
+
+/* ─── Full-screen sheets: host editor, known host ─── */
+html[data-platform='android'] .host-form-overlay {
+  inset: 0;
+  z-index: 5000;
+  background: var(--bg-primary);
+  animation: none;
+}
+
+html[data-platform='android'] .host-form {
+  width: 100%;
+  max-width: 100%;
+  height: var(--app-height, 100%);
+  border-left: none;
+  box-shadow: none;
+  padding: var(--m-safe-top) var(--m-safe-right) var(--m-safe-bottom) var(--m-safe-left);
+  background: var(--bg-primary);
+  animation: slideInUp 0.18s ease;
+}
+
+html[data-platform='android'] .host-form-body {
+  padding: 16px 16px 32px;
+  overscroll-behavior: contain;
+}
+
+html[data-platform='android'] .host-form input,
+html[data-platform='android'] .host-form select,
+html[data-platform='android'] .host-form textarea {
+  min-height: 44px;
+  font-size: 16px;
+}
+
+html[data-platform='android'] .host-form-auth-tab {
+  min-height: 40px;
+}
+
+/* ─── Settings: the top bar already says "Settings" ─── */
+html[data-platform='android'] .settings-full-header {
+  display: none;
+}
+
+html[data-platform='android'] .settings-panel.full-page {
+  min-width: 0;
+  max-width: none;
+  padding: 0;
+  overflow: hidden;
+}
+
+html[data-platform='android'] .settings-panel.full-page .settings-tabs {
+  padding: 0 8px;
+}
+
+html[data-platform='android'] .settings-panel.full-page .settings-content {
+  padding: 0 16px 24px;
+  overscroll-behavior: contain;
+}
+
+html[data-platform='android'] .settings-panel.full-page .settings-section {
+  padding: 16px 0;
+}
+
+/* Label and control side by side get too narrow at 360dp: stack them */
+@media (max-width: 480px) {
+  html[data-platform='android'] .settings-field {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
+html[data-platform='android'] .settings-tabs {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  flex-shrink: 0;
+}
+
+html[data-platform='android'] .settings-tab {
+  min-height: 44px;
+  flex-shrink: 0;
+}
+
+/* ─── Terminal ─── */
+html[data-platform='android'] .terminal-wrapper {
+  padding: 2px 4px;
+  /* one-finger drags scroll the viewport; pinch is ours (mobile/touch.js) */
+  touch-action: pan-y;
+  /* Chrome's own long-press text selection would blur xterm's textarea */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+html[data-platform='android'] .terminal-container .terminal-status {
+  display: none;
+}
+
+html[data-platform='android'] .split-pane-root,
+html[data-platform='android'] .split-terminal-overlay {
+  min-width: 0;
+}
+
+/* ─── Modals built for a desktop window ─── */
+html[data-platform='android'] .snippet-form,
+html[data-platform='android'] .key-generate-modal {
+  max-width: calc(100vw - 24px);
+}
+
+/* ─── Sections under More: the top bar already has the title ─── */
+html[data-platform='android'] .lg-title,
+html[data-platform='android'] .snippets-header h2,
+html[data-platform='android'] .key-manager-header h2 {
+  display: none;
+}
+
+/* Logs: the four-column table does not fit a phone. Each row becomes a
+   grid: date | host | saved on top, then account · device underneath (rows
+   come from every synced device, so that line matters). */
+html[data-platform='android'] .lg-table,
+html[data-platform='android'] .lg-table thead,
+html[data-platform='android'] .lg-table tbody {
+  display: block;
+}
+
+html[data-platform='android'] .lg-table tr {
+  display: grid;
+  grid-template-columns: minmax(0, 32%) minmax(0, 1fr) 52px;
+  align-items: center;
+}
+
+html[data-platform='android'] .lg-table th,
+html[data-platform='android'] .lg-table td {
+  display: block;
+  width: auto;
+  min-width: 0;
+}
+
+html[data-platform='android'] .lg-table .lg-col-date { grid-column: 1; grid-row: 1; }
+html[data-platform='android'] .lg-table .lg-col-host { grid-column: 2; grid-row: 1; }
+html[data-platform='android'] .lg-table .lg-col-saved { grid-column: 3; grid-row: 1; }
+html[data-platform='android'] .lg-table thead .lg-col-user { display: none; }
+
+html[data-platform='android'] .lg-table tbody .lg-col-user {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: flex;
+  gap: 6px;
+  padding-top: 0;
+  font-size: var(--font-size-sm);
+}
+
+html[data-platform='android'] .lg-table tbody .lg-col-user > div {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Touch screens scroll without a persistent bar; index.css styles a visible
+   one for desktop, which on a phone reads as a grey rail down the side. */
+html[data-platform='android'] *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* ─── Touch targets: 44px for controls built at desktop size ─── */
+html[data-platform='android'] .hv-connect-btn,
+html[data-platform='android'] .snippets-search input,
+html[data-platform='android'] .snippets-add-btn,
+html[data-platform='android'] .key-generate-btn,
+html[data-platform='android'] .sync-btn,
+html[data-platform='android'] .settings-test-btn,
+html[data-platform='android'] .settings-panel input,
+html[data-platform='android'] .settings-panel select {
+  min-height: 44px;
+}
+
+html[data-platform='android'] .hv-connect-btn {
+  min-height: 40px;   /* sits inside the 48px search bar */
+}
+
+html[data-platform='android'] .kh-icon-btn,
+html[data-platform='android'] .lg-bookmark {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+html[data-platform='android'] .lg-sort {
+  min-height: 44px;
+}
+
+/* The switch stays 40x22; an invisible margin makes it a 48x44 target */
+html[data-platform='android'] .settings-toggle::before {
+  content: '';
+  position: absolute;
+  inset: -11px -4px;
+}
+
+/* Logs rows are grids now: one rule under the whole row, not under each cell */
+html[data-platform='android'] .lg-table th,
+html[data-platform='android'] .lg-table td {
+  border-bottom: none;
+}
+
+html[data-platform='android'] .lg-table thead tr {
+  border-bottom: 1px solid var(--border-primary);
+}
+
+html[data-platform='android'] .lg-table tbody tr {
+  border-bottom: 1px solid var(--border-secondary);
+  padding: 4px 0;
 }

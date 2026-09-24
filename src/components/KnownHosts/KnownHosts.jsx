@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
-import { FEATURES } from '../../platform';
+import { FEATURES, IS_ANDROID } from '../../platform';
+import { MobileTopBar } from '../Mobile/MobileScreen';
 import { FingerprintIcon, SearchIcon, CloseIcon, ImportIcon, TrashIcon, CopyIcon } from '../Icons/icons';
 import { displayHost, keyTypeLabel } from './format';
 import ViewOptions, { useViewChoice, useSortChoice, sortItems } from '../ViewOptions/ViewOptions';
@@ -53,12 +54,12 @@ export function KnownHostDrawer({ entry, onClose, onDelete, deleting = false }) 
   return (
     <div className="host-form-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <aside className="host-form" role="dialog" aria-modal="true" aria-label="Known host">
-        <div className="host-form-header">
+        {IS_ANDROID ? <MobileTopBar title="Known Host" onBack={onClose} /> : <div className="host-form-header">
           <h2>Known Host</h2>
           <button className="host-form-close-btn" onClick={onClose} aria-label="Close">
             <CloseIcon />
           </button>
-        </div>
+        </div>}
         <div className="host-form-body">
           <div className="kh-drawer-title">
             <div className="hv-icon kh-icon"><FingerprintIcon /></div>

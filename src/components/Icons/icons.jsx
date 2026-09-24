@@ -273,3 +273,36 @@ export const StopIcon = (p) => (
     <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
   </Svg>
 );
+
+/* Mobile layout (Android): top bars, overflow menus, the extra-keys row. */
+export const ArrowLeftIcon = (p) => (
+  <Svg {...p}>
+    <line x1="19" y1="12" x2="5" y2="12" />
+    <polyline points="12 19 5 12 12 5" />
+  </Svg>
+);
+
+export const MoreVerticalIcon = (p) => (
+  <Svg {...p}>
+    <circle cx="12" cy="5.5" r="1.2" fill="currentColor" />
+    <circle cx="12" cy="12" r="1.2" fill="currentColor" />
+    <circle cx="12" cy="18.5" r="1.2" fill="currentColor" />
+  </Svg>
+);
+
+export const MoreHorizontalIcon = (p) => (
+  <Svg {...p}>
+    <circle cx="5.5" cy="12" r="1.2" fill="currentColor" />
+    <circle cx="12" cy="12" r="1.2" fill="currentColor" />
+    <circle cx="18.5" cy="12" r="1.2" fill="currentColor" />
+  </Svg>
+);
+
+export const PasteIcon = (p) => (
+  <Svg {...p}>
+    <rect x="6" y="4" width="12" height="17" rx="2" />
+    <path d="M9 4.5V3.5a1 1 0 011-1h4a1 1 0 011 1v1" />
+    <line x1="9" y1="11" x2="15" y2="11" />
+    <line x1="9" y1="15" x2="13" y2="15" />
+  </Svg>
+);
