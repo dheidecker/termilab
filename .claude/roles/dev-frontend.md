@@ -332,3 +332,29 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   2222; el emulador lo ve en `10.0.2.2`. La clave privada se mete con
   `electronAPI.store.pasteKey({name, privateKeyContent})` por CDP.
 - `pkill -f <patrón>` dentro de un comando que contiene ese patrón se mata a sí mismo (exit 144).
+
+## SFTP de dos paneles (2026-09-24, rama `feat/sftp-termius`)
+
+- Una pestaña `type:'sftp'` es solo `panes: {left, right}` (`{kind:'local'}` | `{kind:'host', hostId}` |
+  `null`). **No lleva `sessionId`**: cada `FilePane` conecta (`actions.connectSftp`) y desconecta lo suyo
+  al desmontarse, así que cerrar la pestaña (TabBar, Ctrl+W) es solo quitarla. El disconnect va con
+  1,5 s de retraso a propósito: una transferencia recién cancelada aún borra su `.termilab-part` por esa
+  conexión.
+- `connectSftp` reutiliza la sesión de una pestaña terminal abierta al mismo host (`owned:false`, no se
+  cierra). Cerrar esa terminal no manda `ssh:close` (ver dev-backend): el panel lo detecta porque la
+  sesión sale de `activeSessions`.
+- `src/components/SFTP/fsApi.js` es la única puerta a `sftp`/`localFs` y trae un mock en memoria (modo
+  navegador). F13 del arnés comprueba que todo lo que llama existe en preload.
+- **Capturas por CDP**: tras un drag sintético (`DragEvent` + `new DataTransfer()`), Chrome se traga los
+  clics reales siguientes: haz el drag al final. `Input.dispatchKeyEvent` Enter necesita `text:'\r'` para
+  enviar un formulario. En headless el clic no enfoca: la fila enfoca la lista a mano (también útil si el
+  foco estaba en el filtro).
+- **E2E de verdad**: `xvfb-run` existe. Electron con `VITE_DEV_SERVER_URL` apuntando a `dist/` servido
+  por HTTP (stubs del updater, sin GitHub), `--user-data-dir` temporal con `hosts.json`/`keys.json`
+  escritos a mano y `--remote-debugging-port`. Elige el target cuya URL es la del servidor: el modo dev
+  abre DevTools separadas, que **roban el foco de la ventana** (`document.hasFocus()` false). Por eso los
+  `onBlur` que cancelan (ruta, renombrar) solo cancelan si `document.hasFocus()`: cambiar de ventana no
+  debe perder lo escrito. Script de referencia: `sftp-e2e.mjs` en el scratchpad de la sesión del 24-09.
+- La barra de un panel aparece al estar `ready`, pero el primer `realpath`+`list` llega después y su
+  `load()` cierra el editor de ruta: un test que escribe la ruta enseguida tiene que esperar la 1ª fila.
+- Estrechez: `.sftp-pane` es `container-type: inline-size`; <600 px se va Kind, <420 px la fecha.

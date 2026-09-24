@@ -15,3 +15,12 @@ entregar.
   `mobile/web/mobile.css` (con `html[data-platform='android']`), no en su CSS.
 - Ctrl/Alt: `m-key-armed` (borde + tinte) = solo la próxima tecla; `m-key-locked` (relleno de
   acento) = bloqueado. Que no se parezcan es a propósito.
+
+## SFTP (2026-09-24, lo anotó dev-frontend)
+
+- `src/components/SFTP/SFTP.css` usa solo tokens; los colores de tipo de fichero salen de los de estado
+  (carpeta `--accent`, archivo comprimido `--color-warning`, código/ejecutable `--color-success`, imagen
+  `--color-info`, PDF `--color-danger`), que ya tienen versión clara. Capturas de los dos temas en el
+  scratchpad de esa sesión (`sftp/01`, `02`, `09`).
+- Los modales SFTP van en z-index 5500, por debajo del de host key (6000): una conexión puede pedir la
+  clave con un diálogo SFTP abierto.

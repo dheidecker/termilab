@@ -448,3 +448,37 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   comprobar paquete, versionCode y firma: no quites esa capa "porque Node ya verificó el sha".
 - La limpieza de `updates/` es al arrancar (todo lo que no sea más nuevo que lo instalado, y los
   `.part`), porque tras instalar el proceso muere y no hay "después".
+
+## SFTP de dos paneles (2026-09-24, rama `feat/sftp-termius`, arnés L1–L4, F1–F13)
+
+- **`ssh:connect` con `purpose:'sftp'` ya no abre shell** (sesión con `stream: null`; `ssh:close` sale
+  del `close`/`end` del cliente). Sigue pasando por el verificador de host key y sale en Logs como `sftp`.
+- **`sshService.disconnect()` NO emite `ssh:close`**: `_cleanup` quita los listeners antes del `close`.
+  Quien dependa de "la sesión se fue" (el panel SFTP que reutiliza la sesión de una terminal) tiene que
+  mirar otra cosa (el renderer mira `activeSessions`).
+- **Piping de `ssh2` Read/WriteStream = 1 petición en vuelo = ~2 MB/s en localhost.** `transfer-service`
+  copia por trozos de 64 KB con 16 en vuelo sobre `open/read/write/close`, que `fs` y el SFTP de ssh2
+  comparten con la misma forma: un bucle sirve para las cuatro direcciones (~250 MB/s). `fastGet/fastPut`
+  no se cancelan ni hacen remoto→remoto.
+- El `WriteStream` de ssh2 cierra el handle en `_final` y **nunca emite `finish`** (y `writableFinished`
+  queda false). Si vuelves a streams, espera `close` tras el `end` de lectura.
+- Cada fichero va a `.<nombre>.<rand>.termilab-part` y se renombra al final. SFTP v3 `rename` NO pisa:
+  `posix-rename@openssh.com` (`ext_openssh_rename`) si está, si no unlink+rename. Cancelar borra el part;
+  un destino que se estaba sobrescribiendo sobrevive (F5). El control negativo "sin part" deja F4 verde
+  (el unlink limpia igual): el que lo caza es F5.
+- **Nombres que vienen del servidor**: `readdir` de un servidor hostil puede traer `../x` o `a/b`.
+  `sftp-service.list` los oculta; el motor de transferencias para la carpeta entera (F8). Todo `join`
+  al destino local pasa por `checkName` (un segmento; en Windows también `\`).
+- Conflictos se deciden en el renderer ANTES de empezar (`conflict: overwrite|rename`); main solo falla
+  si existe y no hay decisión. Un fichero nunca reemplaza una carpeta.
+- Borrar local = `shell.trashItem`; L3 mira el fuente para que no vuelva un `unlink/rm`.
+- **Arnés**: `scripts/lib/real-sshd.js` levanta `/usr/sbin/sshd -D` como usuario normal en 127.0.0.1 y
+  puerto libre (el `ssh2.Server` de pruebas no tiene subsistema SFTP). Borra `SSH_AUTH_SOCK` antes.
+  A 300 MB/s un fichero de 50 MB termina entre dos pushes de progreso: para "cancelar a mitad" pon
+  `transferService.progressMs = 0` (un push por trozo) y cancela desde el push.
+- Memoria remoto→remoto: `rss`/`external` crecen ~30 MB y **no escalan con el tamaño** (20 MB → +14,
+  240 MB → +33, otra vez 20 MB → +3); es memoria nativa de ssh2, no nuestra. F7 mide lo RETENIDO con
+  `gc()` en cada muestra (`v8.setFlagsFromString('--expose-gc')` + `vm.runInNewContext('gc')`).
+- Temporales de Abrir/Editar: `sftp-edit-service`, carpeta por pestaña (`owner` = id de pestaña),
+  `fs.watch` sobre la CARPETA (los editores guardan con rename y el watch del inodo viejo se calla).
+  `before-quit` hace `transferService.cancelAll()` + `sftpEditService.closeAllSync()`.
