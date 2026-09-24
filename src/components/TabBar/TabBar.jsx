@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { VaultIcon, ServerIcon, TerminalIcon, FolderIcon, PlusIcon, CloseIcon, BroadcastIcon } from '../Icons/icons';
+import { FEATURES } from '../../platform';
 import './TabBar.css';
 
 function getTabIcon(tab) {
@@ -116,14 +117,16 @@ export default function TabBar() {
         ))}
       </div>
 
-      <button
-        className="tab-add-btn"
-        onClick={actions.openLocalTerminal}
-        title="New local terminal (Ctrl+T)"
-        aria-label="New local terminal"
-      >
-        <PlusIcon />
-      </button>
+      {FEATURES.localTerminal && (
+        <button
+          className="tab-add-btn"
+          onClick={actions.openLocalTerminal}
+          title="New local terminal (Ctrl+T)"
+          aria-label="New local terminal"
+        >
+          <PlusIcon />
+        </button>
+      )}
 
       {/* Empty strip: drags the window */}
       <div className="tab-bar-drag" />

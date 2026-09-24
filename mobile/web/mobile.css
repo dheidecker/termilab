@@ -1,0 +1,17 @@
+/*
+ * Android-only overrides, loaded by mobile/web/entry.jsx (never by desktop).
+ * Phase 2 scope: usable, not designed. The real mobile layout is phase 4.
+ */
+html, body, #root {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
+/* Toolbars built for a 760px column wrap instead of pushing icons off-screen */
+.hv-actions {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+.hv-top, .app-section, .app-section-column {
+  min-width: 0;
+}

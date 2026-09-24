@@ -262,3 +262,15 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   solo `os` bajo lock y devuelve el host o null). No vuelvas a
   `saveHost({...fresh, os})`: pisaba lo que un pull de sync acababa de
   escribir (contraseña incluida) y lo subía. El arnés K15 mira el fuente.
+
+## Android (fases 1–2, 2026-09)
+
+- `src/platform.js`: `IS_ANDROID` y `FEATURES`. Todo flag es `true` en escritorio; gatea
+  con `FEATURES.x &&`, no con el atributo `hidden` (un `display:flex` del CSS lo pisa).
+- En Android `window.electronAPI` **no tiene** `sftp`, `portForward`, `localShell`,
+  `window` ni `dialog`: una entrada sin gatear revienta, a propósito.
+- `mobile/web/entry.jsx` instala el shim y luego `import()` de `src/main.jsx`: los
+  imports estáticos se elevan y varios módulos leen `electronAPI` al evaluarse.
+- CSS solo-Android en `mobile/web/mobile.css` (el desktop nunca lo carga). Se importa
+  ANTES que `src/index.css`: a igual especificidad gana src.
+- Probar en el emulador: `adb shell input text` escribe; KEYCODE_BACK cierra la app.

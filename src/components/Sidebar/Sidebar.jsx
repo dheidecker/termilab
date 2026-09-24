@@ -3,6 +3,7 @@ import { useApp } from '../../contexts/AppContext';
 import {
   VaultIcon, KeyIcon, ForwardIcon, SnippetIcon, FingerprintIcon, ClockIcon, SettingsIcon,
 } from '../Icons/icons';
+import { FEATURES } from '../../platform';
 import './Sidebar.css';
 
 /* The home tab's navigation. Only sections that exist; Settings (which also
@@ -10,11 +11,11 @@ import './Sidebar.css';
 const sections = [
   { id: 'hosts', label: 'Hosts', Icon: VaultIcon },
   { id: 'keychain', label: 'Keychain', Icon: KeyIcon },
-  { id: 'port-forwarding', label: 'Port Forwarding', Icon: ForwardIcon },
+  { id: 'port-forwarding', label: 'Port Forwarding', Icon: ForwardIcon, available: FEATURES.portForwarding },
   { id: 'snippets', label: 'Snippets', Icon: SnippetIcon },
   { id: 'known-hosts', label: 'Known Hosts', Icon: FingerprintIcon },
   { id: 'logs', label: 'Logs', Icon: ClockIcon },
-];
+].filter(s => s.available !== false);
 
 const settingsItem = { id: 'settings', label: 'Settings', Icon: SettingsIcon };
 

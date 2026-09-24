@@ -107,6 +107,7 @@ const PLATFORM_LABELS = {
   win32: 'Windows',
   windows: 'Windows',
   linux: 'Linux',
+  android: 'Android',
 };
 
 export function platformLabel(platform) {

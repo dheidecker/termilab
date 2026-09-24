@@ -10,6 +10,7 @@ import {
 import ViewOptions, { useViewChoice, useSortChoice, sortItems } from '../ViewOptions/ViewOptions';
 import { distroFor, DistroLogo } from '../Icons/distros';
 import { PALETTE, hostColor } from './hostColor';
+import { FEATURES } from '../../platform';
 import './HostList.css';
 
 const hostCount = (n) => `${n} ${n === 1 ? 'Host' : 'Hosts'}`;
@@ -374,10 +375,12 @@ export default function HostList() {
               </div>
             )}
           </div>
-          <button className="hv-btn" onClick={openLocalTerminal}>
-            <TerminalIcon />
-            Terminal
-          </button>
+          {FEATURES.localTerminal && (
+            <button className="hv-btn" onClick={openLocalTerminal}>
+              <TerminalIcon />
+              Terminal
+            </button>
+          )}
 
           <div className="hv-actions-spacer" />
 
@@ -520,9 +523,11 @@ export default function HostList() {
           <button className="host-context-menu-item" onClick={ctxNewSession}>
             <SessionIcon /> New Session
           </button>
-          <button className="host-context-menu-item" onClick={ctxSftp}>
-            <FolderIcon /> Open SFTP
-          </button>
+          {FEATURES.sftp && (
+            <button className="host-context-menu-item" onClick={ctxSftp}>
+              <FolderIcon /> Open SFTP
+            </button>
+          )}
           <div className="host-context-separator" />
           <button className="host-context-menu-item" onClick={ctxEdit}>
             <PencilIcon /> Edit

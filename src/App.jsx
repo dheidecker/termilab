@@ -14,12 +14,18 @@ import KnownHosts from './components/KnownHosts/KnownHosts';
 import Logs from './components/Logs/Logs';
 import HostKeyPrompt from './components/HostKeyPrompt/HostKeyPrompt';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
+import { FEATURES, IS_ANDROID } from './platform';
 import './App.css';
 
 const SIDEBAR_KEY = 'termilab.sidebar.collapsed';
 
+/* On a phone the full-width sidebar eats half the screen: start collapsed
+   there unless the user expanded it before. Desktop default unchanged. */
 function readSidebarCollapsed() {
-  try { return window.localStorage.getItem(SIDEBAR_KEY) === '1'; } catch { return false; }
+  try {
+    const saved = window.localStorage.getItem(SIDEBAR_KEY);
+    return saved === null ? IS_ANDROID : saved === '1';
+  } catch { return IS_ANDROID; }
 }
 
 function AppContent() {
@@ -40,7 +46,7 @@ function AppContent() {
   useEffect(() => {
     const handler = (e) => {
       // Ctrl+T → New local terminal
-      if (e.ctrlKey && !e.shiftKey && e.key === 't') {
+      if (e.ctrlKey && !e.shiftKey && e.key === 't' && FEATURES.localTerminal) {
         e.preventDefault();
         openLocalTerminal();
       }

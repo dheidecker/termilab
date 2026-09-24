@@ -1,0 +1,5 @@
+{
+  "//": "ESM, so scripts/check-mobile.js can import electron-api-shim.js under Node as-is.",
+  "type": "module",
+  "private": true
+}

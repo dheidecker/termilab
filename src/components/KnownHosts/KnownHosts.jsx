@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
+import { FEATURES } from '../../platform';
 import { FingerprintIcon, SearchIcon, CloseIcon, ImportIcon, TrashIcon, CopyIcon } from '../Icons/icons';
 import { displayHost, keyTypeLabel } from './format';
 import ViewOptions, { useViewChoice, useSortChoice, sortItems } from '../ViewOptions/ViewOptions';
@@ -167,7 +168,8 @@ export default function KnownHosts() {
     { label: e => `${displayHost(e.host, e.port)} ${e.keyType}`, date: e => e.addedAt }
   );
 
-  const importButton = (primary) => (
+  /* Android has no ~/.ssh/known_hosts to read */
+  const importButton = (primary) => FEATURES.knownHostsFileImport && (
     <button className={`hv-btn ${primary ? 'hv-btn-primary' : ''}`} onClick={handleImport} disabled={importing}>
       <ImportIcon />
       {importing ? 'Importing…' : 'Import'}

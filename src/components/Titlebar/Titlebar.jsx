@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import TabBar from '../TabBar/TabBar';
 import { MenuIcon } from '../Icons/icons';
+import { FEATURES } from '../../platform';
 import './Titlebar.css';
 
 const api = () => window.electronAPI;
@@ -10,12 +11,15 @@ const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
    titleBarStyle: 'hidden'), so drawing our own controls would show two sets at
    once. We hide ours and leave room on the left for the system's. */
 const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
+/* Android: no window controls at all (the activity owns the window, and the
+   shim has no `window` namespace). */
+const ownControls = !isMac && FEATURES.windowControls;
 
 export default function Titlebar({ sidebarCollapsed = false, onToggleSidebar }) {
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
-    if (!hasApi() || isMac) return;
+    if (!hasApi() || !ownControls) return;
 
     api().window.isMaximized().then(setIsMaximized).catch(() => {});
 
@@ -47,7 +51,7 @@ export default function Titlebar({ sidebarCollapsed = false, onToggleSidebar }) 
       {/* Tabs live in the title bar; the empty space after them still drags the window */}
       <TabBar />
 
-      {!isMac && <div className="titlebar-controls">
+      {ownControls && <div className="titlebar-controls">
         <button className="titlebar-btn" onClick={handleMinimize} aria-label="Minimize">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <line x1="5" y1="12" x2="19" y2="12" />
