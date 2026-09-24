@@ -21,6 +21,10 @@
     "dist:mac": "vite build && electron-builder --mac dmg",
     "dist:mac:universal": "vite build && electron-builder --mac dmg --universal",
     "dist:all": "vite build && electron-builder --linux --win --mac",
+    "mobile:web": "vite build -c vite.mobile.config.js",
+    "mobile:node": "node scripts/build-mobile-node.js",
+    "android:sync": "npm run mobile:web && npm run mobile:node && node scripts/fetch-libnode.js && cap sync android",
+    "android:debug": "npm run android:sync && node scripts/android-debug.js",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -35,10 +39,15 @@
     "ssh2": "^1.16.0"
   },
   "devDependencies": {
+    "@capacitor/android": "8.5.2",
+    "@capacitor/cli": "8.5.2",
+    "@capacitor/core": "8.5.2",
     "@vitejs/plugin-react": "^4.3.4",
+    "capacitor-nodejs": "file:mobile/vendor/capacitor-nodejs",
     "concurrently": "^9.1.0",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
+    "esbuild": "0.25.12",
     "vite": "^6.0.0",
     "vite-plugin-electron": "^0.28.8",
     "vite-plugin-electron-renderer": "^0.14.6",

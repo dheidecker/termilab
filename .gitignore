@@ -7,3 +7,18 @@ release/
 Thumbs.db
 .env
 .env.local
+
+# Android (Capacitor): build outputs. mobile/android/ has its own .gitignore too.
+dist-mobile/
+mobile/android/app/build/
+mobile/android/build/
+mobile/android/.gradle/
+mobile/android/app/src/main/assets/public/
+# nodejs-mobile runtime: ~135 MB, fetched by scripts/fetch-libnode.js (pinned sha256)
+mobile/vendor/capacitor-nodejs/android/libnode/
+mobile/vendor/capacitor-nodejs/android/build/
+mobile/vendor/capacitor-nodejs/android/.cxx/
+mobile/vendor/.cache/
+# ...but the vendored plugin's prebuilt JS is source here (root `dist/` above would hide it)
+!mobile/vendor/capacitor-nodejs/dist/
+!mobile/vendor/capacitor-nodejs/android/src/main/assets/builtin_modules/bridge/dist/
