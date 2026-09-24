@@ -145,3 +145,29 @@ halves drift silently and nothing in the build catches it.
 Settings → About. In dev the updater IPC handlers are registered as stubs so that panel doesn't
 crash. Publishing: bump `version` in `package.json`, build, then `gh release create` with the
 artifacts from `release/`.
+
+### Android (same release as desktop)
+
+`npm run android:apk` builds the signed arm64 APK and its feed into `release/`:
+`Termilab-<v>-android-arm64.apk` + `latest-android.json` `{version, versionCode, file, sha256, size}`.
+Upload **both** to the same GitHub release as the desktop artifacts: the app fetches
+`releases/latest/download/latest-android.json` 5 s after launch (and from Settings → About),
+404 = up to date. versionCode = `major*1e6 + minor*1e3 + patch` of `package.json` — minor and
+patch must stay ≤ 999. The script fails on an unsigned or debug-signed APK and checks
+`apksigner`, `zipalign -c -P 16` and the 16 KB LOAD alignment of every `.so`.
+
+Signing: `mobile/android/app/build.gradle` reads env `TERMILAB_KEYSTORE_FILE` +
+`TERMILAB_KEYSTORE_PASSWORD` (+ `TERMILAB_KEY_ALIAS`, `TERMILAB_KEY_PASSWORD`), else a
+`keystore.properties` from `TERMILAB_KEYSTORE_PROPERTIES`, `~/.config/termilab/`, or
+`mobile/android/` (gitignored). The keystore is `~/.config/termilab/termilab-release.jks`.
+
+> **Lose the keystore (or its password) and no installed Termilab can ever update again**:
+> Android refuses an update signed with another key, so every user would have to uninstall
+> (losing local data) and reinstall. Back up `termilab-release.jks` **and**
+> `keystore.properties` to the owner's password manager and to an offline copy. Never commit
+> them, never print the password. Note `~/.config/termilab/` is also the desktop app's
+> `userData`: wiping the desktop app's data there wipes the keystore too.
+
+The `updateTest` build type (release + debuggable, `TERMILAB_BUILD_TYPE=updateTest`) exists
+only to test the updater end to end with `am start ... --es TERMILAB_UPDATE_URL <feed>`;
+release builds ignore that extra. Never publish an `updateTest` APK.

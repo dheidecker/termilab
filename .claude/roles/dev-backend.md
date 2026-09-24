@@ -433,3 +433,18 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
 - `scripts/lib/fake-sync-server.js` tiene `hooks.pollPending` (202 para siempre) para eso.
 - Nuevos métodos del plugin nativo (Java): `readClipboard`, `writeClipboard`,
   `setWindowBackground`. Son de la página, no de Node.
+
+## Android fase 5: updater (2026-09-24)
+
+- `mobile/node/updater.js` es Node puro (sin `electron`): el arnés lo requiere directamente
+  (M14) y además por el bundle (M15–M18). `setupUpdater` en `mobile/node/main.js` registra
+  `updater:*` con el sobre `{success, data|error}` de `main.js` de escritorio.
+- El versionCode instalado llega de Java (`TERMILAB_VERSION_CODE`/`_NAME`, PackageInfo), no del
+  bundle. `TERMILAB_UPDATE_URL` lo pone MainActivity solo si la app es depurable.
+- **`spawnMobile` del arnés fija `TERMILAB_UPDATE_URL` a `127.0.0.1:1`**: sin eso cada proceso
+  del arnés consultaría GitHub a los 5 s. `TERMILAB_UPDATE_DELAY_MS` acorta/alarga ese chequeo.
+- Instalar es de la página (Node no llega a Java): `native:install-apk {id,…}` →
+  `TermilabNative.installApk` → `native:install-result {id, ok, error}`. Java vuelve a
+  comprobar paquete, versionCode y firma: no quites esa capa "porque Node ya verificó el sha".
+- La limpieza de `updates/` es al arrancar (todo lo que no sea más nuevo que lo instalado, y los
+  `.part`), porque tras instalar el proceso muere y no hay "después".

@@ -313,3 +313,52 @@ Trampas encontradas:
 Pendiente: probar teclado, pellizco y selección con los dedos en un teléfono (en el emulador
 el pellizco se probó con `Input.dispatchTouchEvent` por CDP); la pulsación larga cierra el
 teclado; el "Log" de sesión (descarga de un Blob) no está en Android.
+
+## Estado fase 5
+
+Hecho en `feat/android` (2026-09-24). `git diff main -- electron/` sigue vacío. Nada publicado.
+
+- **Firma:** keystore RSA 4096 (100 años, alias `termilab`) en
+  `~/.config/termilab/termilab-release.jks`; la contraseña solo en
+  `~/.config/termilab/keystore.properties` (600, directorio 700). Gradle la lee de env o de ese
+  archivo (orden en `app/build.gradle`); `*.jks`/`keystore.properties` gitignorados. Huella del
+  certificado (SHA-256): `2767aa0e7598889456d6866ba072c68d3897faffc450e9b056e59035825f6555`.
+  **Falta que el dueño la guarde en su gestor y en una copia offline.**
+- **Versión:** versionName = `package.json`, versionCode = `major*1e6+minor*1e3+patch`;
+  `TERMILAB_VERSION` (script) / `-PtermilabVersion` (Gradle) solo para pruebas.
+- **Release:** solo arm64-v8a, R8 + shrinkResources (dex 7,3 → 0,8 MB, keep de
+  `NodeProcess.nativeReceive`, que el C++ llama por JNI), `useLegacyPackaging` true
+  (55,1 → 19,7 MB; 17,4 MB con R8). `zipalign -c -P 16` y LOAD 0x4000 en verde con libs
+  comprimidas. APK final 1.11.1: 17,4 MB.
+- **`npm run android:apk`** → `release/Termilab-<v>-android-arm64.apk` + `latest-android.json`
+  (`mobile/scripts/write-manifest.js`), con apksigner, zipalign y alineación ELF comprobados.
+- **Updater** (`mobile/node/updater.js`): mismos `updater:*` y eventos que escritorio; feed en
+  `releases/latest/download/latest-android.json` (404 = al día); tamaño + sha256 exactos, otra vez
+  antes de instalar; `native:install-apk` → `TermilabNative.installApk` (ruta en `updates/`,
+  mismo paquete, versionCode mayor, misma firma; "instalar apps desconocidas" si falta; instalador
+  por FileProvider). Al arrancar con el versionCode nuevo se borran los APK descargados.
+  UpdateNotification enseña ahora el error si ya había tarjeta (antes se quedaba en "100%").
+- **Verificación:** `npm run build`, `node scripts/check-main.js` y `check-mobile.js` en verde (19;
+  nuevos M14–M18, con controles negativos: sin sha → M16 rojo, 404 como error → M17 rojo, sin
+  limpieza → M18 rojo). JUnit del plugin en verde. Emulador (x86_64): `updateTest` 1.11.0 con un
+  host creado → feed local con APK alterado → "sha256 mismatch; refused", nada en `updates/` →
+  APK bueno → progreso → "instalar apps desconocidas" (mismo pid al volver) → instalador del
+  sistema → Update → la release 1.11.1 (no depurable, R8) abre con el host intacto y borra el APK
+  descargado; Settings → About contra GitHub real: "up to date" (404); la release ignora
+  `TERMILAB_UPDATE_URL`. Capturas en el scratchpad de la sesión, `android-p5/`.
+
+Trampas encontradas:
+1. **Un solo `export A=… PATH=$A/bin`** expande `$A` antes de asignarlo: PATH queda sin la
+   toolchain (y `emulator` "no existe"). Dos `export`.
+2. **`~/.config/termilab/` es el `userData` de la app de escritorio.** El keystore vive al lado de
+   los datos de Electron: borrar los datos de la app de escritorio borra la clave de firma.
+3. La descarga local es tan rápida que no se ve "Downloading": para la captura hace falta un
+   servidor con límite de velocidad.
+4. En la imagen del emulador (`ro.debuggable=1`) **todo** WebView es inspeccionable, también la
+   release: que el DevTools conteste allí no significa que la release lo tenga activo.
+5. El instalador del sistema no reabre la app: el usuario pulsa "Open" (o la abre a mano).
+
+Pendiente: probar la actualización en un teléfono arm64 real (el e2e fue x86_64); publicar
+la primera release con `latest-android.json` junto al escritorio (lo hace el dueño); valorar
+mover el keystore fuera de `~/.config/termilab/`; en Android la tarjeta de actualización tapa
+el buscador de Hosts (posición de escritorio, arriba a la derecha).
