@@ -358,3 +358,17 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
 - La barra de un panel aparece al estar `ready`, pero el primer `realpath`+`list` llega después y su
   `load()` cierra el editor de ruta: un test que escribe la ruta enseguida tiene que esperar la 1ª fila.
 - Estrechez: `.sftp-pane` es `container-type: inline-size`; <600 px se va Kind, <420 px la fecha.
+
+## Revisión SFTP 2026-09-24
+
+- **Cerrar pestaña SFTP con transferencias pregunta**: `src/components/SFTP/activeTransfers.js`
+  (estado de módulo, lo escribe solo `SFTPView`: cola + en curso). `confirmCloseSftp(tab)` está en
+  `TabBar.handleCloseTab` y en el Ctrl+W de `App`. Un camino nuevo de cerrar pestañas tiene que
+  llamarlo también (F21 mira el fuente de esos dos).
+- Abrir/Editar un remoto que main considera ejecutable rechaza con "Refusing to open…": `FilePane`
+  lo convierte en un aviso con botón **Download** (`onDownload` → `SFTPView.download` → carpeta
+  Downloads local o home). El aviso admite `action {label, run}` y dura 12 s con acción.
+- `uploadEdit` serializa por `editId` con un ref (`uploadQueue`): un guardado durante una subida
+  pide exactamente una más. main también serializa; lo del renderer es para que `busy` no mienta.
+- Los items terminados pueden traer `renamed` (nombres mapeados para Windows); `TransferQueue` los
+  cuenta en la línea de estado y los lista en el `title`.

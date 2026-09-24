@@ -482,3 +482,35 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
 - Temporales de Abrir/Editar: `sftp-edit-service`, carpeta por pestaña (`owner` = id de pestaña),
   `fs.watch` sobre la CARPETA (los editores guardan con rename y el watch del inodo viejo se calla).
   `before-quit` hace `transferService.cancelAll()` + `sftpEditService.closeAllSync()`.
+
+## Revisión SFTP 2026-09-24 (arnés F14–F21)
+
+- **Re-subir una edición = escritura EN SITIO**, no part+rename: `realpath` primero (OpenSSH resuelve
+  enlaces) y `transferService.start(id, spec, { inPlace: true })` abre con flags numéricas SFTP
+  `WRITE|TRUNC` (0x12, sin CREAT: el servidor nunca aplica modo a un existente). Conserva enlace,
+  inodo, enlaces duros, dueño y modo. No es atómico (aceptado solo para ediciones). Si `realpath`
+  da NO_SUCH_FILE se recrea por el camino normal. F14.
+- El tercer argumento `internal` de `transferService.start` (`inPlace`, `fileMode`) es **solo de
+  main**: el handler IPC pasa `(id, spec)`. No lo metas en `spec` o el renderer lo controla.
+- Transferencia normal que sobrescribe un **fichero**: tras el rename se hace `chmod` con los bits
+  0o777 del que había (la umask local quitaba group-write). setuid/setgid no se reaplican. Sobre un
+  **enlace** se reemplaza el enlace, no se escribe a través (decisión, como rsync). F15.
+- Temporales de Abrir/Editar se crean con `fileMode: 0o600`. `openRefusal(name, purpose, platform)`
+  en `sftp-edit-service`: Abrir niega `OPEN_BLOCKED` (unión de todas las plataformas + scripts);
+  Editar niega solo lo que el SO ejecuta aunque sea texto en ESTA plataforma (`EDIT_BLOCKED`: en
+  Windows .js/.bat/.sh…). Se comprueba antes de bajar y otra vez con el nombre local. El mensaje
+  empieza por **"Refusing to open"**: el renderer lo detecta por texto (el sobre IPC solo lleva
+  `message`, no `code`). Si cambias esa frase, cambia `FilePane.refusedOrFlash`. F16.
+- `_deleteTree` hace `lstat` de cada hijo: los attrs de `readdir` los decide el servidor. Probarlo
+  contra OpenSSH exige falsear `sftp.readdir` en la instancia (propiedad propia, luego `delete`),
+  porque OpenSSH ya da attrs de lstat. F17.
+- Sin `posix-rename`: destino → `.<n>.<rand>.termilab-old`, part → destino, borrar backup. Si falla
+  el segundo rename se restaura el backup y el error lleva `keepPart = true` (el part NO se borra y
+  su nombre va en el mensaje). F18 quita la extensión de `sftp._extensions` y falsea `sftp.rename`.
+- `sftpEditService.upload` serializa por edición (`inflight` + como mucho un `queued` compartido).
+  F19 espía `transferService.start` (solo ids `edit-*`) y mide concurrencia máxima.
+- Windows: `checkName(name, platform)` niega `<>:"|?*`, control, punto/espacio final y
+  CON/PRN/AUX/NUL/COM0-9/LPT0-9 (también con extensión y ¹²³). En bajadas `safeLocalName` mapea y
+  el resultado trae `renamed: [{from, to}]`; si el mapeo choca con un hermano, " (n)". Plataforma
+  inyectable con `transferService.localPlatform = 'win32'` (el harness la vuelve a `null`). F20.
+- El control negativo en copia sin `.git` deja S9 rojo (lee `5ecfa09` con git): es ruido, no tuyo.
