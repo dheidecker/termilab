@@ -36,10 +36,9 @@ const { STATUS, checkRemotePath, checkRemoteName, isSafeRemoteName } = sftpServi
  *
  * Progress is pushed on 'sftp:transfer-progress' as
  *   { id, transferred, total, files, filesDone, current }
- * at most every PROGRESS_MS, plus once at the end.
+ * at most every `progressMs` (120), plus once at the end.
  */
 
-const PROGRESS_MS = 120;
 const CHUNK = 64 * 1024;
 const CONCURRENCY = 16;
 const PART_SUFFIX = '.termilab-part';
@@ -48,6 +47,15 @@ function cancelError() {
   const err = new Error('Cancelled');
   err.code = 'CANCELLED';
   return err;
+}
+
+/** "a.tar.gz" -> {stem:'a', ext:'.tar.gz'}; ".bashrc" has no extension. */
+function splitExt(name) {
+  const tar = name.match(/^(.+?)(\.tar\.[A-Za-z0-9]{1,5})$/);
+  if (tar) return { stem: tar[1], ext: tar[2] };
+  const dot = name.lastIndexOf('.');
+  if (dot > 0 && dot < name.length - 1) return { stem: name.slice(0, dot), ext: name.slice(dot) };
+  return { stem: name, ext: '' };
 }
 
 // ─── Endpoints ──────────────────────────────────────────────
@@ -186,6 +194,9 @@ class TransferService {
     /** @type {Map<string, object>} id -> running job */
     this.jobs = new Map();
     this.mainWindow = null;
+    /* Progress throttle. The harness sets 0 to cancel at an exact byte
+       count: at localhost speed a 50 MB file is done between two ticks. */
+    this.progressMs = 120;
   }
 
   setMainWindow(win) {
@@ -348,10 +359,7 @@ class TransferService {
   }
 
   async _freeName(dst, dir, name) {
-    const dot = name.lastIndexOf('.');
-    const hasExt = dot > 0 && dot < name.length - 1;
-    const stem = hasExt ? name.slice(0, dot) : name;
-    const ext = hasExt ? name.slice(dot) : '';
+    const { stem, ext } = splitExt(name);
     for (let i = 1; i < 1000; i++) {
       const candidate = `${stem} (${i})${ext}`;
       if (!(await dst.lstat(dst.join(dir, candidate)))) return candidate;
@@ -435,7 +443,7 @@ class TransferService {
 
   _progress(job, force = false) {
     const now = Date.now();
-    if (!force && now - job.lastSent < PROGRESS_MS) return;
+    if (!force && now - job.lastSent < this.progressMs) return;
     job.lastSent = now;
     this._send({
       id: job.id,
@@ -450,3 +458,4 @@ class TransferService {
 
 module.exports = new TransferService();
 module.exports.PART_SUFFIX = PART_SUFFIX;
+module.exports.splitExt = splitExt;

@@ -167,11 +167,15 @@ async function seccionSftp({ check, ROOT, getBridge }) {
   // por rapido que vaya localhost).
   const onProgress = [];
   transferService.setMainWindow({ isDestroyed: () => false, webContents: { send: (c, d) => { if (c === 'sftp:transfer-progress') { progress.push(d); for (const f of onProgress.slice()) f(d); } } } });
+  // Cancela al llegar a `bytes`: con progressMs = 0 hay un push por trozo de 64 KB,
+  // asi que "a mitad" es exacto aunque localhost vaya a 300 MB/s.
   const cancelAt = (id, bytes) => {
+    transferService.progressMs = 0;
     const hook = (d) => {
       if (d.id !== id || d.transferred < bytes) return;
       onProgress.splice(onProgress.indexOf(hook), 1);
       transferService.cancel(id);
+      transferService.progressMs = 120;
     };
     onProgress.push(hook);
   };
@@ -315,7 +319,7 @@ async function seccionSftp({ check, ROOT, getBridge }) {
       assert.deepStrictEqual(partsIn(remoteDir), []);
     });
 
-    await check('F6 conflictos: sin decision falla (EEXIST), rename = "x (1).ext", overwrite reemplaza / fusiona carpetas, fichero != carpeta', async () => {
+    await check('F6 conflictos: sin decision falla (EEXIST), rename = "x (1).ext" (y "x (1).tar.gz"), overwrite reemplaza / fusiona carpetas, fichero != carpeta', async () => {
       assert.ok(sid, 'sin sesion');
       const src = path.join(localDir, 'informe.txt');
       fs.writeFileSync(src, 'NUEVO');
@@ -327,6 +331,12 @@ async function seccionSftp({ check, ROOT, getBridge }) {
       assert.strictEqual(path.basename(r1.target), 'informe (1).txt');
       const r2 = await transferService.start('c3', { src: L, srcPath: src, dst, dstDir: remoteDir, conflict: 'rename' });
       assert.strictEqual(path.basename(r2.target), 'informe (2).txt');
+      fs.writeFileSync(path.join(localDir, 'copia.tar.gz'), 'tgz');
+      fs.writeFileSync(path.join(remoteDir, 'copia.tar.gz'), 'viejo');
+      const r3 = await transferService.start('c3b', { src: L, srcPath: path.join(localDir, 'copia.tar.gz'), dst, dstDir: remoteDir, conflict: 'rename' });
+      assert.strictEqual(path.basename(r3.target), 'copia (1).tar.gz', 'el .tar.gz se partio mal');
+      assert.deepStrictEqual(['.bashrc', 'Makefile', 'a.b.c'].map(n => transferService.splitExt(n)),
+        [{ stem: '.bashrc', ext: '' }, { stem: 'Makefile', ext: '' }, { stem: 'a.b', ext: '.c' }]);
       await transferService.start('c4', { src: L, srcPath: src, dst, dstDir: remoteDir, conflict: 'overwrite' });
       assert.strictEqual(fs.readFileSync(path.join(remoteDir, 'informe.txt'), 'utf-8'), 'NUEVO');
       // carpeta: fusion
@@ -347,18 +357,24 @@ async function seccionSftp({ check, ROOT, getBridge }) {
       await assert.rejects(transferService.start('c7', { src: dst, srcPath: path.join(remoteDir, 'merge'), dst, dstDir: path.join(remoteDir, 'merge') , conflict: 'rename' }), /itself/);
     });
 
-    await check('F7 remoto -> remoto entre DOS sesiones: en streaming (progreso incremental, memoria acotada) y bytes identicos', async () => {
+    await check('F7 remoto -> remoto entre DOS sesiones, 200 MB: en streaming (progreso incremental, memoria retenida acotada) y bytes identicos', async () => {
       assert.ok(sid, 'sin sesion');
       const sid2 = await connect({ label: 'segunda' });
       const destino = path.join(base, 'remote2');
       fs.mkdirSync(destino);
-      const enorme = path.join(remoteDir, 'enorme-120MB.bin');
-      writeRandom(enorme, 120 * 1024 * 1024);
+      const enorme = path.join(remoteDir, 'enorme-200MB.bin');
+      writeRandom(enorme, 200 * 1024 * 1024);
       progress.length = 0;
-      if (global.gc) global.gc();
-      const rss0 = process.memoryUsage().rss;
+      // Memoria viva (heap + buffers), no rss: rss no baja y arrastra la basura de F4/F5.
+      require('v8').setFlagsFromString('--expose-gc');
+      const gc = require('vm').runInNewContext('gc');
+      const vivo = () => { const m = process.memoryUsage(); return m.heapUsed + m.external; };
+      gc();
+      const rss0 = vivo();
       let rssMax = rss0;
-      const timer = setInterval(() => { rssMax = Math.max(rssMax, process.memoryUsage().rss); }, 20);
+      // gc() en cada muestra: lo que queda es lo RETENIDO; sin el, el pico es basura
+      // de paquetes de 64 KB aun sin recoger (56-62 MB medidos), no bufferizado.
+      const timer = setInterval(() => { gc(); rssMax = Math.max(rssMax, vivo()); }, 40);
       try {
         await transferService.start('rr', { src: { ...R, sessionId: sid }, srcPath: enorme, dst: { ...R, sessionId: sid2 }, dstDir: destino });
       } finally {
@@ -367,13 +383,15 @@ async function seccionSftp({ check, ROOT, getBridge }) {
       const ev = progress.filter(p => p.id === 'rr');
       const intermedios = ev.filter(e => e.transferred > 0 && e.transferred < e.total);
       assert.ok(intermedios.length >= 1, 'sin eventos intermedios: no parece streaming');
-      assert.strictEqual(sha(path.join(destino, 'enorme-120MB.bin')), sha(enorme));
+      assert.strictEqual(sha(path.join(destino, 'enorme-200MB.bin')), sha(enorme));
       const crecio = (rssMax - rss0) / (1024 * 1024);
-      // Bufferizar el fichero entero costaria >= 120 MB; por trozos, unas decenas como mucho.
-      assert.ok(crecio < 70, `la memoria crecio ${crecio.toFixed(1)} MB copiando 120 MB: se esta bufferizando`);
+      // Bufferizar el fichero entero retendria >= 200 MB. Por trozos queda una meseta
+      // de ~30 MB de memoria NATIVA (external, no arrayBuffers: cifrado/socket de ssh2)
+      // que no crece con el tamano: 20 MB -> +14, 240 MB -> +33, 20 MB otra vez -> +3.
+      assert.ok(crecio < 60, `la memoria crecio ${crecio.toFixed(1)} MB copiando 200 MB: se esta bufferizando`);
       const src = fs.readFileSync(path.join(ROOT, 'electron', 'services', 'transfer-service.js'), 'utf-8');
       assert.ok(/_pump\(/.test(src) && /CONCURRENCY = \d+/.test(src) && !/readFile\(|\.fastGet\(|\.fastPut\(/.test(src), 'transfer-service no copia por trozos');
-      results50.push(`remoto->remoto 120 MB: ${intermedios.length} eventos intermedios, rss +${crecio.toFixed(1)} MB`);
+      results50.push(`remoto->remoto 200 MB: ${intermedios.length} eventos intermedios, retenido como mucho +${crecio.toFixed(1)} MB`);
     });
 
     await check('F8 un servidor hostil que lista "../x" o "a/b": list() los oculta y una bajada recursiva se para sin escribir fuera', async () => {
@@ -473,6 +491,20 @@ async function seccionSftp({ check, ROOT, getBridge }) {
       }
     });
 
+    await check('F13 contrato renderer <-> preload: cada miembro de sftp/localFs que usa src/components/SFTP/fsApi.js existe en el puente', () => {
+      const src = fs.readFileSync(path.join(ROOT, 'src', 'components', 'SFTP', 'fsApi.js'), 'utf-8');
+      const used = { localFs: new Set(), sftp: new Set() };
+      for (const m of src.matchAll(/\bl\.([a-zA-Z]+)\(/g)) used.localFs.add(m[1]);
+      for (const m of src.matchAll(/\bs\.([a-zA-Z]+)\(/g)) used.sftp.add(m[1]);
+      for (const m of src.matchAll(/api\(\)\.sftp\.([a-zA-Z]+)\(/g)) used.sftp.add(m[1]);
+      assert.ok(used.localFs.size >= 8 && used.sftp.size >= 15, `la regex ya no ve las llamadas (${used.localFs.size}/${used.sftp.size})`);
+      const missing = [];
+      for (const [ns, names] of Object.entries(used)) {
+        for (const n of names) if (typeof bridge[ns][n] !== 'function') missing.push(`${ns}.${n}`);
+      }
+      assert.deepStrictEqual(missing, [], `el renderer llama a miembros que preload no expone: ${missing.join(', ')}`);
+    });
+
     if (results50.length) console.log(`[arnes F] ${results50.join(' · ')}`);
   } finally {
     for (const id of sessions) await sshService.disconnect(id).catch(() => {});
@@ -484,6 +516,7 @@ async function seccionSftp({ check, ROOT, getBridge }) {
     localFs._shell = null;
     editService._shell = null;
     editService.debounceMs = 300;
+    transferService.progressMs = 120;
     await storeService.writeRaw('known-hosts', []);
     await storeService.writeRaw('connection-logs', []);
     try { fs.chmodSync(path.join(remoteDir, 'cerrada'), 0o755); } catch (_) { /* no existe */ }
