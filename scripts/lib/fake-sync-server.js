@@ -37,7 +37,9 @@ function fakeServer({ onBody } = {}) {
   // failSyncGet: sin red para bajar (T11: emparejar sin poder verificar).
   // authorizeUrl: lo que /auth/start devuelve para abrir en el navegador (el
   // arnes movil comprueba que llega a la pagina como native:open-url).
-  const hooks = { afterVaultPush: null, failSyncPost: false, failSyncGet: false, authorizeUrl: null };
+  // pollPending: /auth/poll contesta 202 siempre (login que nadie termina en
+  // el navegador: el arnes movil cancela uno a medias).
+  const hooks = { afterVaultPush: null, failSyncPost: false, failSyncGet: false, authorizeUrl: null, pollPending: false };
 
   const store = record => {
     const index = rows.findIndex(
@@ -85,6 +87,7 @@ function fakeServer({ onBody } = {}) {
         return json(200, { code: 'codigo-arnes', authorize_url: hooks.authorizeUrl });
       }
       if (req.method === 'GET' && url.pathname === '/auth/poll') {
+        if (hooks.pollPending) return json(202, { status: 'pendiente' });
         return json(200, { status: 'listo', token: 'token-login', email: 'login@local' });
       }
 

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { errorMessage } from './helpers';
+import { MACHINE } from '../../platform';
 
 /* The main process enforces this too, and its check is the one that counts.
    This copy only keeps the button disabled until the rule is met. */
@@ -46,26 +47,26 @@ export default function PassphraseCard({ mode, deviceName, onSubmit }) {
       await onSubmit(value);
     } catch (err) {
       if (mounted.current) {
-        setError(errorMessage(err, isSetup ? 'Could not set the passphrase.' : 'Could not unlock this computer.'));
+        setError(errorMessage(err, isSetup ? 'Could not set the passphrase.' : `Could not unlock this ${MACHINE}.`));
       }
     } finally {
       if (mounted.current) setBusy(false);
     }
   };
 
-  const who = deviceName ? <strong>{deviceName}</strong> : 'this computer';
+  const who = deviceName ? <strong>{deviceName}</strong> : `this ${MACHINE}`;
 
   return (
     <form className="sync-card sync-card-attention" onSubmit={submit}>
       <div className="sync-card-title">
         <LockIcon />
-        <span>{isSetup ? 'Create the account passphrase' : 'Unlock this computer'}</span>
+        <span>{isSetup ? 'Create the account passphrase' : `Unlock this ${MACHINE}`}</span>
       </div>
 
       {isSetup ? (
         <p className="sync-text">
           Saved passwords and SSH keys are encrypted before they leave {who}, with a key derived
-          from a passphrase only you know. Use the same passphrase on every computer you sync —
+          from a passphrase only you know. Use the same passphrase on every {MACHINE} you sync —
           the server never sees it.
         </p>
       ) : (
@@ -108,7 +109,7 @@ export default function PassphraseCard({ mode, deviceName, onSubmit }) {
         <p className="sync-text">
           <strong>If you forget it, the passwords and keys stored in your account cannot be
           recovered</strong> — not by you, not by the server. The copies already on each
-          computer are kept.
+          {' '}{MACHINE} are kept.
         </p>
       )}
 

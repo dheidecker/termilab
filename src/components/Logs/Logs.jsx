@@ -5,7 +5,7 @@ import { distroFor, DistroLogo } from '../Icons/distros';
 import { endpointKey, rankForKeeping } from '../HostList/duplicates';
 import { parseQuickConnect } from '../HostList/quickConnect';
 import { hostColor } from '../HostList/hostColor';
-import { FEATURES } from '../../platform';
+import { FEATURES, MACHINE } from '../../platform';
 import '../HostList/HostList.css';
 import './Logs.css';
 
@@ -121,7 +121,7 @@ export default function Logs() {
   };
 
   const clear = async () => {
-    if (!window.confirm('Clear the whole connection history on this computer? This cannot be undone.')) return;
+    if (!window.confirm(`Clear the whole connection history on this ${MACHINE}? This cannot be undone.`)) return;
     try {
       await clearConnectionLogs();
       setItems([]);
@@ -184,7 +184,7 @@ export default function Logs() {
           <div className="hv-empty">
             <div className="hv-empty-icon"><ClockIcon /></div>
             <h3>No connections yet</h3>
-            <p>Every SSH, SFTP and local terminal session you open on this computer shows up here, with when it started and ended. Nothing you type is recorded.</p>
+            <p>Every SSH, SFTP and local terminal session you open on this {MACHINE} shows up here, with when it started and ended. Nothing you type is recorded.</p>
           </div>
         ) : (
           <table className="lg-table">

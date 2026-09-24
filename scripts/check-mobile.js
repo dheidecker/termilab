@@ -27,6 +27,10 @@
  *        desbloquear con el passphrase otra vez, y sin DSK: sin secretos;
  *      - native:sessions: el recuento de sesiones SSH que enciende el
  *        foreground service;
+ *      - cancelar un login a medias (el "Cancel" de Android): logout() corta el
+ *        sondeo, el login rechaza y signingIn vuelve a false;
+ *      - la fila de teclas extra (src/components/Terminal/mobile/keys.js):
+ *        secuencias, modo de cursor de aplicacion y Ctrl/Alt pegajosos;
  *      - la cola: lo que Node emite antes del hello llega igual.
  *
  *  La migracion y el borrado de device-key.json son de Java (DeviceKeyResolver):
@@ -482,6 +486,55 @@ async function main() {
     assert.ok(!fs.existsSync(path.join(dirC, 'data', 'sync-secrets.json')), 'sin DSK se guardaron secretos');
   });
   await C.stop();
+
+  // ─── El "Cancel" de un login a medias (Android, fase 4) ───
+  const srvD = fakeServer();
+  srvD.hooks.pollPending = true;
+  await srvD.listen();
+  const dirD = path.join(tmp, 'movil-D');
+  const D = spawnMobile(bundle, { name: 'movil-D', dataDir: dirD, syncUrl: srvD.url(), dsk: crypto.randomBytes(32).toString('base64') });
+  await check('M12 cancelar un login a medias: logout() corta el sondeo, el login rechaza y signingIn vuelve a false', async () => {
+    const apiD = shimMod.createElectronAPI(D.transport, { onOpenUrl: () => {} });
+    const polls = () => srvD.requests.filter(r => r.path === '/auth/poll').length;
+    const signing = () => D.stats.received.filter(([e]) => e === 'native:sessions').map(([, p]) => p.signingIn);
+    const login = apiD.sync.login();
+    const outcome = login.then(() => 'resolvio', err => err.message);
+    await waitFor('dos sondeos en 202', () => polls() >= 2, 8000);
+    assert.strictEqual(signing().slice(-1)[0], true, `signingIn durante el login: ${JSON.stringify(signing())}`);
+    await apiD.sync.logout();
+    assert.match(await outcome, /cancelado/, 'el login no se cancelo');
+    await waitFor('signingIn false tras cancelar', () => signing().slice(-1)[0] === false);
+    const after = polls();
+    await sleep(4500);   // dos intervalos de sondeo
+    assert.strictEqual(polls(), after, `siguio sondeando tras cancelar (${after} -> ${polls()})`);
+    assert.strictEqual((await apiD.sync.status()).signedIn, false);
+  });
+  await D.stop();
+  await srvD.close();
+
+  await check('M13 teclas extra: secuencias xterm, cursor de aplicacion y Ctrl/Alt pegajosos', async () => {
+    const src = fs.readFileSync(path.join(ROOT, 'src', 'components', 'Terminal', 'mobile', 'keys.js'), 'utf-8');
+    const k = await import(`data:text/javascript,${encodeURIComponent(src)}`);
+    const seq = (id, o) => k.keySequence(id, o);
+    assert.strictEqual(seq('up'), '\x1b[A');
+    assert.strictEqual(seq('up', { appCursor: true }), '\x1bOA');
+    assert.strictEqual(seq('left', { ctrl: true }), '\x1b[1;5D');
+    assert.strictEqual(seq('home', { appCursor: true }), '\x1bOH');
+    assert.strictEqual(seq('pgdn'), '\x1b[6~');
+    assert.strictEqual(seq('esc'), '\x1b');
+    assert.strictEqual(seq('tab'), '\t');
+    assert.strictEqual(seq('|'), '|');
+    assert.deepStrictEqual(k.applyModifiers('c', { ctrl: true }), { data: '\x03', used: true });
+    assert.deepStrictEqual(k.applyModifiers('C', { ctrl: true }), { data: '\x03', used: true });
+    assert.deepStrictEqual(k.applyModifiers('x', { alt: true }), { data: '\x1bx', used: true });
+    assert.deepStrictEqual(k.applyModifiers('ls', { ctrl: true }), { data: 'ls', used: false }, 'un pegado no se modifica');
+    assert.strictEqual(k.tapModifier('off', 0, 1000), 'once');
+    assert.strictEqual(k.tapModifier('once', 1000, 1200), 'locked', 'doble toque = bloqueado');
+    assert.strictEqual(k.tapModifier('once', 1000, 2000), 'off', 'segundo toque lento = apagado');
+    assert.strictEqual(k.tapModifier('locked', 0, 5000), 'off');
+    assert.strictEqual(k.afterUse('once'), 'off');
+    assert.strictEqual(k.afterUse('locked'), 'locked');
+  });
 
   await sshd.close();
   await srvA.close();

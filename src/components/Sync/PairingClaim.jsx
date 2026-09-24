@@ -3,6 +3,7 @@ import { useApp } from '../../contexts/AppContext';
 import DigitCode from './DigitCode';
 import { errorMessage } from './helpers';
 import './Sync.css';
+import { MACHINE, MACHINES } from '../../platform';
 
 /**
  * Shown when this computer is signed in but has no master key yet.
@@ -95,7 +96,7 @@ export default function PairingClaim({ deviceName, pairing, onPaired }) {
         setError('The other device has not confirmed the digits yet.');
         return;
       }
-      onPaired?.('This computer is paired. Your SSH keys and host passwords can be decrypted here now.');
+      onPaired?.(`This ${MACHINE} is paired. Your SSH keys and host passwords can be decrypted here now.`);
       await refreshSyncStatus();
     } catch (err) {
       /* claim() waits for the other side for up to half a minute before it
@@ -114,13 +115,13 @@ export default function PairingClaim({ deviceName, pairing, onPaired }) {
     <div className="sync-card sync-card-attention">
       <div className="sync-card-title">
         <ShieldIcon />
-        <span>Pair this computer</span>
+        <span>Pair this {MACHINE}</span>
       </div>
 
       <p className="sync-text">
         Your SSH private keys and your saved host passwords are encrypted with a master key that
         lives in the system keychain — the server never has it.{' '}
-        {deviceName ? <strong>{deviceName}</strong> : 'This computer'} does not have that key yet,
+        {deviceName ? <strong>{deviceName}</strong> : `This ${MACHINE}`} does not have that key yet,
         so it cannot read them until another Termilab device hands it over.
       </p>
 
@@ -130,7 +131,7 @@ export default function PairingClaim({ deviceName, pairing, onPaired }) {
         <>
           <div className="sync-banner sync-banner-error">
             Stopped, and nothing was installed here. Different digits mean someone is sitting
-            between the two computers: reject the request on the other computer as well, then try
+            between the two {MACHINES}: reject the request on the other {MACHINE} as well, then try
             again with both of them in front of you.
           </div>
           <div className="sync-actions">
@@ -158,7 +159,7 @@ export default function PairingClaim({ deviceName, pairing, onPaired }) {
       {!gaveUp && !rejected && expired && (
         <>
           <div className="sync-banner sync-banner-error">
-            This pairing request is no longer active. Start a new one with both computers in front
+            This pairing request is no longer active. Start a new one with both {MACHINES} in front
             of you.
           </div>
           <div className="sync-actions">
@@ -185,28 +186,28 @@ export default function PairingClaim({ deviceName, pairing, onPaired }) {
               </div>
             </div>
             <ol className="sync-steps">
-              <li>Open Termilab on a computer that already has your data.</li>
-              <li>Go to Settings → Sync: it will show a request from this computer.</li>
+              <li>Open Termilab on a {MACHINE} that already has your data.</li>
+              <li>Go to Settings → Sync: it will show a request from this {MACHINE}.</li>
               <li>Accept it there — both screens then show the same six digits to compare.</li>
             </ol>
           </>
         ) : (
           <div className="sync-verify">
             <div className="sync-verify-label">
-              Compare these six digits with the ones on the other computer
+              Compare these six digits with the ones on the other {MACHINE}
             </div>
             <DigitCode digits={digits} size="xl" />
             <p className="sync-text">
               If the two screens show different digits, someone is sitting between the two
-              computers — do not continue.
+              {' '}{MACHINES} — do not continue.
             </p>
             <p className="sync-text">
-              Confirming authorises <strong>{deviceName || 'this computer'}</strong> to decrypt your
+              Confirming authorises <strong>{deviceName || `this ${MACHINE}`}</strong> to decrypt your
               SSH private keys and the passwords saved for your hosts.
             </p>
             <div className="sync-actions">
               <button className="sync-btn sync-btn-primary" onClick={confirmMatch} disabled={claiming}>
-                {claiming ? 'Finishing…' : 'The digits match — pair this computer'}
+                {claiming ? 'Finishing…' : `The digits match — pair this ${MACHINE}`}
               </button>
               <button
                 className="sync-btn sync-btn-danger"
