@@ -600,18 +600,15 @@ export function AppProvider({ children }) {
   /* ── Action creators ── */
   const actions = {
     setHostColor,
-    /* The colour of a terminal tab/pane: its saved host's (persisted, synced)
-       or, for a local terminal / quick connect, the tab's own (this session
-       only, never persisted). See HostList/hostColor.js tabColor(). */
+    /* The colour of ONE terminal (tab/pane), for this session only: four
+       terminals of the same host can each get their own. Never persisted and
+       never touches the host; `'none'` means "no colour", overriding the host's
+       default. See HostList/hostColor.js tabColor(). */
     setTabColor: useCallback(async (tabId, color) => {
-      const st = stateRef.current;
-      const tab = st.tabs.find(t => t.id === tabId);
-      if (!tab) return null;
-      const saved = tab.hostId ? st.hosts.find(h => h.id === tab.hostId) : null;
-      if (saved) return setHostColor(saved.id, color);
-      dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, color: color || null } });
+      if (!stateRef.current.tabs.some(t => t.id === tabId)) return null;
+      dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, color: color || 'none' } });
       return null;
-    }, [setHostColor]),
+    }, []),
 
     /* Hosts */
     saveHost: useCallback(async (host) => {

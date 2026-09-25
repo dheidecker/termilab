@@ -366,7 +366,7 @@ export default function SessionStage() {
           anchor={picker.anchor}
           ignoreEl={picker.el}
           value={tabColor(byId.get(picker.paneId), state.hosts)}
-          title={`Color of ${byId.get(picker.paneId)?.label || 'Terminal'}`}
+          title={`This terminal · ${byId.get(picker.paneId)?.label || 'Terminal'}`}
           onPick={(hex) => setTabColor(picker.paneId, hex)}
           onClose={closePicker}
         />

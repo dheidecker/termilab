@@ -27,14 +27,16 @@ export function validColor(c) {
   return typeof c === 'string' && HEX_RE.test(c) ? c.toLowerCase() : null;
 }
 
-/** The explicit colour of a terminal tab/pane, or null. A saved host's own
-    colour (live from `hosts`, so a HostForm edit or a sync pull shows at once);
-    a local terminal or quick connect (not in `hosts`) has a session-only
-    `tab.color` that is never persisted. */
+/** The colour of a terminal tab/pane, or null. The terminal's own session
+    colour wins (`tab.color`, set from its pane/tab picker, never persisted;
+    `'none'` = explicitly none); otherwise its saved host's colour, live from
+    `hosts`, as the default every new terminal of that host starts with. */
 export function tabColor(tab, hosts) {
   if (!tab) return null;
+  if (tab.color === 'none') return null;
+  if (validColor(tab.color)) return validColor(tab.color);
   const saved = tab.hostId ? (hosts || []).find(h => h.id === tab.hostId) : null;
-  return validColor(saved ? saved.color : tab.color);
+  return validColor(saved && saved.color);
 }
 
 /* Hosts without a colour of their own and without a group get one of these,

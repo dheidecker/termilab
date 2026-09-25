@@ -247,7 +247,7 @@ export default function TabBar() {
           anchor={picker.anchor}
           ignoreEl={picker.el}
           value={tabColor(pickerPane, state.hosts)}
-          title={`Color of ${pickerPane.label || 'Terminal'}`}
+          title={`This terminal · ${pickerPane.label || 'Terminal'}`}
           onPick={(hex) => actions.setTabColor(pickerPane.id, hex)}
           onClose={closePicker}
         />
