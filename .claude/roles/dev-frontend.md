@@ -414,3 +414,26 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   El refoco usa `shapeKey` (árbol sin `ratio`): soltar un divisor no roba el foco a la búsqueda.
   El menú de panel guarda su `groupId` y se cierra si cambia la pestaña activa o el panel sale.
   Test: `scratchpad/split/late-connect.test.mjs`.
+
+## Colores por host/terminal (rama `feat/host-colors`, 2026-09-25)
+
+- **Resolver siempre con `tabColor(tab, state.hosts)`** (`HostList/hostColor.js`): host guardado →
+  `host.color` en vivo; local / quick connect → `tab.color` (solo sesión, nunca se persiste).
+  `tab.hostConfig` es una copia vieja: no leas el color de ahí. `validColor` filtra lo que llega por sync.
+- Guardar desde popovers = `actions.setHostColor`/`setTabColor` → `store.setHostColor` (campo, en main).
+  **Nunca `saveHost({...host, color})`**: K17 mira el fuente de AppContext. HostForm sí lo guarda en su
+  save normal, y manda `color: null` (no `undefined`): el puente de Android es JSON y una clave
+  `undefined` desaparece, con lo que el merge de `saveHost` conservaría el color viejo.
+- `ColorPopover` va por **portal a `<body>` con `position:fixed`**: dentro de la barra de pestañas lo
+  cortaba `overflow` y la región de arrastre se tragaba los clics. Los eventos sintéticos de React
+  **sí** burbujean a través del portal hasta el padre React (la pestaña, el overlay): por eso el
+  popover hace `stopPropagation` de click/mousedown. `ignoreEl` = el botón que lo abrió (para que
+  su propio clic lo cierre en vez de reabrirlo).
+- Color ≠ foco: el foco es el `outline` de acento del panel; el color es franja izquierda de la
+  cabecera (box-shadow inset), cuadradito junto al nombre (cuadrado porque el punto redondo es el
+  estado) y `border-top` 2px del `.terminal-container`. En la pestaña, `::after` (el `::before` es la campana).
+- Pestaña con varios paneles = color de su **primer** panel (`memberTabs[0]`), y su botón de paleta
+  colorea ese panel, no el enfocado.
+- E2E/capturas: `scratchpad/colors/colors-e2e.mjs` de la sesión del 25-09. Los botones de la cabecera
+  de panel solo se ven con hover: usa `Input.dispatchMouseEvent` si la captura tiene que enseñarlos.
+- No verificado visualmente: el mensaje de "host sellado" dentro del popover (en modo mock no hay main).

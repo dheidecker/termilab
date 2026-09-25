@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { ServerIcon, CloseIcon, TerminalIcon } from '../Icons/icons';
 import { distroFor, DistroLogo } from '../Icons/distros';
-import { hostColor } from '../HostList/hostColor';
+import { hostIconBackground } from '../HostList/hostColor';
 import { MobileTopBar } from './MobileScreen';
 import { sessionTabs, sessionStatus, STATUS_LABEL, closeSessionTab } from './sessions';
 import './Mobile.css';
@@ -52,7 +52,7 @@ function SessionRow({ tab, host, groupMap, onOpen, onClose }) {
         <button className="m-session-open" onClick={onOpen}>
           <span
             className={`hv-icon ${distro ? 'hv-icon-distro' : ''}`}
-            style={{ background: distro ? distro.bg : hostColor(cfg, groupMap) }}
+            style={{ background: hostIconBackground({ ...cfg, color: host ? host.color : tab.color }, distro, groupMap) }}
           >
             {distro ? <DistroLogo os={cfg.os} /> : <ServerIcon />}
           </span>

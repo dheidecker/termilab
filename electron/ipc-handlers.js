@@ -238,25 +238,50 @@ function registerIpcHandlers(mainWindow) {
     return await storeService.getHosts();
   }));
 
+  /* A host whose password sync could not open here arrives with no password,
+     and saving it would replace the sealed remote copy — the only readable one,
+     on the computer that sealed it — on every device. Refused unless the save
+     brings a password of its own (the user typed it again). Unlike the OS and
+     colour writes below, an unknown sync state does not block: signed-out
+     users must be able to edit their hosts. */
+  const ERR_SEALED_SAVE = 'The password for this host is sealed by another computer. '
+    + 'Type it again here to replace it, or unlock that computer with the account passphrase first.';
+  const hostIsListedSealed = async (id) => {
+    try {
+      const s = await syncService.status();
+      return !!(s && Array.isArray(s.undecryptableIds) && s.undecryptableIds.includes(`hosts/${id}`));
+    } catch (_) {
+      return false;
+    }
+  };
   ipcMain.handle('store:save-host', wrapHandler(async (event, host) => {
+    if (host && host.id && !host.password && await hostIsListedSealed(host.id)) {
+      throw new Error(ERR_SEALED_SAVE);
+    }
     return await storeService.saveHost(host);
   }));
 
   /* The detected OS, written field-level in main (see storeService.setHostOs).
      Hosts sync could not open here are never written: that would replace the
      sealed remote copy. Unknown sync state counts as sealed. */
+  const hostIsSealed = async (id) => {
+    try {
+      const s = await syncService.status();
+      if (!s || !Array.isArray(s.undecryptableIds)) return true;
+      return s.undecryptableIds.includes(`hosts/${id}`);
+    } catch (_) {
+      return true;
+    }
+  };
   ipcMain.handle('store:set-host-os', wrapHandler(async (event, hostId, os) => {
-    return await storeService.setHostOs(hostId, os, {
-      isSealed: async (id) => {
-        try {
-          const s = await syncService.status();
-          if (!s || !Array.isArray(s.undecryptableIds)) return true;
-          return s.undecryptableIds.includes(`hosts/${id}`);
-        } catch (_) {
-          return true;
-        }
-      },
-    });
+    return await storeService.setHostOs(hostId, os, { isSealed: hostIsSealed });
+  }));
+
+  /* The swatch pickers: only `color` (null | #rrggbb), same field-level write
+     and same sealed check as the OS; a sealed host rejects with a message
+     the popover shows. Resolves the host, or null when nothing changed. */
+  ipcMain.handle('store:set-host-color', wrapHandler(async (event, hostId, color) => {
+    return await storeService.setHostColor(hostId, color, { isSealed: hostIsSealed });
   }));
 
   ipcMain.handle('store:delete-host', wrapHandler(async (event, id) => {
@@ -554,7 +579,7 @@ function removeIpcHandlers() {
     'sftp:open-remote', 'sftp:edit-start', 'sftp:edit-upload', 'sftp:edit-stop', 'sftp:cleanup',
     'local-fs:home', 'local-fs:list', 'local-fs:stat', 'local-fs:mkdir', 'local-fs:create-file',
     'local-fs:rename', 'local-fs:trash', 'local-fs:copy', 'local-fs:chmod', 'local-fs:open',
-    'store:get-hosts', 'store:save-host', 'store:set-host-os', 'store:delete-host',
+    'store:get-hosts', 'store:save-host', 'store:set-host-os', 'store:set-host-color', 'store:delete-host',
     'store:get-groups', 'store:save-group', 'store:delete-group',
     'store:get-snippets', 'store:save-snippet', 'store:delete-snippet',
     'store:get-keys', 'store:save-key', 'store:delete-key',

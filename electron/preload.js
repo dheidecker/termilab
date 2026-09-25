@@ -175,6 +175,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     saveHost: (host) => invoke('store:save-host', host),
     // Only `os`, read-modify-write in main; resolves the host or null (no-op)
     setHostOs: (hostId, os) => invoke('store:set-host-os', hostId, os),
+    // Only `color` (null | '#rrggbb'), same as setHostOs; rejects for a host
+    // sealed by another device, resolves the host or null (no-op)
+    setHostColor: (hostId, color) => invoke('store:set-host-color', hostId, color),
     deleteHost: (id) => invoke('store:delete-host', id),
 
     // Groups

@@ -3,6 +3,7 @@ import { useApp } from '../../../contexts/AppContext';
 import { useBackHandler } from '../../../hooks/useBackHandler';
 import { ArrowLeftIcon, MoreVerticalIcon, BroadcastIcon } from '../../Icons/icons';
 import { closeSessionTab } from '../../Mobile/sessions';
+import { tabColor } from '../../HostList/hostColor';
 
 /*
  * The bar on top of a session on Android, in place of the tab strip: back to
@@ -13,6 +14,8 @@ export default function SessionHeader({ tab, status, onResetZoom }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
   const active = state.activeTabId === tab.id;
+  /* The host's colour (or the session's): a stripe under the bar + a chip by the name */
+  const color = tabColor(tab, state.hosts);
   useBackHandler(active && menuOpen, () => setMenuOpen(false));
 
   useEffect(() => {
@@ -35,13 +38,14 @@ export default function SessionHeader({ tab, status, onResetZoom }) {
   const run = (fn) => () => { setMenuOpen(false); fn(); };
 
   return (
-    <header className="m-session-header">
+    <header className={`m-session-header${color ? ' has-color' : ''}`} style={color ? { '--pane-color': color } : undefined}>
       <button className="m-icon-btn" onClick={goBack} aria-label="Back to hosts">
         <ArrowLeftIcon />
       </button>
       <div className="m-session-title">
         <span className="m-session-label">
           <span className={`m-status-dot m-status-${status}`} aria-hidden="true" />
+          {color && <span className="pane-color-chip" aria-hidden="true" />}
           {tab.label || 'SSH'}
         </span>
         {address && <span className="m-session-sub">{address}</span>}

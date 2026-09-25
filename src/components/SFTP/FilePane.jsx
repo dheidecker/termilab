@@ -7,7 +7,7 @@ import {
   ExternalLinkIcon, AlertIcon, CloseIcon, UploadIcon,
 } from '../Icons/icons';
 import { DistroLogo, distroFor } from '../Icons/distros';
-import { hostColor } from '../HostList/hostColor';
+import { hostIconBackground } from '../HostList/hostColor';
 import HostPicker from './HostPicker';
 import { DeleteDialog, NameDialog, PermissionsDialog } from './dialogs';
 import { fsFor, endpointOf, edits as editApi, onSessionClose, pathForFile } from './fsApi';
@@ -520,7 +520,7 @@ export default function FilePane({
 
   const chip = (
     <button className="sftp-source" onClick={() => setPickerOpen(o => !o)} aria-haspopup="dialog" aria-expanded={pickerOpen} title="Change source">
-      <span className={`sftp-source-icon ${source?.kind === 'local' || !host ? 'local' : ''}`} style={host ? { background: distro ? distro.bg : hostColor(host, groupMap) } : undefined}>
+      <span className={`sftp-source-icon ${source?.kind === 'local' || !host ? 'local' : ''}`} style={host ? { background: hostIconBackground(host, distro, groupMap) } : undefined}>
         {source?.kind === 'local' ? <LaptopIcon /> : distro ? <DistroLogo os={host.os} /> : <ServerIcon />}
       </span>
       <span className="sftp-source-text">

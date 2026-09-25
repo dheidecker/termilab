@@ -20,6 +20,12 @@ function capConnectionLogs(list, cap) {
   return list.filter(e => !drop.has(e));
 }
 
+/* host.color: null or '#rrggbb'. Only the format; the palette is renderer-side. */
+const HOST_COLOR_RE = /^#[0-9a-f]{6}$/i;
+/* Shown as-is by the swatch popover (the IPC envelope carries only the message) */
+const SEALED_HOST_COLOR_ERROR = "Can't change this host's color here: its password is sealed by another device. "
+  + 'Unlock sync on this device first (Settings → Sync).';
+
 class StoreService {
   constructor() {
     this.dataDir = path.join(app.getPath('userData'), 'data');
@@ -230,6 +236,40 @@ class StoreService {
       if (!host || host.os === os) return null;
       if (isSealed && await isSealed(hostId)) return null;
       host.os = os;
+      host.updatedAt = new Date().toISOString();
+      await this._writeCollection('hosts', hosts);
+      return host;
+    } finally {
+      this._releaseLock('hosts');
+    }
+  }
+
+  /**
+   * Field-level write of the host's colour (the swatch pickers). Same shape
+   * as setHostOs: reads the host from disk under the lock and changes only
+   * `color`. `color` is null (none) or '#rrggbb'; anything else throws. The
+   * palette itself lives only in the renderer (src/components/HostList/
+   * hostColor.js): main validates the format, not the list. Returns the host,
+   * or null for an unknown id (quick connect) or an unchanged colour. A host
+   * sync could not open here THROWS instead of being a silent no-op: the user
+   * clicked a swatch and must be told why nothing changed.
+   */
+  async setHostColor(hostId, color, { isSealed } = {}) {
+    if (typeof hostId !== 'string' || !hostId) return null;
+    if (color !== null && !(typeof color === 'string' && HOST_COLOR_RE.test(color))) {
+      throw new Error('Invalid color: expected null or #rrggbb');
+    }
+    const next = color === null ? null : color.toLowerCase();
+    await this._acquireLock('hosts');
+    try {
+      const hosts = await this._readCollection('hosts');
+      const host = hosts.find(h => h && h.id === hostId);
+      if (!host) return null;
+      const current = typeof host.color === 'string' && host.color ? host.color.toLowerCase() : null;
+      if (current === next) return null;
+      if (isSealed && await isSealed(hostId)) throw new Error(SEALED_HOST_COLOR_ERROR);
+      if (next === null) delete host.color;
+      else host.color = next;
       host.updatedAt = new Date().toISOString();
       await this._writeCollection('hosts', hosts);
       return host;

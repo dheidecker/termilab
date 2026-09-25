@@ -7,6 +7,9 @@ import {
 } from './layoutTree';
 import { useDrag, beginDrag, setDrag } from './dragState';
 import { confirmCloseSessions, endSessions } from './sessions';
+import { tabColor } from '../HostList/hostColor';
+import { ColorPopover, anchorOf } from '../ColorPicker/ColorPicker';
+import { PaletteIcon } from '../Icons/icons';
 import './SplitPane.css';
 
 /*
@@ -103,10 +106,16 @@ const GripIcon = () => (
 
 const paneStatus = (tab) => (tab.error ? 'error' : tab.connecting || !tab.sessionId ? 'connecting' : 'connected');
 
+/* Opens the colour popover for this pane (its host's colour, or the session's) */
+const ColorButton = ({ onColor }) => (
+  <button className="pane-toolbar-btn pane-color-btn" onClick={onColor} title="Color" aria-label="Color" aria-haspopup="dialog"><PaletteIcon /></button>
+);
+
 /* Single-pane tab: the floating split buttons, as before */
-function PaneToolbar({ onSplitH, onSplitV }) {
+function PaneToolbar({ onSplitH, onSplitV, onColor }) {
   return (
     <div className="pane-toolbar">
+      <ColorButton onColor={onColor} />
       <button className="pane-toolbar-btn" onClick={onSplitH} title="Split Right"><SplitHIcon /></button>
       <button className="pane-toolbar-btn" onClick={onSplitV} title="Split Down"><SplitVIcon /></button>
     </div>
@@ -114,9 +123,9 @@ function PaneToolbar({ onSplitH, onSplitV }) {
 }
 
 /* Multi-pane tab: which host this is, a drag handle, and the pane's actions */
-function PaneHeader({ tab, focused, onSplitH, onSplitV, onDetach, onClose, onMenu }) {
+function PaneHeader({ tab, color, focused, onSplitH, onSplitV, onDetach, onClose, onMenu, onColor }) {
   return (
-    <div className={`pane-header${focused ? ' focused' : ''}`} onContextMenu={onMenu}>
+    <div className={`pane-header${focused ? ' focused' : ''}${color ? ' has-color' : ''}`} onContextMenu={onMenu}>
       <div
         className="pane-handle"
         draggable
@@ -126,9 +135,11 @@ function PaneHeader({ tab, focused, onSplitH, onSplitV, onDetach, onClose, onMen
       >
         <span className="pane-grip"><GripIcon /></span>
         <span className={`pane-status ${paneStatus(tab)}`} />
+        {color && <span className="pane-color-chip" aria-hidden="true" />}
         <span className="pane-title">{tab.label || 'Terminal'}</span>
       </div>
       <div className="pane-header-actions">
+        <ColorButton onColor={onColor} />
         <button className="pane-toolbar-btn" onClick={onSplitH} title="Split Right"><SplitHIcon /></button>
         <button className="pane-toolbar-btn" onClick={onSplitV} title="Split Down"><SplitVIcon /></button>
         <button className="pane-toolbar-btn" onClick={onDetach} title="Move to New Tab"><DetachIcon /></button>
@@ -143,7 +154,7 @@ const ZONE_TEXT = { left: 'Left', right: 'Right', top: 'Top', bottom: 'Bottom', 
 export default function SessionStage() {
   const { state, actions } = useApp();
   const { tabs, layouts, activeTabId } = state;
-  const { splitPane, dropOnPane, detachPane, focusPane, setPaneRatio, removeTab, disconnectSession } = actions;
+  const { splitPane, dropOnPane, detachPane, focusPane, setPaneRatio, removeTab, disconnectSession, setTabColor } = actions;
   const drag = useDrag();
 
   const stageRef = useRef(null);
@@ -152,6 +163,7 @@ export default function SessionStage() {
   const [rects, setRects] = useState({});
   const [hover, setHover] = useState(null);   // { paneId, zone } under a drag
   const [menu, setMenu] = useState(null);     // { x, y, paneId, groupId } pane header menu
+  const [picker, setPicker] = useState(null); // { anchor, el, paneId, groupId } colour popover
 
   /* Every terminal session, in first-seen order (see the note above) */
   const orderRef = useRef([]);
@@ -239,6 +251,16 @@ export default function SessionStage() {
     return () => { document.removeEventListener('click', close); document.removeEventListener('keydown', esc); };
   }, [menu]);
 
+  /* Colour popover: same rule, only for a pane of the tab on screen */
+  const pickerLive = !!picker && picker.groupId === groupId && paneIds.includes(picker.paneId) && byId.has(picker.paneId);
+  useEffect(() => { if (picker && !pickerLive) setPicker(null); }, [picker, pickerLive]);
+  const closePicker = useCallback(() => setPicker(null), []);
+  const openPicker = (e, paneId) => {
+    e.stopPropagation();
+    const el = e.currentTarget;
+    setPicker(p => (p && p.paneId === paneId ? null : { anchor: anchorOf(el), el, paneId, groupId }));
+  };
+
   useEffect(() => { if (!drag) setHover(null); }, [drag]);
 
   const closePane = async (tab) => {
@@ -268,20 +290,23 @@ export default function SessionStage() {
           ? { position: 'absolute', top: rect.top, left: rect.left, width: rect.width, height: rect.height }
           : { display: 'none' };
         const shown = !!rect;
+        const color = tabColor(tab, state.hosts);
         return (
           <div
             key={id}
             ref={el => { if (el) overlayEls.current[id] = el; else delete overlayEls.current[id]; }}
-            className={`split-terminal-overlay${shown && multi ? ' multi' : ''}${shown && multi && id === focusId ? ' focused' : ''}`}
+            className={`split-terminal-overlay${shown && multi ? ' multi' : ''}${shown && multi && id === focusId ? ' focused' : ''}${color ? ' has-color' : ''}`}
             data-pane-id={id}
-            style={style}
+            style={color ? { ...style, '--pane-color': color } : style}
             onFocus={shown && multi ? () => focusPane(groupId, id) : undefined}
             onMouseDownCapture={shown && multi ? () => focusPane(groupId, id) : undefined}
           >
             {FEATURES.splitPanes && shown && (multi ? (
               <PaneHeader
                 tab={tab}
+                color={color}
                 focused={id === focusId}
+                onColor={(e) => openPicker(e, id)}
                 onSplitH={() => splitPane(groupId, id, 'horizontal')}
                 onSplitV={() => splitPane(groupId, id, 'vertical')}
                 onDetach={() => detachPane(id)}
@@ -290,6 +315,7 @@ export default function SessionStage() {
               />
             ) : (
               <PaneToolbar
+                onColor={(e) => openPicker(e, id)}
                 onSplitH={() => splitPane(groupId, id, 'horizontal')}
                 onSplitV={() => splitPane(groupId, id, 'vertical')}
               />
@@ -333,6 +359,17 @@ export default function SessionStage() {
             </div>
           ))}
         </div>
+      )}
+
+      {pickerLive && (
+        <ColorPopover
+          anchor={picker.anchor}
+          ignoreEl={picker.el}
+          value={tabColor(byId.get(picker.paneId), state.hosts)}
+          title={`Color of ${byId.get(picker.paneId)?.label || 'Terminal'}`}
+          onPick={(hex) => setTabColor(picker.paneId, hex)}
+          onClose={closePicker}
+        />
       )}
 
       {menuLive && (

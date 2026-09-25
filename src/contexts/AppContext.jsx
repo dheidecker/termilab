@@ -133,7 +133,7 @@ const initialState = {
   portForwardStatus: {},
   settings: MOCK_SETTINGS,
   activeSessions: {},     // sessionId -> { hostId, host, status }
-  tabs: [],               // { id, type:'terminal'|'sftp', label, sessionId?, hostId?, hidden? }
+  tabs: [],               // { id, type:'terminal'|'sftp', label, sessionId?, hostId?, hidden?, color? (session-only, unsaved hosts) }
   activeTabId: null,
   /* Split panes (desktop), in memory only. groupId -> layout tree, for tabs
      with more than one pane; the other panes are tabs with hidden:true. See
@@ -573,8 +573,46 @@ export function AppProvider({ children }) {
     };
   }, []);
 
+  /**
+   * A saved host's colour (swatch pickers). Field-level in main, like the OS:
+   * `store.setHostColor(hostId, color)` sets ONLY `color` on the host as it is
+   * on disk, under the store lock. Never a full-object saveHost from here: a
+   * sync pull may have just rewritten hosts.json. Rejects with a readable
+   * message for a host sealed by another device (a local save would destroy
+   * its sealed remote password); the popover shows it. null = no colour.
+   */
+  const setHostColor = useCallback(async (hostId, color) => {
+    if (!hasApi()) {
+      const host = stateRef.current.hosts.find(h => h.id === hostId);
+      if (!host) return null;
+      const next = { ...host };
+      if (color) next.color = color; else delete next.color;
+      dispatch({ type: 'UPDATE_HOST', payload: next });
+      return next;
+    }
+    const store = api().store;
+    if (typeof store?.setHostColor !== 'function') throw new Error('This build cannot save host colors');
+    const saved = await store.setHostColor(hostId, color);
+    if (saved && saved.id === hostId) dispatch({ type: 'UPDATE_HOST', payload: saved });
+    return saved;
+  }, []);
+
   /* ── Action creators ── */
   const actions = {
+    setHostColor,
+    /* The colour of a terminal tab/pane: its saved host's (persisted, synced)
+       or, for a local terminal / quick connect, the tab's own (this session
+       only, never persisted). See HostList/hostColor.js tabColor(). */
+    setTabColor: useCallback(async (tabId, color) => {
+      const st = stateRef.current;
+      const tab = st.tabs.find(t => t.id === tabId);
+      if (!tab) return null;
+      const saved = tab.hostId ? st.hosts.find(h => h.id === tab.hostId) : null;
+      if (saved) return setHostColor(saved.id, color);
+      dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, color: color || null } });
+      return null;
+    }, [setHostColor]),
+
     /* Hosts */
     saveHost: useCallback(async (host) => {
       if (hasApi()) {

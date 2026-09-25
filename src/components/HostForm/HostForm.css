@@ -274,3 +274,19 @@
   color: var(--color-danger);
   margin-top: 2px;
 }
+
+.host-form-notice {
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+  color: var(--text-secondary);
+  background: var(--overlay-subtle);
+  border-left: 3px solid var(--color-warning);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+}
+
+.host-form-notice-error {
+  color: var(--text-primary);
+  border-left-color: var(--color-danger);
+}

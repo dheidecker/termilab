@@ -514,3 +514,14 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   el resultado trae `renamed: [{from, to}]`; si el mapeo choca con un hermano, " (n)". Plataforma
   inyectable con `transferService.localPlatform = 'win32'` (el harness la vuelve a `null`). F20.
 - El control negativo en copia sin `.git` deja S9 rojo (lee `5ecfa09` con git): es ruido, no tuyo.
+
+## Color de host (rama `feat/host-colors`, 2026-09-25, arnés K17)
+
+- `store:set-host-color(hostId, color)` = mismo patrón que `set-host-os` (solo `color`, bajo el lock,
+  `isSealed` dentro), con dos diferencias a propósito: un host sellado **lanza** (el usuario pulsó una
+  muestra y hay que decirle por qué no cambió; el OS es silencioso) y un color inválido **lanza**
+  ("Invalid color"). `null` borra la clave. El texto del error se pinta tal cual en el popover.
+- main **no** tiene la paleta: valida `null | #rrggbb` (`HOST_COLOR_RE`). La lista vive solo en
+  `src/components/HostList/hostColor.js`. No la dupliques "para validar mejor": entonces sí sería un
+  par duplicado que se desincroniza.
+- `hostIsSealed` en ipc-handlers es compartido por OS y color. Estado de sync ilegible = sellado.

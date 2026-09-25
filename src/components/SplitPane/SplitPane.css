@@ -353,3 +353,25 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ─── Host / session colour (HostList/hostColor.js) ───
+   A 3 px stripe on the header's left edge, a square chip by the name and a
+   2 px line on top of the terminal, so side-by-side panes tell apart even
+   when the eye is on the text. Never an outline: that is the focus mark
+   (.focused above), and a colour must not read as "this one has the keyboard". */
+.pane-header.has-color {
+  box-shadow: inset 3px 0 0 var(--pane-color);
+}
+
+/* Square, not round: the round dot next to it is the connection status */
+.pane-color-chip {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  background: var(--pane-color);
+}
+
+.split-terminal-overlay.has-color > .terminal-container {
+  border-top: 2px solid var(--pane-color);
+}

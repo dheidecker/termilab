@@ -3,11 +3,18 @@ import { useApp } from '../../contexts/AppContext';
 import { useBackHandler } from '../../hooks/useBackHandler';
 import { IS_ANDROID } from '../../platform';
 import { MobileTopBar } from '../Mobile/MobileScreen';
+import { ColorSwatches } from '../ColorPicker/ColorPicker';
+import { validColor } from '../HostList/hostColor';
 import './HostForm.css';
 
 export default function HostForm() {
   const { state, actions } = useApp();
   const { editingHost, newHostDefaults, groups, keys } = state;
+  /* Its password was sealed by another computer: saving without typing it
+     again is refused by main, so say so before the user tries. */
+  const sealed = !!editingHost?.id
+    && (state.sync?.status?.undecryptableIds || []).includes(`hosts/${editingHost.id}`);
+  const [saveError, setSaveError] = useState(null);
 
   const [form, setForm] = useState({
     label: '',
@@ -19,6 +26,7 @@ export default function HostForm() {
     keyId: '',
     groupId: newHostDefaults?.groupId || '',
     tags: [],
+    color: null,
   });
 
   const [tagInput, setTagInput] = useState('');
@@ -39,6 +47,7 @@ export default function HostForm() {
         keyId: editingHost.keyId || '',
         groupId: editingHost.groupId || '',
         tags: editingHost.tags || [],
+        color: validColor(editingHost.color),
       });
     }
   }, [editingHost]);
@@ -109,8 +118,17 @@ export default function HostForm() {
       keyId: form.authType === 'key' ? form.keyId : undefined,
       groupId: form.groupId || null,
       tags: form.tags,
+      /* null, not undefined: the Android bridge is JSON, where an undefined
+         key vanishes and saveHost's merge would keep the old colour */
+      color: form.color || null,
     };
-    await actions.saveHost(host);
+    setSaveError(null);
+    try {
+      await actions.saveHost(host);
+    } catch (err) {
+      setSaveError(err?.message || 'Could not save this host.');
+      return;
+    }
     actions.closeHostForm();
   };
 
@@ -139,6 +157,13 @@ export default function HostForm() {
         </div>}
 
         <div className="host-form-body">
+          {sealed && (
+            <div className="host-form-notice">
+              This host's password is sealed by another computer. Type it again to replace it,
+              or unlock that computer with the account passphrase first.
+            </div>
+          )}
+          {saveError && <div className="host-form-notice host-form-notice-error">{saveError}</div>}
           <div className="host-form-group">
             <label>Label</label>
             <input
@@ -264,6 +289,11 @@ export default function HostForm() {
                 <option key={g.id} value={g.id}>{g.label}</option>
               ))}
             </select>
+          </div>
+
+          <div className="host-form-group">
+            <label>Color</label>
+            <ColorSwatches value={form.color} onPick={(hex) => updateField('color', hex)} label="Color" />
           </div>
 
           <div className="host-form-group">

@@ -460,3 +460,13 @@ export const TransferIcon = (p) => (
     <line x1="4" y1="17" x2="20" y2="17" />
   </Svg>
 );
+
+/* A painter's palette: the colour pickers (pane header, active tab) */
+export const PaletteIcon = (p) => (
+  <Svg {...p}>
+    <path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-.9.8-1.7 1.7-1.7H16.6A4.4 4.4 0 0 0 21 10.8C21 6.5 17 3 12 3z" />
+    <circle cx="7.5" cy="11" r="1.1" />
+    <circle cx="10" cy="7.2" r="1.1" />
+    <circle cx="14.5" cy="7.2" r="1.1" />
+  </Svg>
+);

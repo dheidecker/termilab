@@ -5,11 +5,12 @@ import { findDuplicateGroups, endpointKey, rankForKeeping } from './duplicates';
 import { parseQuickConnect } from './quickConnect';
 import {
   ServerIcon, GroupIcon, TerminalIcon, SearchIcon, ChevronDownIcon, ChevronRightIcon,
-  PencilIcon, CopyIcon, TrashIcon, FolderIcon, SessionIcon, PlusIcon, CloseIcon, TagIcon,
+  PencilIcon, CopyIcon, TrashIcon, FolderIcon, SessionIcon, PlusIcon, CloseIcon, TagIcon, PaletteIcon,
 } from '../Icons/icons';
 import ViewOptions, { useViewChoice, useSortChoice, sortItems } from '../ViewOptions/ViewOptions';
 import { distroFor, DistroLogo } from '../Icons/distros';
-import { PALETTE, hostColor } from './hostColor';
+import { PALETTE, hostIconBackground } from './hostColor';
+import { ColorPopover } from '../ColorPicker/ColorPicker';
 import { FEATURES, IS_ANDROID, MACHINE } from '../../platform';
 import ActionSheet from '../Mobile/ActionSheet';
 import './HostList.css';
@@ -24,7 +25,7 @@ export default function HostList() {
   const { state, actions } = useApp();
   const { hosts, groups, activeSessions } = state;
   const {
-    connectToHost, openSFTPTab, openHostForm, saveHost, deleteHost, saveGroup, mergeHosts, openLocalTerminal,
+    connectToHost, openSFTPTab, openHostForm, saveHost, deleteHost, saveGroup, mergeHosts, openLocalTerminal, setHostColor,
   } = actions;
 
   const [search, setSearch] = useState('');
@@ -34,6 +35,8 @@ export default function HostList() {
   const [sort, setSort] = useSortChoice('termilab.hosts.sort');
   const [tagFilter, setTagFilter] = useState([]);
   const [contextMenu, setContextMenu] = useState(null);
+  /* Colour popover from the context menu: { anchor, hostId } */
+  const [colorPicker, setColorPicker] = useState(null);
   const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
@@ -135,8 +138,6 @@ export default function HostList() {
   const isConnected = (hostId) =>
     Object.values(activeSessions).some(s => s.hostId === hostId);
 
-  const colorFor = (host) => hostColor(host, groupMap);
-
   /* ─── Connect ─── */
   const handleConnect = useCallback(async (host) => {
     try {
@@ -187,7 +188,7 @@ export default function HostList() {
     if (IS_ANDROID) { setSheetHost(host); return; }
     /* Keep the menu on screen near the right and bottom edges */
     const x = Math.min(e.clientX, window.innerWidth - 200);
-    const y = Math.min(e.clientY, window.innerHeight - 250);
+    const y = Math.min(e.clientY, window.innerHeight - 280);
     setContextMenu({ x, y, host });
   };
 
@@ -203,6 +204,14 @@ export default function HostList() {
     }
   };
   const ctxDelete = () => contextMenu && deleteHost(contextMenu.host.id);
+  /* Opens where the menu was; the menu itself closes on this same click */
+  const ctxColor = () => {
+    if (!contextMenu) return;
+    const { x, y, host } = contextMenu;
+    setColorPicker({ anchor: { left: x, top: y, right: x, bottom: y }, hostId: host.id });
+  };
+  const closeColorPicker = useCallback(() => setColorPicker(null), []);
+  const pickerHost = colorPicker ? hosts.find(h => h.id === colorPicker.hostId) : null;
 
   /* ─── New group — inline input ─── */
   const handleNewGroup = () => {
@@ -242,7 +251,11 @@ export default function HostList() {
     const hostId = e.dataTransfer.getData('text/plain');
     const host = hosts.find(h => h.id === hostId);
     if (host) {
-      await saveHost({ ...host, groupId: targetGroupId || null });
+      try {
+        await saveHost({ ...host, groupId: targetGroupId || null });
+      } catch (err) {
+        window.alert(err?.message || 'Could not move this host.');
+      }
     }
   };
 
@@ -300,7 +313,7 @@ export default function HostList() {
       >
         <div
           className={`hv-icon ${distro ? 'hv-icon-distro' : ''}`}
-          style={{ background: distro ? distro.bg : colorFor(host) }}
+          style={{ background: hostIconBackground(host, distro, groupMap) }}
           title={distro ? distro.label : undefined}
         >
           {distro ? <DistroLogo os={host.os} /> : <ServerIcon />}
@@ -556,6 +569,16 @@ export default function HostList() {
         />
       )}
 
+      {pickerHost && (
+        <ColorPopover
+          anchor={colorPicker.anchor}
+          value={pickerHost.color}
+          title={`Color of ${hostName(pickerHost)}`}
+          onPick={(hex) => setHostColor(pickerHost.id, hex)}
+          onClose={closeColorPicker}
+        />
+      )}
+
       {/* Context menu */}
       {contextMenu && (
         <div
@@ -580,6 +603,9 @@ export default function HostList() {
           </button>
           <button className="host-context-menu-item" onClick={ctxDuplicate}>
             <CopyIcon /> Duplicate
+          </button>
+          <button className="host-context-menu-item" onClick={ctxColor}>
+            <PaletteIcon /> Color
           </button>
           <div className="host-context-separator" />
           <button className="host-context-menu-item danger" onClick={ctxDelete}>

@@ -221,6 +221,7 @@ export function createElectronAPI(transport, options = {}) {
       getHosts: () => invoke('store:get-hosts'),
       saveHost: (host) => invoke('store:save-host', host),
       setHostOs: (hostId, os) => invoke('store:set-host-os', hostId, os),
+      setHostColor: (hostId, color) => invoke('store:set-host-color', hostId, color),
       deleteHost: (id) => invoke('store:delete-host', id),
 
       getGroups: () => invoke('store:get-groups'),

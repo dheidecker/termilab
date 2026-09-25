@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useApp } from '../../contexts/AppContext';
-import { VaultIcon, ServerIcon, TerminalIcon, FolderIcon, PlusIcon, CloseIcon, BroadcastIcon } from '../Icons/icons';
+import { VaultIcon, ServerIcon, TerminalIcon, FolderIcon, PlusIcon, CloseIcon, BroadcastIcon, PaletteIcon } from '../Icons/icons';
 import { FEATURES } from '../../platform';
 import './TabBar.css';
 import { useBackHandler } from '../../hooks/useBackHandler';
@@ -8,6 +8,8 @@ import { confirmCloseSftp } from '../SFTP/activeTransfers';
 import { memberTabs, groupLabel, groupOf, isTerminalTab } from '../SplitPane/layoutTree';
 import { useDrag, beginDrag, setDrag } from '../SplitPane/dragState';
 import { confirmCloseSessions, endSessions } from '../SplitPane/sessions';
+import { tabColor } from '../HostList/hostColor';
+import { ColorPopover, anchorOf } from '../ColorPicker/ColorPicker';
 
 /* Hovering a dragged tab/pane over another tab opens it after this long, so
    the drop can land in its panes (like browsers do) */
@@ -29,6 +31,10 @@ export default function TabBar() {
   const { state, actions } = useApp();
   const { tabs, activeTabId, broadcast } = state;
   const [contextMenu, setContextMenu] = useState(null);
+  /* Colour popover from the active tab: { anchor, el, paneId, groupId }. It
+     colours the pane the tab shows the colour of (the first/top-left one). */
+  const [picker, setPicker] = useState(null);
+  const closePicker = useCallback(() => setPicker(null), []);
   useBackHandler(!!contextMenu, () => setContextMenu(null));
 
   const visibleTabs = tabs.filter(t => !t.hidden);
@@ -45,6 +51,12 @@ export default function TabBar() {
   };
   useEffect(() => { if (!drag) clearHover(); }, [drag]);
   useEffect(() => clearHover, []);
+
+  /* The popover belongs to the tab on screen: another tab opened, or that
+     pane closed/moved elsewhere, closes it */
+  const pickerPane = picker && picker.groupId === activeTabId ? tabs.find(t => t.id === picker.paneId) : null;
+  const pickerLive = !!pickerPane && memberTabs(state, picker.groupId)[0]?.id === picker.paneId;
+  useEffect(() => { if (picker && !pickerLive) setPicker(null); }, [picker, pickerLive]);
 
   /* Close the context menu on outside click */
   useEffect(() => {
@@ -139,10 +151,15 @@ export default function TabBar() {
           const { label, title } = groupLabel(members);
           const notify = members.some(m => m.notify);
           const canDrag = FEATURES.splitPanes && isTerminalTab(tab);
+          /* A split tab shows its first (top-left) pane's colour */
+          const lead = isTerminalTab(tab) ? members[0] : null;
+          const color = lead ? tabColor(lead, state.hosts) : null;
+          const isActive = tab.id === activeTabId;
           return (
           <div
             key={tab.id}
-            className={`tab ${tab.id === activeTabId ? 'active' : ''} ${notify ? 'notify' : ''} ${drag?.kind === 'tab' && tab.id === drag.tabId ? 'dragging' : ''}`}
+            className={`tab ${isActive ? 'active' : ''} ${notify ? 'notify' : ''} ${drag?.kind === 'tab' && tab.id === drag.tabId ? 'dragging' : ''}${color ? ' has-color' : ''}`}
+            style={color ? { '--tab-color': color } : undefined}
             role="tab"
             aria-selected={tab.id === activeTabId}
             title={title}
@@ -160,6 +177,22 @@ export default function TabBar() {
             )}
             {getTabIcon(tab)}
             <span className="tab-label">{label}</span>
+            {isActive && lead && (
+              <button
+                className={`tab-color-btn${picker ? ' open' : ''}`}
+                title={members.length > 1 ? `Color of ${lead.label || 'Terminal'}` : 'Color'}
+                aria-label={`Color of ${lead.label || 'Terminal'}`}
+                aria-haspopup="dialog"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const el = e.currentTarget;
+                  setPicker(p => (p ? null : { anchor: anchorOf(el), el, paneId: lead.id, groupId: tab.id }));
+                }}
+              >
+                <PaletteIcon />
+              </button>
+            )}
             <button
               className="tab-close"
               aria-label={`Close ${label}`}
@@ -208,6 +241,17 @@ export default function TabBar() {
       >
         <BroadcastIcon />
       </button>
+
+      {pickerLive && (
+        <ColorPopover
+          anchor={picker.anchor}
+          ignoreEl={picker.el}
+          value={tabColor(pickerPane, state.hosts)}
+          title={`Color of ${pickerPane.label || 'Terminal'}`}
+          onPick={(hex) => actions.setTabColor(pickerPane.id, hex)}
+          onClose={closePicker}
+        />
+      )}
 
       {/* Tab context menu */}
       {contextMenu && (

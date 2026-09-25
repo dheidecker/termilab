@@ -266,6 +266,52 @@
   50% { opacity: 0.5; box-shadow: 0 0 10px rgba(240, 136, 62, 0.9); }
 }
 
+/* ─── Host / session colour ───
+   A 3 px underline in the host's colour (a split tab: its first pane's).
+   ::after, because ::before is the bell mark. */
+.tab.has-color::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 1px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--tab-color);
+  pointer-events: none;
+}
+
+/* Palette button: only on the active tab, shown on hover (like close) */
+.tab-color-btn {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  opacity: 0;
+  transition: opacity var(--transition-base), background var(--transition-base), color var(--transition-base);
+}
+
+.tab:hover .tab-color-btn,
+.tab-color-btn:focus-visible,
+.tab-color-btn.open {
+  opacity: 1;
+}
+
+.tab-color-btn:hover,
+.tab-color-btn.open {
+  background: var(--overlay-strong);
+  color: var(--text-primary);
+}
+
+.tab-color-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
 /* ─── Drag and drop (split panes) ─── */
 .tab.dragging {
   opacity: 0.5;

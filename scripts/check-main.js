@@ -766,6 +766,94 @@ async function seccionKnownHosts() {
     await storeService.writeRaw('hosts', []);
   });
 
+  await check('K17 color de host: main cambia SOLO `color` sobre lo que hay en disco (bajo lock), no-op si no cambia o id desconocido, rechaza colores invalidos y hosts sellados', async () => {
+    const syncService = require(path.join(ROOT, 'electron', 'services', 'sync-service.js'));
+    const hostsJson = path.join(currentUserData, 'data', 'hosts.json');
+    const SELLADO = { id: 'h-col-sellado', label: 'Sellado', hostname: 's.example', username: 'x', authType: 'password', color: '#2563eb' };
+    await storeService.writeRaw('hosts', [{ id: 'h-col', label: 'Viejo', hostname: 'c.example', username: 'derek', authType: 'password', password: 'vieja' }, SELLADO]);
+    // Un pull de sync reescribe hosts.json; la copia del renderer sigue siendo la vieja
+    await storeService.writeRaw('hosts', [{ id: 'h-col', label: 'Nuevo', hostname: 'c.example', username: 'derek', authType: 'password', password: 'nueva', os: 'debian' }, SELLADO]);
+    const leer = () => JSON.parse(fs.readFileSync(hostsJson, 'utf-8'));
+    const { updatedAt: _u0, ...antesDeTodo } = leer().find(h => h.id === 'h-col');
+
+    const r = await bridge.store.setHostColor('h-col', '#DC2626');
+    assert.ok(r && r.id === 'h-col' && r.color === '#dc2626', 'no devolvio el host con el color (normalizado a minusculas)');
+    const enDisco = leer().find(h => h.id === 'h-col');
+    const { color, updatedAt, ...resto } = enDisco;
+    assert.strictEqual(color, '#dc2626');
+    assert.ok(updatedAt, 'sin updatedAt: sync no lo veria como edicion');
+    assert.deepStrictEqual(resto, antesDeTodo, 'cambio algo mas que color/updatedAt (contrasena, label u os recien bajados)');
+
+    const antes = fs.readFileSync(hostsJson, 'utf-8');
+    assert.strictEqual(await bridge.store.setHostColor('h-col', '#dc2626'), null, 'mismo color: no es no-op');
+    assert.strictEqual(await bridge.store.setHostColor('h-col', '#DC2626'), null, 'mismo color en mayusculas: no es no-op');
+    assert.strictEqual(await bridge.store.setHostColor('no-existe', '#dc2626'), null, 'quick connect (id tirado) no es no-op');
+    for (const malo of ['red', '#fff', '#12345g', 'url(x)', '#dc2626; background:red', '', 42, undefined, {}]) {
+      await assert.rejects(() => bridge.store.setHostColor('h-col', malo), /Invalid color/, `acepto el color invalido ${JSON.stringify(malo)}`);
+    }
+    assert.strictEqual(fs.readFileSync(hostsJson, 'utf-8'), antes, 'hosts.json cambio sin motivo (mismo color, id desconocido o color invalido)');
+
+    await syncService._load();
+    const previo = syncService.state.undecryptable;
+    syncService.state.undecryptable = { 'hosts/h-col-sellado': true };
+    try {
+      await assert.rejects(() => bridge.store.setHostColor('h-col-sellado', '#16a34a'), /sealed by another device/, 'escribio (o no explico por que no) en un host sellado');
+      await assert.rejects(() => bridge.store.setHostColor('h-col-sellado', null), /sealed/, 'quitar el color de un host sellado no se nego');
+      // Sin cambio no hay nada que negar: sigue siendo no-op
+      assert.strictEqual(await bridge.store.setHostColor('h-col-sellado', '#2563EB'), null);
+    } finally {
+      syncService.state.undecryptable = previo;
+    }
+    assert.strictEqual(fs.readFileSync(hostsJson, 'utf-8'), antes, 'hosts.json cambio al tocar un host sellado');
+
+    // null = ninguno: se quita el campo, el resto intacto
+    const sinColor = await bridge.store.setHostColor('h-col', null);
+    assert.ok(sinColor && !('color' in sinColor), 'null no quito el color');
+    const trasQuitar = leer().find(h => h.id === 'h-col');
+    assert.ok(!('color' in trasQuitar));
+    assert.strictEqual(trasQuitar.password, 'nueva');
+    assert.strictEqual(await bridge.store.setHostColor('h-col', null), null, 'quitar un color que no hay: no es no-op');
+
+    // El renderer usa el canal de campo, nunca un saveHost del objeto entero con el color
+    const ctx = fs.readFileSync(path.join(ROOT, 'src', 'contexts', 'AppContext.jsx'), 'utf-8');
+    assert.ok(/store\.setHostColor\(hostId, color\)/.test(ctx), 'el renderer no usa store.setHostColor');
+    assert.ok(!/saveHost\(\{[^}]*\bcolor\b[^}]*\}\)/.test(ctx), 'el renderer guarda el host entero para cambiar el color');
+    await storeService.writeRaw('hosts', []);
+  });
+
+  await check('K18 editor de hosts: guardar un host sellado sin contrasena se niega y no toca el disco; con contrasena nueva o sin sellar, guarda', async () => {
+    const syncService = require(path.join(ROOT, 'electron', 'services', 'sync-service.js'));
+    const hostsJson = path.join(currentUserData, 'data', 'hosts.json');
+    const SELLADO = { id: 'h-ed-sellado', label: 'Sellado', hostname: 's.example', username: 'x', authType: 'password' };
+    const LIBRE = { id: 'h-ed-libre', label: 'Libre', hostname: 'l.example', username: 'y', authType: 'password', password: 'p' };
+    await storeService.writeRaw('hosts', [SELLADO, LIBRE]);
+    const antes = fs.readFileSync(hostsJson, 'utf-8');
+    await syncService._load();
+    const previo = syncService.state.undecryptable;
+    syncService.state.undecryptable = { 'hosts/h-ed-sellado': true };
+    try {
+      // Lo que manda el editor (o mover a un grupo) sin tocar la contrasena
+      await assert.rejects(() => bridge.store.saveHost({ ...SELLADO, label: 'Renombrado' }), /sealed by another computer/, 'guardo un host sellado sin contrasena');
+      await assert.rejects(() => bridge.store.saveHost({ ...SELLADO, groupId: 'g1' }), /sealed/, 'mover a un grupo un host sellado no se nego');
+      await assert.rejects(() => bridge.store.saveHost({ ...SELLADO, authType: 'key', keyId: 'k1', password: undefined }), /sealed/, 'pasar a llave sin re-escribir secretos no se nego');
+      assert.strictEqual(fs.readFileSync(hostsJson, 'utf-8'), antes, 'hosts.json cambio al negar');
+      // El usuario vuelve a escribir la contrasena: reemplazar es lo que quiere
+      const r = await bridge.store.saveHost({ ...SELLADO, password: 'nueva' });
+      assert.strictEqual(r.password, 'nueva');
+      // Un host no sellado se guarda como siempre, con o sin contrasena
+      const l = await bridge.store.saveHost({ ...LIBRE, label: 'Libre 2', password: undefined });
+      assert.strictEqual(l.label, 'Libre 2');
+      // Un host nuevo (sin id) nunca esta sellado
+      assert.ok((await bridge.store.saveHost({ label: 'Nuevo', hostname: 'n.example', username: 'z', authType: 'password' })).id);
+    } finally {
+      syncService.state.undecryptable = previo;
+    }
+    // Sin sesion de sync (estado desconocido) no bloquea: sin cuenta se editan hosts
+    const l2 = await bridge.store.saveHost({ ...LIBRE, label: 'Libre 3', password: undefined });
+    assert.strictEqual(l2.label, 'Libre 3');
+    await storeService.writeRaw('hosts', []);
+  });
+
   await check('K16 salir: el cierre del historial espera a lo que esta en vuelo, va bajo el lock y tiene tope duro', async () => {
     const logsJson = path.join(currentUserData, 'data', 'connection-logs.json');
     await storeService.writeRaw('connection-logs', []);

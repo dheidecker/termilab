@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { SearchIcon, ServerIcon, LaptopIcon, CloseIcon, CheckIcon } from '../Icons/icons';
 import { DistroLogo, distroFor } from '../Icons/distros';
-import { hostColor } from '../HostList/hostColor';
+import { hostIconBackground } from '../HostList/hostColor';
 
 /**
  * "Select host" for one pane: this computer, or any saved host, searchable
@@ -88,7 +88,7 @@ export default function HostPicker({ hosts, groups, current, onPick, onClose, ti
             >
               <span
                 className={`sftp-picker-icon ${i.local ? 'local' : ''}`}
-                style={i.local ? undefined : { background: distro ? distro.bg : hostColor(i.host, groupMap) }}
+                style={i.local ? undefined : { background: hostIconBackground(i.host, distro, groupMap) }}
               >
                 {i.local ? <LaptopIcon /> : distro ? <DistroLogo os={i.host.os} /> : <ServerIcon />}
               </span>

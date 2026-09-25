@@ -439,6 +439,11 @@
   border-bottom: 1px solid var(--border-primary);
 }
 
+/* The session's host colour: a 2 px line under the bar (chip style in SplitPane.css) */
+.m-session-header.has-color {
+  border-bottom: 2px solid var(--pane-color);
+}
+
 .m-session-title {
   flex: 1;
   min-width: 0;
