@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import './Snippets.css';
 import { useBackHandler } from '../../hooks/useBackHandler';
+import { liveSessionId } from '../SplitPane/sessions';
 
 export default function Snippets() {
   const { state, actions } = useApp();
@@ -73,12 +74,16 @@ export default function Snippets() {
     if (!target?.sessionId) return;
     const hasElectron = typeof window !== 'undefined' && !!window.electronAPI;
     if (hasElectron) {
+      /* A local shell's pty id arrives after spawn (see SplitPane/sessions.js) */
+      const sid = liveSessionId(target);
+      if (!sid) return;
       if (target.type === 'local-terminal') {
-        window.electronAPI.localShell.write(target.sessionId, command + '\n');
+        window.electronAPI.localShell.write(sid, command + '\n');
       } else {
-        window.electronAPI.ssh.sendData(target.sessionId, command + '\n');
+        window.electronAPI.ssh.sendData(sid, command + '\n');
       }
-      /* Switch to the terminal tab so user sees the output */
+      /* Switch to the terminal tab so user sees the output (a pane of a
+         split tab: its tab, with that pane focused) */
       actions.setActiveTab(target.id);
     }
   };

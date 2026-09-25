@@ -1,3 +1,5 @@
+/* Android: SplitPane below renders one terminal per tab (FEATURES.splitPanes
+   is false there, so its split code never runs). Desktop uses SessionStage.jsx. */
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import TerminalView from '../Terminal/TerminalView';
 import { useApp } from '../../contexts/AppContext';

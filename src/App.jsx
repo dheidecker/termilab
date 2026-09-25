@@ -5,6 +5,9 @@ import Sidebar from './components/Sidebar/Sidebar';
 import HostList from './components/HostList/HostList';
 import HostForm from './components/HostForm/HostForm';
 import SplitPane from './components/SplitPane/SplitPane';
+import SessionStage from './components/SplitPane/SessionStage';
+import { memberTabs, groupLabel, isTerminalTab } from './components/SplitPane/layoutTree';
+import { confirmCloseSessions, endSessions } from './components/SplitPane/sessions';
 import SFTPView from './components/SFTP/SFTPView';
 import { confirmCloseSftp } from './components/SFTP/activeTransfers';
 import Snippets from './components/Snippets/Snippets';
@@ -38,6 +41,7 @@ function AppContent() {
   const { state, actions } = useApp();
   const { activeSection, tabs, activeTabId, loading, hostFormOpen } = state;
   const { openLocalTerminal, setActiveTab, removeTab, disconnectSession, goHome, setActiveSection } = actions;
+  const { layouts } = state;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
 
   /* No session tab selected → the home tab (sidebar + section) is showing */
@@ -76,18 +80,12 @@ function AppContent() {
         e.preventDefault();
         if (activeTabId) {
           const tab = tabs.find(t => t.id === activeTabId);
-          if (tab?.sessionId && (tab.type === 'local-terminal' || tab.type === 'ssh')) {
-            if (!window.confirm(`Close "${tab.label}"? Any running process will be terminated.`)) return;
-          }
+          /* A split tab closes all its panes, like its × in the tab bar */
+          const members = isTerminalTab(tab) ? memberTabs({ tabs, layouts }, activeTabId) : (tab ? [tab] : []);
+          if (!confirmCloseSessions(members, groupLabel(members).label)) return;
           if (!confirmCloseSftp(tab)) return;
-          if (tab?.sessionId) {
-            if (tab.type === 'local-terminal') {
-              window.electronAPI?.localShell?.kill(tab.sessionId).catch(() => {});
-            } else {
-              disconnectSession(tab.sessionId);
-            }
-          }
-          removeTab(activeTabId);
+          endSessions(members, disconnectSession);
+          removeTab(members.map(t => t.id));
         }
       }
       // Ctrl+Tab / Ctrl+Shift+Tab → cycle tabs; the home tab (null) comes first
@@ -102,7 +100,7 @@ function AppContent() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [tabs, activeTabId, openLocalTerminal, setActiveTab, removeTab, disconnectSession]);
+  }, [tabs, layouts, activeTabId, openLocalTerminal, setActiveTab, removeTab, disconnectSession]);
 
   if (loading) {
     return (
@@ -147,7 +145,8 @@ function AppContent() {
     }
   };
 
-  /* Session views stay mounted while hidden so terminals keep their state */
+  /* Android: session views stay mounted while hidden so terminals keep their
+     state. Desktop uses SessionStage (split panes that move between tabs). */
   const renderAllTerminals = () => {
     return tabs
       .filter(t => (t.type === 'terminal' || t.type === 'local-terminal') && !t.hidden)
@@ -201,7 +200,7 @@ function AppContent() {
           <main className="app-section">{renderSection()}</main>
         </div>
         <div className="app-view" style={{ display: homeActive ? 'none' : 'flex' }}>
-          {renderAllTerminals()}
+          <SessionStage />
           {renderAllSFTP()}
         </div>
       </div>

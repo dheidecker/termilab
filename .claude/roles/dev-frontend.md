@@ -372,3 +372,45 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   pide exactamente una más. main también serializa; lo del renderer es para que `busy` no mienta.
 - Los items terminados pueden traer `renamed` (nombres mapeados para Windows); `TransferQueue` los
   cuenta en la línea de estado y los lista en el `title`.
+
+## Paneles arrastrables (rama `feat/split-drag`, 2026-09-25)
+
+- **Escritorio ya no usa `SplitPane.jsx`**: `App` monta `<SessionStage />` (una sola capa con TODAS
+  las terminales de la app, ocultas incluidas, sobre el esqueleto de la pestaña activa). Android sigue
+  con `renderAllTerminals` + `SplitPane` por pestaña; no mezcles los dos caminos.
+- **Modelo**: cada sesión es una entrada de `state.tabs`. Una pestaña visible es un *grupo*;
+  `state.layouts[grupoId]` es su árbol (sin entrada = hoja de sí misma) y los demás paneles llevan
+  `hidden:true`. El id del grupo es siempre una de sus hojas: si ese panel sale (cerrar, separar,
+  mover) se **promueve** el primero que queda, hereda la posición en la barra y `renamed` lo dice
+  (`applyModel` arrastra `activeTabId` y `focusedPane`). Todo en `layoutTree.js`, puro y con test en
+  node; el reductor solo lo llama. En memoria, no se persiste.
+- **Nada se desmonta al mover**: la capa se pinta en orden de primera aparición (`orderRef`), no en
+  el de `tabs`. Si React reordena un nodo con xterm dentro, el xterm pierde el foco. El esqueleto sí
+  se remonta (key por contenido), por eso el ratio del divisor vive en el árbol (se guarda en mouseup).
+- **Terminal local: `tab.sessionId` es un marcador** (`local-<id>`), el pty real llega tras `spawn` y
+  TerminalView lo guarda en `tab.ptySessionId`. Antes de esto Ctrl+W, broadcast y snippets usaban el
+  marcador y no llegaban a ningún pty (el pty vivía hasta cerrar la app). Usa `liveSessionId(tab)`.
+- `setActiveTab(idDeUnPanelOculto)` abre su grupo y enfoca ese panel (lo usa Snippets "Run").
+  `REMOVE_TAB` acepta un id o una lista; al cerrar la activa elige vecina entre las **visibles**.
+- **DnD HTML5** con un almacén de módulo (`dragState.js`): `dragover` no puede leer `dataTransfer`.
+  El almacén se fija en `setTimeout(0)` tras `dragstart` (cambiar el DOM dentro de `dragstart` cancela
+  el arrastre en Chromium). `dragend` no llega si el origen salió del DOM (la cabecera desaparece al
+  quedar un panel): lo limpia el primer `mousemove` con `buttons===0`.
+- **Capa de soltar por encima de xterm** (`.pane-drop-layer`, z 30): sin ella el lienzo se queda los
+  eventos. En la barra, durante un arrastre de panel `.tab-bar-drag` pasa a `no-drag`; en Electron
+  real está **sin probar** que la región de arrastre de ventana deje pasar el `drop`.
+- El refoco programático al textarea de xterm va solo con cambio de grupo o de árbol, **no** con
+  `focusedPane`: un clic en la búsqueda de un panel cambia el foco lógico y robarle el foco la cerraba.
+- `Ctrl+Shift+F` era global: con varios paneles abría la búsqueda en todas las terminales montadas.
+  Ahora solo la que tiene el foco (en Android sigue como estaba).
+- Pruebas: `scratchpad/split/layout.test.mjs` (árbol) y `dnd-e2e.mjs` (dist/ + Chrome headless por
+  CDP, `DragEvent` sintéticos, prueba de "mismo xterm" comparando el elemento `.xterm` guardado en
+  `window` antes y después). La etiqueta del grupo es la de la **primera hoja** en orden del árbol,
+  así que tras un swap cambia ("Bastion +2"): un test que busca la pestaña por etiqueta se rompe ahí.
+- **Revisión split-drag**: cerrar una pestaña SSH que aún conecta (o con el aviso de host key abierto)
+  no tiene IPC para cancelar; `removeTab` la marca (`markAbandoned`, `sessions.js`) y `connectTab`
+  desconecta lo que llegue sin `ADD_SESSION`. El pty local que `spawn` devuelve tras desmontar lo mata
+  TerminalView (`disposed` por ejecución del efecto, no `mountedRef`: StrictMode lo vuelve a poner a true).
+  El refoco usa `shapeKey` (árbol sin `ratio`): soltar un divisor no roba el foco a la búsqueda.
+  El menú de panel guarda su `groupId` y se cierra si cambia la pestaña activa o el panel sale.
+  Test: `scratchpad/split/late-connect.test.mjs`.

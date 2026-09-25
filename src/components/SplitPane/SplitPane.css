@@ -187,3 +187,169 @@
   outline: 1px solid rgba(88, 166, 255, 0.3);
   outline-offset: -1px;
 }
+
+/* ═══ Desktop: SessionStage (one terminal layer for all tabs) ═══ */
+.session-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* A pane of a split tab: header on top, terminal below */
+.split-terminal-overlay.multi {
+  flex-direction: column;
+}
+
+.split-terminal-overlay.multi > .terminal-container {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+/* The pane with the keyboard, in a split tab */
+.split-terminal-overlay.multi.focused {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.pane-header {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 0 4px 0 2px;
+  gap: 4px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-secondary);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  user-select: none;
+}
+
+.pane-handle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  padding: 0 6px 0 2px;
+  border-radius: var(--radius-sm);
+  cursor: grab;
+}
+
+.pane-handle:active {
+  cursor: grabbing;
+}
+
+.pane-grip {
+  display: flex;
+  width: 10px;
+  color: var(--text-tertiary);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.pane-grip svg {
+  width: 8px;
+  height: 13px;
+}
+
+.pane-header:hover .pane-grip {
+  opacity: 1;
+}
+
+.pane-status {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--color-success);
+}
+
+.pane-status.connecting { background: var(--color-warning); }
+.pane-status.error { background: var(--color-danger); }
+
+.pane-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.pane-header.focused .pane-title {
+  color: var(--text-primary);
+}
+
+.pane-header-actions {
+  display: flex;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.pane-header:hover .pane-header-actions,
+.pane-header:focus-within .pane-header-actions {
+  opacity: 1;
+}
+
+.pane-header .pane-toolbar-btn {
+  width: 22px;
+  height: 20px;
+}
+
+.pane-header .pane-toolbar-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ─── Drop zones while a tab or pane is dragged (above xterm, which would
+   otherwise take the drag events) ─── */
+.pane-drop-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+}
+
+.pane-drop-target {
+  position: absolute;
+}
+
+.pane-drop-target.self {
+  background: var(--overlay-subtle);
+}
+
+.pane-drop-zone {
+  position: absolute;
+  background: var(--accent-muted);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  transition: all 0.08s ease;
+}
+
+.pane-drop-zone.zone-left   { top: 0; left: 0; width: 50%; height: 100%; }
+.pane-drop-zone.zone-right  { top: 0; right: 0; width: 50%; height: 100%; }
+.pane-drop-zone.zone-top    { top: 0; left: 0; width: 100%; height: 50%; }
+.pane-drop-zone.zone-bottom { bottom: 0; left: 0; width: 100%; height: 50%; }
+.pane-drop-zone.zone-center { top: 8px; left: 8px; right: 8px; bottom: 8px; }
+
+.pane-drop-chip {
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  box-shadow: var(--shadow-md);
+  white-space: nowrap;
+  max-width: 90%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

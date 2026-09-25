@@ -13,6 +13,7 @@ import { applyModifiers, keySequence } from './mobile/keys';
 import { attachTouch, readPinchedFont, writePinchedFont, FONT_EVENT } from './mobile/touch';
 import { readClipboard, writeClipboard } from './mobile/clipboard';
 import { sessionStatus } from '../Mobile/sessions';
+import { liveSessionId } from '../SplitPane/sessions';
 import './TerminalView.css';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
@@ -69,6 +70,8 @@ export default function TerminalView({ tab }) {
     if (initializedRef.current || !containerRef.current) return;
     initializedRef.current = true;
     mountedRef.current = true;
+    /* This run's cleanup happened (pane closed, or StrictMode's remount) */
+    let disposed = false;
 
     const term = new Terminal({
       fontFamily: termSettings.fontFamily || 'JetBrains Mono, Consolas, monospace',
@@ -216,14 +219,21 @@ export default function TerminalView({ tab }) {
 
         window.electronAPI.localShell.spawn({ cols, rows })
           .then((result) => {
-            if (!mountedRef.current) return;
-
             const realSessionId = result?.sessionId;
+            /* Closed before the pty existed: nobody else knows its id, so
+               nobody else would ever kill it */
+            if (disposed || !mountedRef.current) {
+              if (realSessionId) window.electronAPI.localShell.kill(realSessionId)?.catch?.(() => {});
+              return;
+            }
             if (!realSessionId) return;
 
             sessionIdRef.current = realSessionId;
             sessionReady = true;
             setConnected(true);
+            /* tab.sessionId is only a placeholder: closing, broadcast and
+               snippets need the pty's id (not in this effect's deps) */
+            dispatch({ type: 'UPDATE_TAB', payload: { id: tab.id, ptySessionId: realSessionId } });
 
             /* Flush any queued data */
             for (const item of pendingData) {
@@ -246,11 +256,12 @@ export default function TerminalView({ tab }) {
               if (broadcastRef.current) {
                 const currentSid = sessionIdRef.current;
                 tabsRef.current.forEach(otherTab => {
-                  if (!otherTab.sessionId || otherTab.sessionId === currentSid) return;
+                  const sid = liveSessionId(otherTab);
+                  if (!sid || sid === currentSid) return;
                   if (otherTab.type === 'local-terminal') {
-                    window.electronAPI.localShell.write(otherTab.sessionId, data);
+                    window.electronAPI.localShell.write(sid, data);
                   } else if (otherTab.type === 'terminal' || otherTab.type === 'ssh') {
-                    window.electronAPI.ssh.sendData(otherTab.sessionId, data);
+                    window.electronAPI.ssh.sendData(sid, data);
                   }
                 });
               }
@@ -315,11 +326,12 @@ export default function TerminalView({ tab }) {
           if (broadcastRef.current) {
             const currentSid = sessionIdRef.current;
             tabsRef.current.forEach(otherTab => {
-              if (!otherTab.sessionId || otherTab.sessionId === currentSid) return;
+              const sid = liveSessionId(otherTab);
+              if (!sid || sid === currentSid) return;
               if (otherTab.type === 'local-terminal') {
-                window.electronAPI.localShell.write(otherTab.sessionId, data);
+                window.electronAPI.localShell.write(sid, data);
               } else if (otherTab.type === 'terminal' || otherTab.type === 'ssh') {
-                window.electronAPI.ssh.sendData(otherTab.sessionId, data);
+                window.electronAPI.ssh.sendData(sid, data);
               }
             });
           }
@@ -373,6 +385,10 @@ export default function TerminalView({ tab }) {
 
     /* Keyboard shortcut: Ctrl+Shift+F for search */
     const keyHandler = (e) => {
+      /* Every terminal of the app is mounted (split panes, hidden tabs):
+         only the one with the keyboard opens its search */
+      const own = containerRef.current?.closest('.terminal-container');
+      if (!IS_ANDROID && (!own || !own.contains(document.activeElement))) return;
       if (e.ctrlKey && e.shiftKey && e.key === 'F') {
         e.preventDefault();
         setShowSearch(prev => !prev);
@@ -381,6 +397,7 @@ export default function TerminalView({ tab }) {
     document.addEventListener('keydown', keyHandler);
 
     return () => {
+      disposed = true;
       mountedRef.current = false;
       initializedRef.current = false;  // Allow re-init on StrictMode remount
       ro.disconnect();

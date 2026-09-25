@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef } from 'react';
 import { normalizeSyncStatus } from '../components/Sync/helpers';
 import { mockConnect } from '../components/SFTP/fsApi';
+import * as Layout from '../components/SplitPane/layoutTree';
+import { connectTab, markAbandoned } from '../components/SplitPane/sessions';
 
 const AppContext = createContext(null);
 
@@ -131,8 +133,13 @@ const initialState = {
   portForwardStatus: {},
   settings: MOCK_SETTINGS,
   activeSessions: {},     // sessionId -> { hostId, host, status }
-  tabs: [],               // { id, type:'terminal'|'sftp', label, sessionId?, hostId? }
+  tabs: [],               // { id, type:'terminal'|'sftp', label, sessionId?, hostId?, hidden? }
   activeTabId: null,
+  /* Split panes (desktop), in memory only. groupId -> layout tree, for tabs
+     with more than one pane; the other panes are tabs with hidden:true. See
+     components/SplitPane/layoutTree.js. */
+  layouts: {},
+  focusedPane: {},        // groupId -> pane tab id that gets the keyboard
   /* Last visible terminal tab that was active. The home tab (where Snippets
      lives) is never a session, so "Run" targets this one. */
   lastSessionTabId: null,
@@ -156,7 +163,8 @@ const isSessionTab = (t) => !!t && !t.hidden && (t.type === 'terminal' || t.type
 function trackLastSession(state) {
   const active = state.tabs.find(t => t.id === state.activeTabId);
   let next = state.lastSessionTabId;
-  if (isSessionTab(active)) next = active.id;
+  /* In a split tab, the pane that has the keyboard */
+  if (isSessionTab(active)) next = Layout.focusedPaneOf(state, active.id);
   else if (next && !state.tabs.some(t => t.id === next)) {
     next = [...state.tabs].reverse().find(isSessionTab)?.id ?? null;
   }
@@ -282,28 +290,85 @@ function baseReducer(state, action) {
       const newActiveId = action.payload.noSwitch ? state.activeTabId : action.payload.id;
       return { ...state, tabs: newTabs, activeTabId: newActiveId };
     }
+    /* payload: a tab id or several (all the panes of a split tab). A pane
+       that was the tab's own id hands the tab over to the next pane. */
     case 'REMOVE_TAB': {
-      const remaining = state.tabs.filter(t => t.id !== action.payload);
-      let newActiveTabId = state.activeTabId;
-      if (state.activeTabId === action.payload) {
-        const idx = state.tabs.findIndex(t => t.id === action.payload);
-        newActiveTabId = remaining.length > 0
-          ? (remaining[Math.min(idx, remaining.length - 1)]?.id ?? null)
+      const ids = [].concat(action.payload);
+      const result = Layout.removeTabs(state, ids);
+      const next = Layout.applyModel(state, result);
+      if (next === state) return state;
+      if (!next.tabs.some(t => t.id === next.activeTabId) && next.activeTabId !== null) {
+        /* The active tab went: its neighbour in the bar (hidden panes skipped) */
+        const visible = state.tabs.filter(t => !t.hidden);
+        const idx = visible.findIndex(t => t.id === state.activeTabId);
+        const remaining = next.tabs.filter(t => !t.hidden);
+        next.activeTabId = remaining.length > 0
+          ? (remaining[Math.min(Math.max(idx, 0), remaining.length - 1)]?.id ?? null)
           : null;
       }
-      return { ...state, tabs: remaining, activeTabId: newActiveTabId };
+      return next;
     }
-    case 'SET_ACTIVE_TAB':
+    case 'SET_ACTIVE_TAB': {
+      /* A pane of a split tab (Snippets' "Run"): its tab, with that pane focused */
+      let id = action.payload;
+      let focusedPane = state.focusedPane;
+      const target = id ? state.tabs.find(t => t.id === id) : null;
+      if (target?.hidden) {
+        const g = Layout.groupOf(state, id);
+        if (g) { focusedPane = { ...focusedPane, [g]: id }; id = g; }
+      }
+      /* Opening a split tab clears the bell of every pane in it */
+      const members = id ? Layout.collectIds(Layout.layoutOf(state.layouts, id)) : [];
       return {
         ...state,
-        activeTabId: action.payload,
-        tabs: state.tabs.map(t => t.id === action.payload ? { ...t, notify: false } : t),
+        activeTabId: id,
+        focusedPane,
+        tabs: state.tabs.map(t => members.includes(t.id) && t.notify ? { ...t, notify: false } : t),
       };
+    }
     case 'TAB_NOTIFY':
+      /* A pane of the tab on screen is visible: no bell mark */
+      if (Layout.groupOf(state, action.payload) === state.activeTabId) return state;
       return {
         ...state,
         tabs: state.tabs.map(t => t.id === action.payload ? { ...t, notify: true } : t),
       };
+
+    /* ── Split panes (desktop) ── */
+    case 'PANE_SPLIT': {
+      const { groupId, paneId, newTab, direction } = action.payload;
+      return Layout.applyModel(state, Layout.splitWith(state, groupId, paneId, newTab, direction), { groupId, paneId: newTab.id });
+    }
+    /* drag: { kind:'tab', tabId } | { kind:'pane', paneId }; zone: left|right|top|bottom|center */
+    case 'PANE_DROP': {
+      const { drag, groupId, paneId, zone } = action.payload;
+      const result = drag.kind === 'tab'
+        ? Layout.mergeTab(state, drag.tabId, groupId, paneId, zone === 'center' ? 'right' : zone)
+        : Layout.movePane(state, drag.paneId, groupId, paneId, zone);
+      if (result.model === state) return state;
+      /* What was dropped gets the keyboard */
+      const dropped = drag.kind === 'tab' ? Layout.focusedPaneOf(state, drag.tabId) : drag.paneId;
+      const next = Layout.applyModel(state, result, { groupId: result.renamed[groupId] || groupId, paneId: dropped });
+      /* Whatever landed in the tab on screen is visible: no bell mark (as SET_ACTIVE_TAB) */
+      const members = next.activeTabId ? Layout.collectIds(Layout.layoutOf(next.layouts, next.activeTabId)) : [];
+      if (!next.tabs.some(t => t.notify && members.includes(t.id))) return next;
+      return { ...next, tabs: next.tabs.map(t => (t.notify && members.includes(t.id) ? { ...t, notify: false } : t)) };
+    }
+    case 'PANE_DETACH':
+      return Layout.applyModel(state, Layout.detachPane(state, action.payload));
+    case 'PANE_UNGROUP':
+      return Layout.applyModel(state, Layout.ungroup(state, action.payload));
+    case 'PANE_FOCUS': {
+      const { groupId, paneId } = action.payload;
+      if (state.focusedPane[groupId] === paneId) return state;
+      return { ...state, focusedPane: { ...state.focusedPane, [groupId]: paneId } };
+    }
+    case 'PANE_RATIO': {
+      const { groupId, path, ratio } = action.payload;
+      const tree = state.layouts[groupId];
+      if (!tree) return state;
+      return { ...state, layouts: { ...state.layouts, [groupId]: Layout.setRatioAt(tree, path, ratio) } };
+    }
     case 'UPDATE_TAB':
       return { ...state, tabs: state.tabs.map(t => t.id === action.payload.id ? { ...t, ...action.payload } : t) };
 
@@ -699,18 +764,8 @@ export function AppProvider({ children }) {
       }});
 
       if (hasApi()) {
-        try {
-          const result = await api().ssh.connect(buildConnectConfig(host));
-          const sessionId = result.sessionId;
-          dispatch({ type: 'ADD_SESSION', payload: { sessionId, hostId: host.id, host, status: 'connected' } });
-          /* Update the tab with the sessionId and mark as connected */
-          dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, sessionId, connecting: false } });
-          return { tabId, sessionId };
-        } catch (err) {
-          console.error('SSH connection failed:', err);
-          dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, connecting: false, error: err.message } });
-          throw err;
-        }
+        /* A tab closed before this resolves gets its session disconnected, not added */
+        return connectTab({ tabId, host, config: buildConnectConfig(host), ssh: api().ssh, dispatch });
       } else {
         /* Mock – open a demo terminal tab */
         const sessionId = `mock-${tabId}`;
@@ -740,7 +795,25 @@ export function AppProvider({ children }) {
         sessionId: `local-${tabId}`,
       }});
     }, []),
-    removeTab: useCallback((tabId) => dispatch({ type: 'REMOVE_TAB', payload: tabId }), []),
+    removeTab: useCallback((tabId) => {
+      /* Still connecting (or on the host-key prompt): connectToHost drops what it gets */
+      markAbandoned(stateRef.current.tabs, tabId);
+      dispatch({ type: 'REMOVE_TAB', payload: tabId });
+    }, []),
+
+    /* Split panes (desktop). groupId = the tab in the bar, paneId = one of its panes. */
+    splitPane: useCallback((groupId, paneId, direction) => {
+      const id = crypto.randomUUID();
+      dispatch({ type: 'PANE_SPLIT', payload: {
+        groupId, paneId, direction,
+        newTab: { id, type: 'local-terminal', label: 'Terminal', sessionId: `local-${id}` },
+      }});
+    }, []),
+    dropOnPane: useCallback((drag, groupId, paneId, zone) => dispatch({ type: 'PANE_DROP', payload: { drag, groupId, paneId, zone } }), []),
+    detachPane: useCallback((paneId) => dispatch({ type: 'PANE_DETACH', payload: paneId }), []),
+    ungroupTab: useCallback((groupId) => dispatch({ type: 'PANE_UNGROUP', payload: groupId }), []),
+    focusPane: useCallback((groupId, paneId) => dispatch({ type: 'PANE_FOCUS', payload: { groupId, paneId } }), []),
+    setPaneRatio: useCallback((groupId, path, ratio) => dispatch({ type: 'PANE_RATIO', payload: { groupId, path, ratio } }), []),
     setActiveTab: useCallback((tabId) => dispatch({ type: 'SET_ACTIVE_TAB', payload: tabId }), []),
     updateTab: useCallback((tab) => dispatch({ type: 'UPDATE_TAB', payload: tab }), []),
 

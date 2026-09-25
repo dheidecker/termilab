@@ -1,10 +1,17 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { VaultIcon, ServerIcon, TerminalIcon, FolderIcon, PlusIcon, CloseIcon, BroadcastIcon } from '../Icons/icons';
 import { FEATURES } from '../../platform';
 import './TabBar.css';
 import { useBackHandler } from '../../hooks/useBackHandler';
 import { confirmCloseSftp } from '../SFTP/activeTransfers';
+import { memberTabs, groupLabel, groupOf, isTerminalTab } from '../SplitPane/layoutTree';
+import { useDrag, beginDrag, setDrag } from '../SplitPane/dragState';
+import { confirmCloseSessions, endSessions } from '../SplitPane/sessions';
+
+/* Hovering a dragged tab/pane over another tab opens it after this long, so
+   the drop can land in its panes (like browsers do) */
+const HOVER_OPEN_MS = 500;
 
 function getTabIcon(tab) {
   if (tab.type === 'sftp') return <FolderIcon className="tab-icon" />;
@@ -26,6 +33,18 @@ export default function TabBar() {
 
   const visibleTabs = tabs.filter(t => !t.hidden);
   const homeActive = !tabs.some(t => t.id === activeTabId);
+  const drag = useDrag();
+  const hoverRef = useRef({ id: null, timer: null });
+  /* The tab a drag comes from: hovering it opens nothing */
+  const dragGroup = drag ? (drag.kind === 'tab' ? drag.tabId : groupOf(state, drag.paneId)) : null;
+  const paneDrag = drag?.kind === 'pane';
+
+  const clearHover = () => {
+    clearTimeout(hoverRef.current.timer);
+    hoverRef.current = { id: null, timer: null };
+  };
+  useEffect(() => { if (!drag) clearHover(); }, [drag]);
+  useEffect(() => clearHover, []);
 
   /* Close the context menu on outside click */
   useEffect(() => {
@@ -34,25 +53,16 @@ export default function TabBar() {
     return () => document.removeEventListener('click', handler);
   }, []);
 
+  /* A split tab closes every pane in it (one question for all of them) */
   const handleCloseTab = useCallback(async (tabId) => {
     const tab = tabs.find(t => t.id === tabId);
+    const members = isTerminalTab(tab) ? memberTabs(state, tabId) : (tab ? [tab] : []);
     // Confirm before closing active terminal/SSH sessions
-    if (tab?.sessionId && (tab.type === 'local-terminal' || tab.type === 'ssh')) {
-      const confirmed = window.confirm(`Close "${tab.label}"? Any running process will be terminated.`);
-      if (!confirmed) return;
-    }
+    if (!confirmCloseSessions(members, groupLabel(members).label)) return;
     if (!confirmCloseSftp(tab)) return;
-    if (tab?.sessionId) {
-      if (tab.type === 'local-terminal') {
-        try {
-          await window.electronAPI?.localShell?.kill(tab.sessionId);
-        } catch (e) { /* ignore - session might already be closed */ }
-      } else {
-        await actions.disconnectSession(tab.sessionId);
-      }
-    }
-    actions.removeTab(tabId);
-  }, [tabs, actions]);
+    await endSessions(members, actions.disconnectSession);
+    actions.removeTab(members.map(t => t.id));
+  }, [tabs, state, actions]);
 
   /* Middle-click to close */
   const handleMouseDown = (e, tabId) => {
@@ -69,15 +79,47 @@ export default function TabBar() {
 
   const closeOtherTabs = () => {
     if (!contextMenu) return;
-    tabs.forEach(t => {
+    visibleTabs.forEach(t => {
       if (t.id !== contextMenu.tab.id) {
         handleCloseTab(t.id);
       }
     });
   };
 
+  /* ── Drag and drop ──
+     A terminal tab drags onto a pane of the open tab (SessionStage draws the
+     drop zones). A pane dropped anywhere on this bar becomes its own tab. */
+  const hoverOpen = (tab) => {
+    if (!drag || tab.id === activeTabId || tab.id === dragGroup || !isTerminalTab(tab)) return;
+    if (hoverRef.current.id === tab.id) return;
+    clearHover();
+    hoverRef.current = {
+      id: tab.id,
+      timer: setTimeout(() => { hoverRef.current.timer = null; actions.setActiveTab(tab.id); }, HOVER_OPEN_MS),
+    };
+  };
+  const hoverLeave = (e, tab) => {
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    if (hoverRef.current.id === tab.id) clearHover();
+  };
+  const barDragOver = (e) => {
+    if (!paneDrag) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+  const barDrop = (e) => {
+    if (!paneDrag) return;
+    e.preventDefault();
+    actions.detachPane(drag.paneId);
+    setDrag(null);
+  };
+
   return (
-    <div className="tab-bar">
+    <div
+      className={`tab-bar${paneDrag ? ' tab-bar-dropping' : ''}`}
+      onDragOver={barDragOver}
+      onDrop={barDrop}
+    >
       <div className="tab-bar-tabs" role="tablist">
         <div
           className={`tab tab-home ${homeActive ? 'active' : ''}`}
@@ -91,13 +133,24 @@ export default function TabBar() {
           <span className="tab-label">Hosts</span>
         </div>
 
-        {visibleTabs.map(tab => (
+        {visibleTabs.map(tab => {
+          /* A split tab: "first host +N", every pane in the tooltip */
+          const members = isTerminalTab(tab) ? memberTabs(state, tab.id) : [tab];
+          const { label, title } = groupLabel(members);
+          const notify = members.some(m => m.notify);
+          const canDrag = FEATURES.splitPanes && isTerminalTab(tab);
+          return (
           <div
             key={tab.id}
-            className={`tab ${tab.id === activeTabId ? 'active' : ''} ${tab.notify ? 'notify' : ''}`}
+            className={`tab ${tab.id === activeTabId ? 'active' : ''} ${notify ? 'notify' : ''} ${drag?.kind === 'tab' && tab.id === drag.tabId ? 'dragging' : ''}`}
             role="tab"
             aria-selected={tab.id === activeTabId}
-            title={tab.label}
+            title={title}
+            draggable={canDrag}
+            onDragStart={canDrag ? (e) => beginDrag(e, { kind: 'tab', tabId: tab.id }, label) : undefined}
+            onDragEnd={canDrag ? () => setDrag(null) : undefined}
+            onDragOver={() => hoverOpen(tab)}
+            onDragLeave={(e) => hoverLeave(e, tab)}
             onClick={() => actions.setActiveTab(tab.id)}
             onMouseDown={(e) => handleMouseDown(e, tab.id)}
             onContextMenu={(e) => handleContextMenu(e, tab)}
@@ -106,10 +159,10 @@ export default function TabBar() {
               <span className={`tab-status ${tab.sessionId ? 'connected' : 'disconnected'}`} />
             )}
             {getTabIcon(tab)}
-            <span className="tab-label">{tab.label}</span>
+            <span className="tab-label">{label}</span>
             <button
               className="tab-close"
-              aria-label={`Close ${tab.label}`}
+              aria-label={`Close ${label}`}
               onClick={(e) => {
                 e.stopPropagation();
                 handleCloseTab(tab.id);
@@ -118,7 +171,8 @@ export default function TabBar() {
               <CloseIcon />
             </button>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {FEATURES.localTerminal && (
@@ -132,8 +186,11 @@ export default function TabBar() {
         </button>
       )}
 
-      {/* Empty strip: drags the window */}
-      <div className="tab-bar-drag" />
+      {/* Empty strip: drags the window (not while a pane is being dragged:
+          then the whole bar is a drop target) */}
+      <div className="tab-bar-drag">
+        {paneDrag && <span className="tab-bar-drop-hint">Drop here to move to a new tab</span>}
+      </div>
 
       {broadcast && (
         <div className="broadcast-indicator">
@@ -161,12 +218,17 @@ export default function TabBar() {
           <button className="tab-context-menu-item" onClick={() => handleCloseTab(contextMenu.tab.id)}>
             Close
           </button>
+          {FEATURES.splitPanes && memberTabs(state, contextMenu.tab.id).length > 1 && (
+            <button className="tab-context-menu-item" onClick={() => actions.ungroupTab(contextMenu.tab.id)}>
+              Move Panes to Separate Tabs
+            </button>
+          )}
           <button className="tab-context-menu-item" onClick={closeOtherTabs}>
             Close Others
           </button>
           <button
             className="tab-context-menu-item danger"
-            onClick={() => tabs.forEach(t => handleCloseTab(t.id))}
+            onClick={() => visibleTabs.forEach(t => handleCloseTab(t.id))}
           >
             Close All
           </button>
