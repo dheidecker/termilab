@@ -69,7 +69,8 @@
       "!electron/keeper/README.md",
       "assets/**/*",
       "node_modules/**/*",
-      "!node_modules/.cache"
+      "!node_modules/.cache",
+      "!node_modules/ssh2/lib/protocol/crypto/build/**"
     ],
     "extraResources": [
       {
@@ -122,7 +123,8 @@
         "zip"
       ],
       "category": "public.app-category.developer-tools",
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.png",
+      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-*/*"
     },
     "win": {
       "target": [
