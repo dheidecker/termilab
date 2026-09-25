@@ -7,23 +7,32 @@ tuyos — corrige lo que compruebes que ya no es cierto.
 
 ## macOS
 
-- **Sin identidad de firma, el build falla si no se desactiva la búsqueda.**
-  Hay que pasar `CSC_IDENTITY_AUTO_DISCOVERY=false` en el entorno; los scripts
-  `dist:mac*` NO lo llevan dentro, se pone al invocarlos.
-- **El target `mac: dmg` ya estaba configurado desde antes** y nunca se había
-  ejecutado: hasta este commit, solo `dist:all` lo alcanzaba. No es una
-  configuración nueva sin probar, es una que no tenía script propio.
-- **El icono no necesita `.icns`.** electron-builder convierte
-  `assets/icon.png` (512×512) por su cuenta y no protesta.
-- **El universal sale bien y sin trucos.** `--mac dmg --universal` recompila
-  los nativos para x64 y arm64 por separado y los fusiona. Verificado con
-  `lipo -archs`: tanto el binario principal como el `.node` de `node-pty`
-  quedan fat. Dentro del `.app` aparecen además copias de una sola
-  arquitectura — es normal, las deja `@electron/universal` en el
-  asar-unpacked, no es un fallo.
-- **Tamaños y tiempos de referencia** (M-series, electron 33.4.11): arm64 ≈ 99
-  MB y menos de un minuto; universal ≈ 177 MB y unos dos. El universal
-  descarga los dos Electron, así que la primera vez tarda más.
+- **El icono no necesita `.icns`.** electron-builder convierte `assets/icon.png` (512×512) solo.
+- **`mac.files` REEMPLAZA a `build.files`, no se suma** (electron-builder 26). Un `mac.files` con
+  solo una negación dejó el `app.asar` con el repo entero: `mobile/`, `server/`, `src/`, `.claude/`,
+  `docs/`. Toda exclusión va en `build.files`. Tras cualquier cambio de `files`, lista el asar:
+  `node -e "require('@electron/asar').listPackage('<app.asar>')"` — debe tener solo `assets dist
+  electron node_modules package.json` (~1017 entradas en 1.15.0).
+- **El universal necesita dos ajustes desde builder 26 + node-pty 1.1.0** (ambos en `package.json`
+  desde 1.15.0; sin ellos `@electron/universal` 2.0.3 aborta con «same in both x64 and arm64
+  builds and not covered by the x64ArchFiles rule»):
+  - `mac.x64ArchFiles` para `node-pty/prebuilds/darwin-*/*`. node-pty 1.1.0 trae prebuilds
+    single-arch idénticos en ambos builds. No se usan: el loader prueba antes `build/Release`,
+    que sí sale fat. Las copias de una sola arquitectura del asar-unpacked son esas, es normal.
+  - `!node_modules/ssh2/lib/protocol/crypto/build/**` en `build.files` (vale también para Linux).
+- **node-pty 1.1.0 es N-API**: el ABI de Electron ya no es un riesgo para él. `cpu-features` sí
+  se recompila por arquitectura y sale fat.
+- **Probar node-pty por arquitectura sin UI:** `ELECTRON_RUN_AS_NODE=1 <.app>/Contents/MacOS/Termilab
+  test.js` (y con `arch -x86_64` delante para Rosetta), con `require('<app.asar>/node_modules/node-pty')`
+  y un `pty.spawn`. Funciona porque el fuse RunAsNode está activo. Si alguien lo apaga, esta
+  prueba deja de servir.
+- **Arranque aislado:** lanza el binario con `--user-data-dir=<tmp>` para no tocar los datos reales
+  de Derek (el store migra y reescribe `settings.json` al leerlo).
+- **Cerrar la app:** un `pkill -f` mató al renderer pero el main sobrevivió y relanzó GPU y red.
+  Comprueba con `pgrep` y, si hace falta, un segundo `kill` al pid del main.
+- **Tamaños y tiempos** (M-series, electron 33.4.11, builder 26.16.1): universal 1.15.0 = 186,9 MB
+  (178 MiB); 1.9.1 era 185,6 MB (los «177 MB» de antes eran MiB). ~1 min con Electron en caché.
+  `npm install` + rebuild: 5 s.
 
 ## Linux (electron-builder 26, desde 2026-09-24)
 
@@ -64,11 +73,18 @@ tuyos — corrige lo que compruebes que ya no es cierto.
   reinstalar. Si algún día se invierte el orden, habría que recompilar antes de
   `npm run dev`.
 
-- **`ssh2` viaja con su `sshcrypto.node` compilado para Node (ABI 137), no para Electron (130).**
-  `install-app-deps` no lo recompila (su `binding.gyp` no está en la raíz del paquete). ssh2 lo
-  carga en try/catch y cae a crypto en JS, así que no rompe, pero es más lento. Ya pasaba con 25.
+- **El `sshcrypto.node` de `ssh2` no sirve en Electron, así que ya no se empaqueta.** Se compila
+  para Node en `npm install` y `install-app-deps` no lo recompila (su `binding.gyp` no está en la
+  raíz). En Electron da «Module did not self-register». ssh2 lo carga en try/catch y cae a crypto
+  en JS, que es lo que se ha usado siempre. Excluirlo no cambia el comportamiento. Sin probar:
+  recompilarlo para Electron, que sería más rápido.
 
 ## Sin comprobar todavía
+
+- **Los builds de Linux con la exclusión de `sshcrypto.node`** (2026-09-25) no se han vuelto a
+  generar. Debería dar igual, porque allí tampoco cargaba, pero no está visto. Los dos ajustes
+  del universal quedaron sin commitear en `package.json` (rama `main`) y se entregaron al
+  orquestador para que decida.
 
 - **pacman en CachyOS real:** instalar con `pacman -U`, el diálogo de pkexec y la actualización
   de extremo a extremo no se han probado; solo se validó el paquete por dentro.
