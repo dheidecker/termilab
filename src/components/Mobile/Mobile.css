@@ -439,9 +439,47 @@
   border-bottom: 1px solid var(--border-primary);
 }
 
-/* The session's host colour: a 2 px line under the bar (chip style in SplitPane.css) */
+/* The session's colour: the whole bar in it, text/icons in the ink that
+   reads on it (themes/tint.js solidHeader, >= 4.5:1), as the desktop pane
+   header. The menu is its own surface and keeps its tokens. */
 .m-session-header.has-color {
-  border-bottom: 2px solid var(--pane-color);
+  background: var(--pane-head-bg);
+  color: var(--pane-head-ink);
+  border-bottom-color: var(--pane-head-bg);
+}
+
+.m-session-header.has-color > .m-icon-btn,
+.m-session-header.has-color > .m-menu-anchor > .m-icon-btn,
+.m-session-header.has-color .m-session-sub {
+  color: var(--pane-head-ink);
+}
+
+.m-session-header.has-color > .m-icon-btn:active,
+.m-session-header.has-color > .m-menu-anchor > .m-icon-btn:active {
+  background: color-mix(in srgb, var(--pane-head-ink) 16%, transparent);
+}
+
+/* Status dot ringed in the ink: green on a green bar would vanish */
+.m-session-header.has-color .m-status-dot {
+  box-shadow: 0 0 0 1.5px var(--pane-head-ink);
+}
+
+/* The broadcast pill is translucent amber: on a colour it needs its own ground */
+.m-session-header.has-color .m-broadcast-pill {
+  background: var(--bg-elevated);
+}
+
+.m-session-label-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Rename in place (session menu) */
+.m-session-rename {
+  height: 34px;
+  font-size: var(--font-size-lg);
+  font-weight: 600;
 }
 
 .m-session-title {

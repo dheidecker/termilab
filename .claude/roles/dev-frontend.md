@@ -437,3 +437,25 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
 - E2E/capturas: `scratchpad/colors/colors-e2e.mjs` de la sesión del 25-09. Los botones de la cabecera
   de panel solo se ven con hover: usa `Input.dispatchMouseEvent` si la captura tiene que enseñarlos.
 - No verificado visualmente: el mensaje de "host sellado" dentro del popover (en modo mock no hay main).
+
+## Alias de sesión y color visible (rama `feat/session-alias`, 2026-09-25)
+
+- **`tab.alias`** (solo sesión, nunca se persiste): `actions.setTabAlias(id, texto)` → `UPDATE_TAB`
+  con `cleanAlias()` (vacío = `null`, vuelve la etiqueta del host). Nombrar SIEMPRE con
+  `paneName(tab)` (corto) o `paneTitle(tab)` ("logs · Bastion") de `layoutTree.js`; `groupLabel` ya
+  los usa. Un `tab.label` a pelo nuevo en la interfaz es un sitio donde el alias no sale.
+  Sobrevive a swap/mover/separar porque `layoutTree` solo parchea `hidden` (comprobado por e2e).
+- `SplitPane/InlineRename.jsx` es el editor de los tres sitios (cabecera de panel, pestaña, cabecera
+  Android). Enter/blur guarda, Esc cancela; `onDone(texto|null, 'key'|'blur')`: solo con `'key'` se
+  devuelve el foco al xterm. Va con `draggable={false}` en el padre mientras edita (si no, arrastrar
+  para seleccionar texto arrastra el panel). El menú de panel se cierra a mano en `startRename`
+  porque el `stopPropagation` del clic impide que llegue al listener de `document`.
+- **El tema de xterm ya es reactivo**: antes solo se ponía en el constructor (cambiar de esquema en
+  Settings no repintaba nada abierto). Ahora `tintTheme(getTheme(id), tabColor(...))` en cada
+  render (memoizado por objeto de esquema + color) y un efecto hace `term.options.theme = theme`.
+  `--terminal-bg` usa el fondo teñido: si no, queda un marco de 4 px sin teñir.
+- Settings de terminal necesita **Save** para aplicar (el e2e lo pulsa). En headless
+  `document.hasFocus()` es false: `Emulation.setFocusEmulationEnabled` o el blur del editor no guarda.
+- E2E: `scratchpad/alias/alias-e2e.mjs` (29 comprobaciones: mismo xterm tras swap/recolor/esquema,
+  fondo del viewport = `tintTheme`); Android por SSR: `android-harness.jsx` (hay que copiar el bundle
+  a `node_modules/` para que resuelva `react`, y entonces `import.meta.url` escribe allí: muévelo).

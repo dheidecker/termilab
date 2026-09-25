@@ -1,0 +1,18 @@
+/* InlineRename.jsx: the session-alias editor (pane header, tab, Android header) */
+.inline-rename {
+  min-width: 0;
+  flex: 1;
+  height: 20px;
+  padding: 0 6px;
+  font: inherit;
+  font-weight: 500;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+
+.inline-rename::placeholder {
+  color: var(--text-tertiary);
+}

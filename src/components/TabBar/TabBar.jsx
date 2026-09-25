@@ -5,7 +5,8 @@ import { FEATURES } from '../../platform';
 import './TabBar.css';
 import { useBackHandler } from '../../hooks/useBackHandler';
 import { confirmCloseSftp } from '../SFTP/activeTransfers';
-import { memberTabs, groupLabel, groupOf, isTerminalTab } from '../SplitPane/layoutTree';
+import { memberTabs, groupLabel, groupOf, isTerminalTab, paneName, paneTitle, cleanAlias } from '../SplitPane/layoutTree';
+import InlineRename from '../SplitPane/InlineRename';
 import { useDrag, beginDrag, setDrag } from '../SplitPane/dragState';
 import { confirmCloseSessions, endSessions } from '../SplitPane/sessions';
 import { tabColor } from '../HostList/hostColor';
@@ -35,6 +36,8 @@ export default function TabBar() {
      colours the pane the tab shows the colour of (the first/top-left one). */
   const [picker, setPicker] = useState(null);
   const closePicker = useCallback(() => setPicker(null), []);
+  /* Inline rename of a tab's lead pane (the one it is named after): { groupId, paneId } */
+  const [renaming, setRenaming] = useState(null);
   useBackHandler(!!contextMenu, () => setContextMenu(null));
 
   const visibleTabs = tabs.filter(t => !t.hidden);
@@ -57,6 +60,18 @@ export default function TabBar() {
   const pickerPane = picker && picker.groupId === activeTabId ? tabs.find(t => t.id === picker.paneId) : null;
   const pickerLive = !!pickerPane && memberTabs(state, picker.groupId)[0]?.id === picker.paneId;
   useEffect(() => { if (picker && !pickerLive) setPicker(null); }, [picker, pickerLive]);
+
+  /* Rename: the tab must still be there and still be named after that pane */
+  const renamingLive = !!renaming && tabs.some(t => t.id === renaming.groupId && !t.hidden)
+    && memberTabs(state, renaming.groupId)[0]?.id === renaming.paneId;
+  useEffect(() => { if (renaming && !renamingLive) setRenaming(null); }, [renaming, renamingLive]);
+  const endRename = (paneId, text, how) => {
+    setRenaming(null);
+    if (text !== null) actions.setTabAlias(paneId, text);
+    if (how === 'key') {
+      requestAnimationFrame(() => document.querySelector(`[data-pane-id="${paneId}"] .xterm-helper-textarea`)?.focus({ preventScroll: true }));
+    }
+  };
 
   /* Close the context menu on outside click */
   useEffect(() => {
@@ -126,6 +141,10 @@ export default function TabBar() {
     setDrag(null);
   };
 
+  /* The context menu's tab: Rename names its lead pane, as the tab label does */
+  const ctxMembers = contextMenu && isTerminalTab(contextMenu.tab) ? memberTabs(state, contextMenu.tab.id) : [];
+  const ctxLead = ctxMembers[0] || null;
+
   return (
     <div
       className={`tab-bar${paneDrag ? ' tab-bar-dropping' : ''}`}
@@ -155,6 +174,7 @@ export default function TabBar() {
           const lead = isTerminalTab(tab) ? members[0] : null;
           const color = lead ? tabColor(lead, state.hosts) : null;
           const isActive = tab.id === activeTabId;
+          const editing = renamingLive && renaming.groupId === tab.id;
           return (
           <div
             key={tab.id}
@@ -163,7 +183,7 @@ export default function TabBar() {
             role="tab"
             aria-selected={tab.id === activeTabId}
             title={title}
-            draggable={canDrag}
+            draggable={canDrag && !editing}
             onDragStart={canDrag ? (e) => beginDrag(e, { kind: 'tab', tabId: tab.id }, label) : undefined}
             onDragEnd={canDrag ? () => setDrag(null) : undefined}
             onDragOver={() => hoverOpen(tab)}
@@ -176,12 +196,22 @@ export default function TabBar() {
               <span className={`tab-status ${tab.sessionId ? 'connected' : 'disconnected'}`} />
             )}
             {getTabIcon(tab)}
-            <span className="tab-label">{label}</span>
+            {editing ? (
+              <InlineRename
+                className="tab-rename"
+                value={cleanAlias(lead.alias)}
+                placeholder={lead.label || 'Terminal'}
+                ariaLabel={`Name for this ${lead.label || 'terminal'} session`}
+                onDone={(text, how) => endRename(lead.id, text, how)}
+              />
+            ) : (
+              <span className="tab-label">{label}</span>
+            )}
             {isActive && lead && (
               <button
                 className={`tab-color-btn${picker ? ' open' : ''}`}
-                title={members.length > 1 ? `Color of ${lead.label || 'Terminal'}` : 'Color'}
-                aria-label={`Color of ${lead.label || 'Terminal'}`}
+                title={members.length > 1 ? `Color of ${paneName(lead)}` : 'Color'}
+                aria-label={`Color of ${paneName(lead)}`}
                 aria-haspopup="dialog"
                 onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
@@ -247,7 +277,7 @@ export default function TabBar() {
           anchor={picker.anchor}
           ignoreEl={picker.el}
           value={tabColor(pickerPane, state.hosts)}
-          title={`This terminal · ${pickerPane.label || 'Terminal'}`}
+          title={`This terminal · ${paneTitle(pickerPane)}`}
           onPick={(hex) => actions.setTabColor(pickerPane.id, hex)}
           onClose={closePicker}
         />
@@ -259,10 +289,15 @@ export default function TabBar() {
           className="tab-context-menu"
           style={{ top: contextMenu.y, left: contextMenu.x }}
         >
+          {ctxLead && (
+            <button className="tab-context-menu-item" onClick={() => setRenaming({ groupId: contextMenu.tab.id, paneId: ctxLead.id })}>
+              {ctxMembers.length > 1 ? `Rename ${paneName(ctxLead)}…` : 'Rename…'}
+            </button>
+          )}
           <button className="tab-context-menu-item" onClick={() => handleCloseTab(contextMenu.tab.id)}>
             Close
           </button>
-          {FEATURES.splitPanes && memberTabs(state, contextMenu.tab.id).length > 1 && (
+          {FEATURES.splitPanes && ctxMembers.length > 1 && (
             <button className="tab-context-menu-item" onClick={() => actions.ungroupTab(contextMenu.tab.id)}>
               Move Panes to Separate Tabs
             </button>

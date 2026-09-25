@@ -3,6 +3,7 @@ import { useApp } from '../../contexts/AppContext';
 import './Snippets.css';
 import { useBackHandler } from '../../hooks/useBackHandler';
 import { liveSessionId } from '../SplitPane/sessions';
+import { paneTitle } from '../SplitPane/layoutTree';
 
 export default function Snippets() {
   const { state, actions } = useApp();
@@ -67,8 +68,8 @@ export default function Snippets() {
   const runHint = !target
     ? 'No open sessions. Open a terminal to run snippets.'
     : !target.sessionId
-      ? `"${target.label}" is not connected yet.`
-      : `Runs in "${target.label}"`;
+      ? `"${paneTitle(target)}" is not connected yet.`
+      : `Runs in "${paneTitle(target)}"`;
 
   const handleRun = (command) => {
     if (!target?.sessionId) return;

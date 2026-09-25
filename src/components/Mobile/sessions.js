@@ -4,6 +4,8 @@
  * (confirm, ssh:disconnect, remove the tab).
  */
 
+import { paneName } from '../SplitPane/layoutTree';
+
 export const sessionTabs = (tabs) => tabs.filter(t => (t.type === 'terminal' || t.type === 'ssh') && !t.hidden);
 
 /** 'connecting' | 'connected' | 'closed' | 'failed' */
@@ -29,7 +31,7 @@ export const STATUS_LABEL = {
  */
 export async function closeSessionTab(tab, actions, { confirm = true } = {}) {
   const live = sessionStatus(tab) === 'connected';
-  if (confirm && live && !window.confirm(`Close "${tab.label}"? Any running process will be terminated.`)) return false;
+  if (confirm && live && !window.confirm(`Close "${paneName(tab)}"? Any running process will be terminated.`)) return false;
   if (tab.sessionId) await actions.disconnectSession(tab.sessionId);
   actions.removeTab(tab.id);
   return true;

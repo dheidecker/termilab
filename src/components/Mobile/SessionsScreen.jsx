@@ -5,6 +5,7 @@ import { distroFor, DistroLogo } from '../Icons/distros';
 import { hostIconBackground, tabColor } from '../HostList/hostColor';
 import { MobileTopBar } from './MobileScreen';
 import { sessionTabs, sessionStatus, STATUS_LABEL, closeSessionTab } from './sessions';
+import { paneName, cleanAlias } from '../SplitPane/layoutTree';
 import './Mobile.css';
 
 const SWIPE_CLOSE_PX = 96;
@@ -17,6 +18,9 @@ function SessionRow({ tab, host, groupMap, onOpen, onClose }) {
   const cfg = host || tab.hostConfig || {};
   const distro = distroFor(cfg.os);
   const address = cfg.hostname ? `${cfg.username}@${cfg.hostname}${(Number(cfg.port) || 22) !== 22 ? `:${cfg.port}` : ''}` : '';
+  /* A renamed session: its alias is the name, the host goes into the line below */
+  const alias = cleanAlias(tab.alias);
+  const where = [alias ? tab.label : '', address].filter(Boolean).join(' · ');
 
   const onTouchStart = (e) => {
     const t = e.touches[0];
@@ -57,14 +61,14 @@ function SessionRow({ tab, host, groupMap, onOpen, onClose }) {
             {distro ? <DistroLogo os={cfg.os} /> : <ServerIcon />}
           </span>
           <span className="m-session-text">
-            <span className="m-session-name">{tab.label}</span>
+            <span className="m-session-name">{paneName(tab)}</span>
             <span className="m-session-meta">
               <span className={`m-status-dot m-status-${status}`} aria-hidden="true" />
-              {STATUS_LABEL[status]}{address ? ` · ${address}` : ''}
+              {STATUS_LABEL[status]}{where ? ` · ${where}` : ''}
             </span>
           </span>
         </button>
-        <button className="m-icon-btn m-session-close" onClick={onClose} aria-label={`Close ${tab.label}`}>
+        <button className="m-icon-btn m-session-close" onClick={onClose} aria-label={`Close ${paneName(tab)}`}>
           <CloseIcon />
         </button>
       </div>

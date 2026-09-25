@@ -355,15 +355,43 @@
 }
 
 /* ─── Host / session colour (HostList/hostColor.js) ───
-   A 3 px stripe on the header's left edge, a square chip by the name and a
-   2 px line on top of the terminal, so side-by-side panes tell apart even
-   when the eye is on the text. Never an outline: that is the focus mark
-   (.focused above), and a colour must not read as "this one has the keyboard". */
+   A terminal with a colour gets its whole pane header painted in it (bg and
+   ink from themes/tint.js solidHeader: white or near-black text, >= 4.5:1),
+   a 2 px line on top of the terminal (the only mark of a single-pane tab
+   besides its tab) and a tinted terminal background (TerminalView). Never an
+   outline: that is the focus mark (.focused above), and a colour must not
+   read as "this one has the keyboard". */
 .pane-header.has-color {
-  box-shadow: inset 3px 0 0 var(--pane-color);
+  background: var(--pane-head-bg);
+  color: var(--pane-head-ink);
+  border-bottom-color: transparent;
 }
 
-/* Square, not round: the round dot next to it is the connection status */
+.pane-header.has-color .pane-title,
+.pane-header.has-color.focused .pane-title,
+.pane-header.has-color .pane-grip,
+.pane-header.has-color .pane-toolbar-btn {
+  color: var(--pane-head-ink);
+}
+
+.pane-header.has-color .pane-toolbar-btn:hover {
+  background: color-mix(in srgb, var(--pane-head-ink) 18%, transparent);
+  color: var(--pane-head-ink);
+}
+
+/* The status dot is green / amber / red: on a header of a close colour it
+   would vanish, so it gets a ring in the header's ink */
+.pane-header.has-color .pane-status {
+  box-shadow: 0 0 0 1.5px var(--pane-head-ink);
+}
+
+/* Unfocused coloured headers step back a little; the text stays solid ink */
+.split-terminal-overlay.multi:not(.focused) > .pane-header.has-color {
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--pane-head-ink) 22%, transparent);
+}
+
+/* Square, not round: the round dot next to it is the connection status
+   (still used by the Android session header) */
 .pane-color-chip {
   width: 9px;
   height: 9px;
@@ -374,4 +402,22 @@
 
 .split-terminal-overlay.has-color > .terminal-container {
   border-top: 2px solid var(--pane-color);
+}
+
+/* A multi-pane header is right above: the line would only fatten it */
+.split-terminal-overlay.multi.has-color > .terminal-container {
+  border-top: none;
+}
+
+/* ─── Session alias ("logs · Bastion") and its inline editor ─── */
+.pane-alias {
+  font-weight: 650;
+}
+
+.pane-host {
+  font-weight: 400;
+}
+
+.pane-rename {
+  max-width: 260px;
 }

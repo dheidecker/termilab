@@ -6,6 +6,9 @@ import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import { useApp } from '../../contexts/AppContext';
 import { getTheme } from '../../themes/terminal-themes';
+import { tintTheme } from '../../themes/tint';
+import { tabColor } from '../HostList/hostColor';
+import { paneTitle } from '../SplitPane/layoutTree';
 import { IS_ANDROID } from '../../platform';
 import ExtraKeys, { useStickyModifiers } from './mobile/ExtraKeys';
 import SessionHeader from './mobile/SessionHeader';
@@ -63,6 +66,14 @@ export default function TerminalView({ tab }) {
   termSettingsRef.current = termSettings;
   const lastSettingsFontRef = useRef(undefined);
 
+  /* The scheme, with this terminal's colour (if any) mixed into its
+     background (themes/tint.js; memoised, so the same object every render
+     until the scheme or the colour changes). Applied live below: no xterm is
+     ever re-created for it. */
+  const theme = tintTheme(getTheme(termSettings.theme || 'github-dark'), tabColor(tab, state.hosts));
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
+
   useEffect(() => {
     /* For SSH tabs: wait until sessionId is available (connecting is done) */
     if (!isLocal && tab.connecting) return;
@@ -79,7 +90,7 @@ export default function TerminalView({ tab }) {
       cursorStyle: termSettings.cursorStyle || 'block',
       cursorBlink: true,
       scrollback: termSettings.scrollback || 5000,
-      theme: getTheme(termSettings.theme || 'github-dark'),
+      theme: themeRef.current,
       allowProposedApi: true,
     });
 
@@ -440,6 +451,13 @@ export default function TerminalView({ tab }) {
   }, [termSettings.fontSize, termSettings.fontFamily, termSettings.cursorStyle]);
 
 
+  /* Scheme changed in Settings, or this terminal's colour (its own, or its
+     host's) changed: repaint in place */
+  useEffect(() => {
+    const term = termRef.current;
+    if (term && term.options.theme !== theme) term.options.theme = theme;
+  }, [theme]);
+
   /* Search handlers */
   const handleSearch = useCallback(() => {
     if (searchAddonRef.current && searchQuery) {
@@ -465,7 +483,7 @@ export default function TerminalView({ tab }) {
   /* The chrome around xterm should match the terminal theme's own background,
      not the app theme — otherwise a light terminal sits in a dark frame. */
   const containerStyle = {
-    '--terminal-bg': getTheme(termSettings.theme || 'github-dark').background,
+    '--terminal-bg': theme.background,
   };
 
   /* ─── Android: header, extra keys, selection ─── */
@@ -516,7 +534,7 @@ export default function TerminalView({ tab }) {
         </div>
         <div className="terminal-status">
           <span className="terminal-status-dot disconnected" />
-          <span>{tab.label || 'SSH'} — Connecting...</span>
+          <span>{tab.alias ? paneTitle(tab) : (tab.label || 'SSH')} — Connecting...</span>
         </div>
       </div>
     );
@@ -538,7 +556,7 @@ export default function TerminalView({ tab }) {
         </div>
         <div className="terminal-status">
           <span className="terminal-status-dot disconnected" />
-          <span>{tab.label || 'SSH'} — Failed</span>
+          <span>{tab.alias ? paneTitle(tab) : (tab.label || 'SSH')} — Failed</span>
         </div>
       </div>
     );
@@ -597,7 +615,7 @@ export default function TerminalView({ tab }) {
         <div className="terminal-status">
           <span className={`terminal-status-dot ${connected ? '' : 'disconnected'}`} />
           <span>
-            {isLocal ? 'Local Shell' : (tab.label || 'SSH')}
+            {tab.alias ? paneTitle(tab) : (isLocal ? 'Local Shell' : (tab.label || 'SSH'))}
             {connected ? '' : ' — Disconnected'}
           </span>
         </div>

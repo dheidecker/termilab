@@ -267,8 +267,29 @@
 }
 
 /* ─── Host / session colour ───
-   A 3 px underline in the host's colour (a split tab: its first pane's).
+   A coloured pill (a split tab: its first pane's colour) plus a 3 px
+   underline in the full colour. Mixes measured for >= 4.5:1 text on every
+   HOST_COLORS entry in both app themes (scratchpad contrast script): an
+   inactive tab keeps its --text-secondary (>= 4.5:1 at 14%), the active one
+   is a stronger fill over its usual --bg-card-hover with --text-primary.
    ::after, because ::before is the bell mark. */
+.tab.has-color {
+  background: color-mix(in srgb, var(--tab-color) 14%, var(--bg-secondary));
+}
+
+.tab.has-color:hover {
+  background: color-mix(in srgb, var(--tab-color) 20%, var(--bg-secondary));
+}
+
+.tab.has-color.active {
+  background: color-mix(in srgb, var(--tab-color) 30%, var(--bg-card-hover));
+}
+
+/* The accent icon would clash with (or vanish into) the colour */
+.tab.has-color.active .tab-icon {
+  color: var(--text-primary);
+}
+
 .tab.has-color::after {
   content: '';
   position: absolute;
@@ -279,6 +300,12 @@
   border-radius: 2px;
   background: var(--tab-color);
   pointer-events: none;
+}
+
+/* Rename in place (tab context menu) */
+.tab-rename {
+  height: 22px;
+  font-size: var(--font-size-md);
 }
 
 /* Palette button: only on the active tab, shown on hover (like close) */

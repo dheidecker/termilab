@@ -3,11 +3,13 @@ import TerminalView from '../Terminal/TerminalView';
 import { useApp } from '../../contexts/AppContext';
 import { FEATURES } from '../../platform';
 import {
-  layoutOf, collectIds, isTerminalTab, groupOf, focusedPaneOf, zoneFromPoint,
+  layoutOf, collectIds, isTerminalTab, groupOf, focusedPaneOf, zoneFromPoint, paneName, paneTitle, cleanAlias,
 } from './layoutTree';
 import { useDrag, beginDrag, setDrag } from './dragState';
 import { confirmCloseSessions, endSessions } from './sessions';
 import { tabColor } from '../HostList/hostColor';
+import { solidHeader } from '../../themes/tint';
+import InlineRename from './InlineRename';
 import { ColorPopover, anchorOf } from '../ColorPicker/ColorPicker';
 import { PaletteIcon } from '../Icons/icons';
 import './SplitPane.css';
@@ -122,21 +124,43 @@ function PaneToolbar({ onSplitH, onSplitV, onColor }) {
   );
 }
 
-/* Multi-pane tab: which host this is, a drag handle, and the pane's actions */
-function PaneHeader({ tab, color, focused, onSplitH, onSplitV, onDetach, onClose, onMenu, onColor }) {
+/* Multi-pane tab: which terminal this is ("logs · Bastion"), a drag handle,
+   and the pane's actions. With a colour the whole header is painted in it
+   (text in white or near-black, whichever reads, see themes/tint.js).
+   Double-click the name to rename this terminal for the session. */
+function PaneHeader({ tab, color, focused, renaming, onRename, onRenamed, onSplitH, onSplitV, onDetach, onClose, onMenu, onColor }) {
+  const head = color ? solidHeader(color) : null;
+  const alias = cleanAlias(tab.alias);
   return (
-    <div className={`pane-header${focused ? ' focused' : ''}${color ? ' has-color' : ''}`} onContextMenu={onMenu}>
+    <div
+      className={`pane-header${focused ? ' focused' : ''}${head ? ' has-color' : ''}`}
+      style={head ? { '--pane-head-bg': head.bg, '--pane-head-ink': head.ink } : undefined}
+      onContextMenu={onMenu}
+    >
       <div
         className="pane-handle"
-        draggable
-        title={`Drag ${tab.label} onto another pane, or onto the tab bar for its own tab`}
-        onDragStart={(e) => beginDrag(e, { kind: 'pane', paneId: tab.id }, tab.label)}
+        draggable={!renaming}
+        title={renaming ? undefined : `${paneTitle(tab)}\nDrag onto another pane, or onto the tab bar for its own tab. Double-click the name to rename.`}
+        onDragStart={(e) => beginDrag(e, { kind: 'pane', paneId: tab.id }, paneName(tab))}
         onDragEnd={() => setDrag(null)}
       >
         <span className="pane-grip"><GripIcon /></span>
         <span className={`pane-status ${paneStatus(tab)}`} />
-        {color && <span className="pane-color-chip" aria-hidden="true" />}
-        <span className="pane-title">{tab.label || 'Terminal'}</span>
+        {renaming ? (
+          <InlineRename
+            className="pane-rename"
+            value={alias}
+            placeholder={tab.label || 'Terminal'}
+            ariaLabel={`Name for this ${tab.label || 'terminal'} session`}
+            onDone={onRenamed}
+          />
+        ) : (
+          <span className="pane-title" onDoubleClick={(e) => { e.stopPropagation(); onRename(); }}>
+            {alias ? (
+              <><span className="pane-alias">{alias}</span><span className="pane-host"> · {tab.label || 'Terminal'}</span></>
+            ) : (tab.label || 'Terminal')}
+          </span>
+        )}
       </div>
       <div className="pane-header-actions">
         <ColorButton onColor={onColor} />
@@ -154,7 +178,7 @@ const ZONE_TEXT = { left: 'Left', right: 'Right', top: 'Top', bottom: 'Bottom', 
 export default function SessionStage() {
   const { state, actions } = useApp();
   const { tabs, layouts, activeTabId } = state;
-  const { splitPane, dropOnPane, detachPane, focusPane, setPaneRatio, removeTab, disconnectSession, setTabColor } = actions;
+  const { splitPane, dropOnPane, detachPane, focusPane, setPaneRatio, removeTab, disconnectSession, setTabColor, setTabAlias } = actions;
   const drag = useDrag();
 
   const stageRef = useRef(null);
@@ -164,6 +188,7 @@ export default function SessionStage() {
   const [hover, setHover] = useState(null);   // { paneId, zone } under a drag
   const [menu, setMenu] = useState(null);     // { x, y, paneId, groupId } pane header menu
   const [picker, setPicker] = useState(null); // { anchor, el, paneId, groupId } colour popover
+  const [renaming, setRenaming] = useState(null); // { paneId, groupId } inline rename in a pane header
 
   /* Every terminal session, in first-seen order (see the note above) */
   const orderRef = useRef([]);
@@ -261,10 +286,23 @@ export default function SessionStage() {
     setPicker(p => (p && p.paneId === paneId ? null : { anchor: anchorOf(el), el, paneId, groupId }));
   };
 
+  /* Rename: same rule again (the header it lives in must be on screen) */
+  const renamingLive = !!renaming && renaming.groupId === groupId && multi && paneIds.includes(renaming.paneId) && byId.has(renaming.paneId);
+  useEffect(() => { if (renaming && !renamingLive) setRenaming(null); }, [renaming, renamingLive]);
+  const startRename = (paneId) => { setMenu(null); setRenaming({ paneId, groupId }); };
+  const endRename = (paneId, text, how) => {
+    setRenaming(null);
+    if (text !== null) setTabAlias(paneId, text);
+    /* Enter / Esc: the keyboard goes back to that terminal */
+    if (how === 'key') {
+      requestAnimationFrame(() => overlayEls.current[paneId]?.querySelector('.xterm-helper-textarea')?.focus({ preventScroll: true }));
+    }
+  };
+
   useEffect(() => { if (!drag) setHover(null); }, [drag]);
 
   const closePane = async (tab) => {
-    if (!confirmCloseSessions([tab], tab.label || 'Terminal')) return;
+    if (!confirmCloseSessions([tab], paneName(tab))) return;
     await endSessions([tab], disconnectSession);
     removeTab(tab.id);
   };
@@ -273,7 +311,7 @@ export default function SessionStage() {
   const dragSourceGroup = drag ? (drag.kind === 'tab' ? drag.tabId : groupOf(state, drag.paneId)) : null;
   const canDrop = !!(drag && groupId && (drag.kind === 'pane' ? byId.has(drag.paneId) : drag.tabId !== groupId && byId.has(drag.tabId)));
   const allowCenter = drag?.kind === 'pane' && dragSourceGroup === groupId;
-  const dragLabel = drag ? (byId.get(drag.kind === 'tab' ? drag.tabId : drag.paneId)?.label || 'Terminal') : '';
+  const dragLabel = drag ? paneName(byId.get(drag.kind === 'tab' ? drag.tabId : drag.paneId)) : '';
   const zoneAt = (e) => zoneFromPoint(e.currentTarget.getBoundingClientRect(), e.clientX, e.clientY, allowCenter);
   const isSelf = (id) => drag?.kind === 'pane' && drag.paneId === id;
 
@@ -306,6 +344,9 @@ export default function SessionStage() {
                 tab={tab}
                 color={color}
                 focused={id === focusId}
+                renaming={renamingLive && renaming.paneId === id}
+                onRename={() => startRename(id)}
+                onRenamed={(text, how) => endRename(id, text, how)}
                 onColor={(e) => openPicker(e, id)}
                 onSplitH={() => splitPane(groupId, id, 'horizontal')}
                 onSplitV={() => splitPane(groupId, id, 'vertical')}
@@ -366,7 +407,7 @@ export default function SessionStage() {
           anchor={picker.anchor}
           ignoreEl={picker.el}
           value={tabColor(byId.get(picker.paneId), state.hosts)}
-          title={`This terminal · ${byId.get(picker.paneId)?.label || 'Terminal'}`}
+          title={`This terminal · ${paneTitle(byId.get(picker.paneId))}`}
           onPick={(hex) => setTabColor(picker.paneId, hex)}
           onClose={closePicker}
         />
@@ -374,6 +415,7 @@ export default function SessionStage() {
 
       {menuLive && (
         <div className="tab-context-menu pane-context-menu" style={{ top: menu.y, left: menu.x }}>
+          <button className="tab-context-menu-item" onClick={(e) => { e.stopPropagation(); startRename(menu.paneId); }}>Rename…</button>
           <button className="tab-context-menu-item" onClick={() => detachPane(menu.paneId)}>Move to New Tab</button>
           <button className="tab-context-menu-item" onClick={() => splitPane(groupId, menu.paneId, 'horizontal')}>Split Right</button>
           <button className="tab-context-menu-item" onClick={() => splitPane(groupId, menu.paneId, 'vertical')}>Split Down</button>

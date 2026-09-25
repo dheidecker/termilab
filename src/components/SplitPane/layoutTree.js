@@ -110,12 +110,27 @@ export function memberTabs(model, groupId) {
   return collectIds(layoutOf(model.layouts, groupId)).map(id => byId.get(id)).filter(Boolean);
 }
 
-/* "web-1 +2", and a tooltip listing every pane */
+/* A terminal's session alias (`tab.alias`, set by Rename, never persisted and
+   never touching the host) wins over its host label wherever it is named. */
+export const MAX_ALIAS = 40;
+export const cleanAlias = (a) => (typeof a === 'string' ? a.replace(/\s+/g, ' ').trim().slice(0, MAX_ALIAS) : '');
+
+/** Short name: the alias, else the host label ("logs", "Bastion") */
+export const paneName = (t) => (t && (cleanAlias(t.alias) || t.label)) || 'Terminal';
+
+/** Name with its host where there is room: "logs · Bastion", or "Bastion" */
+export function paneTitle(t) {
+  const host = (t && t.label) || 'Terminal';
+  const alias = t ? cleanAlias(t.alias) : '';
+  return alias ? `${alias} · ${host}` : host;
+}
+
+/* "logs +2", and a tooltip listing every pane ("logs · Bastion") */
 export function groupLabel(members) {
   if (!members.length) return { label: '', title: '' };
-  const names = members.map(t => t.label || 'Terminal');
-  if (names.length === 1) return { label: names[0], title: names[0] };
-  return { label: `${names[0]} +${names.length - 1}`, title: names.join('\n') };
+  const titles = members.map(paneTitle);
+  if (members.length === 1) return { label: paneName(members[0]), title: titles[0] };
+  return { label: `${paneName(members[0])} +${members.length - 1}`, title: titles.join('\n') };
 }
 
 const setLayout = (layouts, groupId, tree) => {

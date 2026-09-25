@@ -133,7 +133,7 @@ const initialState = {
   portForwardStatus: {},
   settings: MOCK_SETTINGS,
   activeSessions: {},     // sessionId -> { hostId, host, status }
-  tabs: [],               // { id, type:'terminal'|'sftp', label, sessionId?, hostId?, hidden?, color? (session-only, unsaved hosts) }
+  tabs: [],               // { id, type:'terminal'|'sftp', label, sessionId?, hostId?, hidden?, color?, alias? (both session-only, never saved) }
   activeTabId: null,
   /* Split panes (desktop), in memory only. groupId -> layout tree, for tabs
      with more than one pane; the other panes are tabs with hidden:true. See
@@ -608,6 +608,16 @@ export function AppProvider({ children }) {
       if (!stateRef.current.tabs.some(t => t.id === tabId)) return null;
       dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, color: color || 'none' } });
       return null;
+    }, []),
+
+    /* A name for ONE terminal, for this session only ("logs", "deploy"):
+       `tab.alias`, shown in place of the host label. Never persisted, never
+       touches the host; empty = back to the host label. Lives on the tab, so
+       split moves, swaps and detaching keep it (layoutTree only patches
+       `hidden`). */
+    setTabAlias: useCallback((tabId, alias) => {
+      if (!stateRef.current.tabs.some(t => t.id === tabId)) return;
+      dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, alias: Layout.cleanAlias(alias) || null } });
     }, []),
 
     /* Hosts */
