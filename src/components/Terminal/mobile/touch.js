@@ -37,6 +37,16 @@ export function writePinchedFont(size) {
   window.dispatchEvent(new CustomEvent(FONT_EVENT, { detail: size }));
 }
 
+/* The soft keyboard shrinks the visual viewport (Capacitor pads the window by
+   the IME height). The tallest height seen is the keyboard-closed one. */
+let tallest = 0;
+function keyboardOpen() {
+  const vv = window.visualViewport;
+  const h = vv ? vv.height : window.innerHeight;
+  if (h > tallest) tallest = h;
+  return h < tallest - 120;
+}
+
 const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
 const isWordChar = (ch) => !!ch && /[^\s"'`()[\]{}<>|;,]/.test(ch);
 
@@ -83,6 +93,26 @@ export function attachTouch(term, fit, el) {
 
   const stopFling = () => { cancelAnimationFrame(fling); fling = 0; };
 
+  /* A gesture that starts with the keyboard closed must not open it: the
+     WebView focuses xterm's hidden textarea on the way. inputmode=none keeps
+     the IME down while focused; a tap drops it before the click lands, so a
+     tap still opens the keyboard. After a scroll/pinch the textarea is blurred
+     so nothing is left focused with the keyboard suppressed. */
+  let quietTimer = 0;
+  const textarea = () => el.querySelector('.xterm-helper-textarea');
+  const hushKeyboard = () => {
+    clearTimeout(quietTimer);
+    const ta = textarea();
+    if (ta && !keyboardOpen()) ta.setAttribute('inputmode', 'none');
+  };
+  const releaseKeyboard = (afterGesture) => {
+    const ta = textarea();
+    if (!ta || ta.getAttribute('inputmode') !== 'none') return;
+    if (!afterGesture) { ta.removeAttribute('inputmode'); return; }
+    if (document.activeElement === ta) ta.blur();
+    quietTimer = setTimeout(() => ta.removeAttribute('inputmode'), 400);
+  };
+
   const cellAt = (x, y) => {
     const screen = el.querySelector('.xterm-screen');
     if (!screen) return null;
@@ -120,6 +150,7 @@ export function attachTouch(term, fit, el) {
 
   const onStart = (e) => {
     if (e.touches.length === 2) {
+      hushKeyboard();
       cancelPress();
       pinch = { d0: dist(e.touches[0], e.touches[1]), size0: term.options.fontSize, size: term.options.fontSize };
       e.preventDefault();
@@ -130,6 +161,7 @@ export function attachTouch(term, fit, el) {
     stopFling();
     drag = null;
     cancelPress();
+    hushKeyboard();
     /* Whether the soft keyboard was up: a selection must not close it, or the
        terminal shrinks back, xterm resizes and drops the selection. */
     const focused = !!document.activeElement?.classList?.contains('xterm-helper-textarea');
@@ -216,6 +248,7 @@ export function attachTouch(term, fit, el) {
       const { size, size0 } = pinch;
       pinch = null;
       if (size !== size0) writePinchedFont(size);
+      releaseKeyboard(true);
       return;
     }
     if (drag) {
@@ -227,6 +260,7 @@ export function attachTouch(term, fit, el) {
       // Full-screen programs get the drag only; no fling of keystrokes.
       if (Math.abs(v) > MIN_FLING * 4 && term.buffer.active.type === 'normal') startFling(v);
       cancelPress();
+      releaseKeyboard(true);
       return;
     }
     if (press && press.selecting) {
@@ -234,7 +268,12 @@ export function attachTouch(term, fit, el) {
       e.preventDefault();
       e.stopPropagation();
       if (press.focused) term.focus();
+      releaseKeyboard(false);
+      cancelPress();
+      return;
     }
+    // A tap: let the keyboard come up as usual.
+    releaseKeyboard(false);
     cancelPress();
   };
 
@@ -250,6 +289,7 @@ export function attachTouch(term, fit, el) {
   return () => {
     cancelPress();
     stopFling();
+    clearTimeout(quietTimer);
     cancelAnimationFrame(raf);
     el.removeEventListener('touchstart', onStart, opts);
     el.removeEventListener('touchmove', onMove, opts);
