@@ -100,7 +100,7 @@ Download the file for your platform from the [latest release](https://github.com
 | Arch, CachyOS | `termilab-<version>.pacman` | `sudo pacman -U termilab-<version>.pacman` |
 | Windows | `Termilab-Setup-<version>.exe` | Unsigned: Windows SmartScreen asks for confirmation on first run. |
 | Android (arm64) | `Termilab-<version>-android-arm64.apk` | Allow "install unknown apps" for your browser once. Later updates come from the app. |
-| macOS | build from source | `npm run dist:mac` on a Mac. Distribution requires signing and notarization. |
+| macOS (Intel and Apple silicon) | `Termilab-<version>-universal.dmg` | Built on a Mac with `npm run dist:mac:universal`. Without signing and notarization, macOS asks for confirmation on first launch and in-app updates are not available. |
 
 ## Self-hosting the sync service
 
