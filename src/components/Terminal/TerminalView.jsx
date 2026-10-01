@@ -115,50 +115,60 @@ export default function TerminalView({ tab }) {
       }
     });
 
-    /* ─── Copy / Paste support ─── */
+    /* ─── Copy / Paste support ───
+       Paste goes through term.paste(): xterm wraps it in bracketed paste when
+       the program asked for it (zsh, vim, Claude CLI...), turns newlines into
+       CR, and emits it via onData, the same path as typing, so the right
+       session id, broadcast and the input filter all apply. Writing the text
+       straight to ssh/pty skipped all of that and mangled multi-line pastes.
+       Keys are matched by `code` so the keyboard layout and CapsLock don't
+       matter. */
+    const doCopy = () => {
+      const sel = term.getSelection();
+      if (!sel) return false;
+      writeClipboard(sel);
+      term.clearSelection();
+      return true;
+    };
+    const doPaste = () => {
+      readClipboard().then((text) => { if (text) term.paste(text); });
+    };
     term.attachCustomKeyEventHandler((ev) => {
-      // Ctrl+Shift+C → Copy selection
-      if (ev.ctrlKey && ev.shiftKey && ev.key === 'C' && ev.type === 'keydown') {
-        const sel = term.getSelection();
-        if (sel) navigator.clipboard.writeText(sel);
+      if (ev.type !== 'keydown') return true;
+      const ctrl = ev.ctrlKey || ev.metaKey;
+      // Ctrl+Shift+C / Ctrl+Insert → copy the selection
+      if ((ctrl && ev.shiftKey && ev.code === 'KeyC') || (ev.ctrlKey && !ev.shiftKey && ev.code === 'Insert')) {
+        doCopy();
+        ev.preventDefault();
         return false;
       }
-      // Ctrl+Shift+V → Paste from clipboard
-      if (ev.ctrlKey && ev.shiftKey && ev.key === 'V' && ev.type === 'keydown') {
-        navigator.clipboard.readText().then(text => {
-          if (text) {
-            const sid = sessionIdRef.current;
-            if (isLocal) {
-              window.electronAPI?.localShell?.write(sid, text);
-            } else {
-              window.electronAPI?.ssh?.sendData(sid, text);
-            }
-          }
-        });
+      // Ctrl+C with a selection copies it (Windows Terminal style); without one it is ^C as always
+      if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && ev.code === 'KeyC' && term.hasSelection()) {
+        doCopy();
+        ev.preventDefault();
+        return false;
+      }
+      // Ctrl+Shift+V / Shift+Insert → paste (Cmd+V on macOS)
+      if ((ctrl && ev.shiftKey && ev.code === 'KeyV') || (ev.shiftKey && !ev.ctrlKey && ev.code === 'Insert')
+          || (ev.metaKey && !ev.shiftKey && ev.code === 'KeyV')) {
+        doPaste();
+        ev.preventDefault();
         return false;
       }
       // Ctrl+F → Search
-      if (ev.ctrlKey && !ev.shiftKey && ev.key === 'f' && ev.type === 'keydown') {
+      if (ev.ctrlKey && !ev.shiftKey && ev.code === 'KeyF') {
         setShowSearch(true);
         return false;
       }
       return true;
     });
 
-    /* Right-click → paste (on Android a long-press is a contextmenu too:
-       there it selects instead, see mobile/touch.js) */
+    /* Right-click: copies the selection if there is one, otherwise pastes
+       (on Android a long-press is a contextmenu too: there it selects
+       instead, see mobile/touch.js) */
     if (!IS_ANDROID) containerRef.current.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      navigator.clipboard.readText().then(text => {
-        if (text) {
-          const sid = sessionIdRef.current;
-          if (isLocal) {
-            window.electronAPI?.localShell?.write(sid, text);
-          } else {
-            window.electronAPI?.ssh?.sendData(sid, text);
-          }
-        }
-      });
+      if (!doCopy()) doPaste();
     });
 
     /* Android: pinch zoom, long-press selection, and the size other
