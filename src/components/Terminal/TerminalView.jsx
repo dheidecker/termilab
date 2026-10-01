@@ -404,6 +404,30 @@ export default function TerminalView({ tab }) {
     });
     ro.observe(containerRef.current);
 
+    /* The web font (JetBrains Mono, from Google Fonts with display=swap) often
+       arrives after xterm has measured its cells with the fallback font. xterm
+       keeps the old cell width while drawing the wider/narrower glyphs, so text
+       overlaps and programs that redraw a growing input box (Claude CLI, zsh
+       right prompts) end up on top of themselves. When fonts finish loading,
+       make xterm measure again and refit, which also resends the pty size. */
+    const remeasure = () => {
+      if (!mountedRef.current) return;
+      const fam = term.options.fontFamily;
+      term.options.fontFamily = 'monospace';
+      term.options.fontFamily = fam;
+      try { fitAddon.fit(); } catch (e) { /* not laid out */ }
+      term.refresh(0, term.rows - 1);
+    };
+    const fonts = document.fonts;
+    if (fonts) {
+      const fam = (term.options.fontFamily || '').split(',')[0].trim().replace(/['"]/g, '');
+      const size = term.options.fontSize || 14;
+      if (fam && !fonts.check(`${size}px "${fam}"`)) {
+        fonts.load(`${size}px "${fam}"`).then(remeasure, () => {});
+      }
+      fonts.addEventListener?.('loadingdone', remeasure);
+    }
+
     /* Keyboard shortcut: Ctrl+Shift+F for search */
     const keyHandler = (e) => {
       /* Every terminal of the app is mounted (split panes, hidden tabs):
@@ -422,6 +446,7 @@ export default function TerminalView({ tab }) {
       mountedRef.current = false;
       initializedRef.current = false;  // Allow re-init on StrictMode remount
       ro.disconnect();
+      document.fonts?.removeEventListener?.('loadingdone', remeasure);
       document.removeEventListener('keydown', keyHandler);
       if (detachTouch) detachTouch();
       window.removeEventListener(FONT_EVENT, onPinchedFont);
