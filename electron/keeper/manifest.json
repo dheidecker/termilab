@@ -1,0 +1,9 @@
+{
+  "kv": 1,
+  "binaries": {
+    "x86_64": {"file": "termilab-keeper-1-x86_64", "sha256": "5a11e5cf7a501fc70a1ab852ae3aae448100e53956666f0daba259d7ec0c9e82", "size": 74056},
+    "aarch64": {"file": "termilab-keeper-1-aarch64", "sha256": "bad5354b3b7e91bd1e70530a226245b72d2bfecb8ec508e3c837dbe3ddeecdcc", "size": 81760},
+    "armv7l": {"file": "termilab-keeper-1-armv7l", "sha256": "d4d3164d0b91ed58312b1034ca1046dee3297cb85054a7d326034c7a317eabd2", "size": 76368},
+    "riscv64": {"file": "termilab-keeper-1-riscv64", "sha256": "b3344843642736715441b80495936e5214dbcb64d866ae186fd4cf7340224bd9", "size": 72000}
+  }
+}
