@@ -1388,6 +1388,7 @@ async function main() {
   await require('./lib/check-keeper').seccionKeeper({ check, ROOT });
   // KB: binarios de termilab-keeper que viajan en los paquetes.
   await require('./lib/check-keeper-files').seccionKeeperFiles({ check, ROOT });
+  await require('./lib/check-main-lifecycle').seccionCicloVida({ check, ROOT });
 
   const cryptoService = require(path.join(ROOT, 'electron', 'services', 'crypto-service.js'));
   const storeService = require(path.join(ROOT, 'electron', 'services', 'store-service.js'));

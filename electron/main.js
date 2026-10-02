@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 
-const { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting } = require('./ipc-handlers');
+const { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting, keptSessionsOf, endKeptWhenClosed } = require('./ipc-handlers');
 const windowRegistry = require('./window-registry');
 const sshService = require('./services/ssh-service');
 const sftpService = require('./services/sftp-service');
@@ -21,6 +21,14 @@ let handlersRegistered = false;
 // before-quit holds the first quit until the history is written (see below)
 let quitCleanupDone = false;
 let installingUpdate = false;
+/* deb/pacman: relaunch ourselves after the install (see updater:install).
+   Armed only once the updater says it is really quitting for the update. */
+let relaunchAfterUpdate = false;   // asked for: a deb/pacman install was clicked
+let relaunchArmed = false;         // the install succeeded and the app is quitting for it
+let relaunchScheduled = false;     // one waiter, however many will-quit passes
+let quittingForUpdate = false;     // before-quit-for-update came: the install went through
+// Windows exist (or the restore is creating them): second-instance may act
+let launched = false;
 const QUIT_LOG_TIMEOUT_MS = 2000;
 // Windows closed by the user after saying yes to "close its sessions?"
 const closeConfirmed = new WeakSet();
@@ -91,34 +99,51 @@ function createWindow(bounds = {}, { maximized = false } = {}) {
     return { action: 'deny' };
   });
 
-  /* Closing one of several windows ends its sessions (like closing its tabs):
-     ask first if it has any. The last window closes as it always did. */
-  win.on('close', (event) => {
-    if (quitCleanupDone || closeConfirmed.has(win)) return;
-    const others = [...windows].filter(w => w !== win && !w.isDestroyed());
-    if (others.length === 0) return;
-    const open = windowRegistry.sessionsOf(win.webContents).length;
-    if (open === 0) return;
-    event.preventDefault();
-    dialog.showMessageBox(win, {
-      type: 'question',
-      buttons: ['Close Window', 'Cancel'],
-      defaultId: 1,
-      cancelId: 1,
-      message: open === 1 ? 'Close this window and its open session?' : `Close this window and its ${open} open sessions?`,
-      detail: 'Any running process in them will be terminated.',
-    }).then(({ response }) => {
-      if (response !== 0 || win.isDestroyed()) return;
-      closeConfirmed.add(win);
-      win.close();
-    }).catch(() => {});
-  });
+  win.on('close', (event) => confirmClose(win, event));
 
   win.on('closed', () => {
     windows.delete(win);
   });
 
   return win;
+}
+
+/* Closing one of several windows ends its sessions (like closing its tabs):
+   ask first if it has any. The last window closes as it always did.
+   Kept sessions (session keeper) are the exception: closing only detaches
+   them, so the question is whether to leave them running in the background
+   (Background sessions lists them) or end them on the server too. */
+function confirmClose(win, event) {
+  if (quitCleanupDone || closeConfirmed.has(win)) return;
+  const others = [...windows].filter(w => w !== win && !w.isDestroyed());
+  if (others.length === 0) return;
+  const open = windowRegistry.sessionsOf(win.webContents).length;
+  if (open === 0) return;
+  event.preventDefault();
+  const kept = keptSessionsOf(win).length;
+  const plural = (n, one, many) => (n === 1 ? one : many.replace('#', n));
+  const ask = kept === 0
+    ? {
+      buttons: ['Close Window', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      message: plural(open, 'Close this window and its open session?', 'Close this window and its # open sessions?'),
+      detail: 'Any running process in them will be terminated.',
+    }
+    : {
+      buttons: ['Keep Running in Background', 'End Sessions', 'Cancel'],
+      defaultId: 0,
+      cancelId: 2,
+      message: plural(kept, 'This window has a session kept alive on the server.', 'This window has # sessions kept alive on the server.'),
+      detail: 'Keep them running to reopen them later from Background sessions, or end them and every process in them.'
+        + (open > kept ? ` ${plural(open - kept, 'The other open session', `The other ${open - kept} open sessions`)} will be terminated either way.` : ''),
+    };
+  dialog.showMessageBox(win, { type: 'question', ...ask }).then(({ response }) => {
+    if (response === ask.cancelId || win.isDestroyed()) return;
+    if (kept > 0 && response === 1) endKeptWhenClosed(win);
+    closeConfirmed.add(win);
+    win.close();
+  }).catch(() => {});
 }
 
 windowRegistry.setWindowFactory((bounds) => createWindow(bounds));
@@ -202,6 +227,19 @@ function setupAutoUpdater() {
       sendUpdateStatus('error', { message: err.message });
     });
 
+    /* Emitted only when the update really is being installed (electron's
+       native autoUpdater; electron-updater's BaseUpdater emits it on it after a
+       successful install, right before app.quit()). */
+    try {
+      require('electron').autoUpdater.on('before-quit-for-update', () => {
+        quittingForUpdate = true;
+        installingUpdate = true;
+        if (relaunchAfterUpdate) relaunchArmed = true;
+      });
+    } catch (err) {
+      console.error('[Updater] before-quit-for-update unavailable:', err.message);
+    }
+
     // IPC: Check for updates
     ipcMain.handle('updater:check', async () => {
       try {
@@ -233,11 +271,23 @@ function setupAutoUpdater() {
          from a detached waiter (through systemd --user when there is one, so
          it never inherits our own no_new_privs either). */
       const pkgType = linuxPackageType();
-      if (pkgType === 'deb' || pkgType === 'pacman') {
-        autoUpdater.autoRunAppAfterInstall = false;
-        app.once('will-quit', () => relaunchDetached());
-      }
+      relaunchAfterUpdate = pkgType === 'deb' || pkgType === 'pacman';
+      if (relaunchAfterUpdate) autoUpdater.autoRunAppAfterInstall = false;
       autoUpdater.quitAndInstall(false, true);
+      /* The deb/pacman/NSIS/AppImage install runs synchronously inside
+         quitAndInstall; on success electron-updater queues
+         before-quit-for-update + app.quit() with setImmediate (queued before
+         this one). Still not quitting here = it failed (pkexec cancelled,
+         dpkg/pacman error, already running): undo, so the next ordinary
+         quit is ordinary. macOS installs asynchronously (Squirrel): left as is. */
+      if (process.platform !== 'darwin') {
+        setImmediate(() => {
+          if (quittingForUpdate || quitCleanupDone) return;
+          installingUpdate = false;
+          relaunchAfterUpdate = false;
+          autoUpdater.autoRunAppAfterInstall = true;
+        });
+      }
     });
 
     // IPC: Get current version
@@ -296,7 +346,42 @@ function relaunchDetached() {
 
 // ─── App Lifecycle ──────────────────────────────────────
 
+/* The single will-quit listener for the deb/pacman relaunch: it acts only
+   once the install succeeded (relaunchArmed), and schedules one waiter. */
+app.on('will-quit', () => {
+  if (!relaunchArmed || relaunchScheduled) return;
+  relaunchScheduled = true;
+  relaunchDetached();
+});
+
+/* One Termilab per user (per userData): a second launch would restore the
+   same workspace, re-attach the same kept sessions (kicking the first
+   instance's tabs) and both would overwrite workspace.json. The second one
+   hands over to the first and quits. Dev runs are exempt: they share the
+   installed app's userData and must start while it is open.
+   The updater relaunch is unaffected: its waiter starts the new instance
+   only after this process has exited (and released the lock). */
+const isDevRun = !!process.env.VITE_DEV_SERVER_URL;
+const primaryInstance = isDevRun || app.requestSingleInstanceLock();
+if (!primaryInstance) {
+  app.quit();
+} else {
+  app.on('second-instance', () => onSecondInstance());
+}
+
+/** Another launch: bring this instance forward (a fresh window if none is open). */
+function onSecondInstance() {
+  if (!launched) return;   // still restoring: its windows are on their way
+  const live = [...windows].filter(w => !w.isDestroyed());
+  if (live.length === 0) { createWindow(); return; }
+  const win = live.find(w => w.isFocused && w.isFocused()) || live[live.length - 1];
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
 app.whenReady().then(async () => {
+  if (!primaryInstance) return;
   setupMenu();
   /* The windows of the last run (workspace-service.js), each where it was and
      with its tabs to recreate; or one fresh window. Never blocks the launch. */
@@ -314,6 +399,7 @@ app.whenReady().then(async () => {
   } else {
     createWindow();
   }
+  launched = true;
   setupAutoUpdater();
 
   // Back to the window: pick up what other devices changed meanwhile.
@@ -343,6 +429,8 @@ app.on('window-all-closed', () => {
 // and the race below is the backstop: quitting can never hang on it.
 // An update install drives its own quit: no hold, synchronous stamp.
 app.on('before-quit', async (event) => {
+  // The second instance quitting at once owns nothing: it must not write the workspace
+  if (!primaryInstance) return;
   if (quitCleanupDone) return;
   quitCleanupDone = true;
   // Windows closing from here on end nothing themselves: this handler does
@@ -388,3 +476,15 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason) => {
   console.error('[Main] Unhandled rejection:', reason);
 });
+
+/* scripts/lib/check-main-lifecycle.js loads this file with a stubbed electron */
+module.exports = {
+  _test: {
+    windows,
+    confirmClose,
+    setupAutoUpdater,
+    onSecondInstance,
+    markLaunched: () => { launched = true; },
+    state: () => ({ installingUpdate, relaunchAfterUpdate, relaunchArmed, relaunchScheduled, primaryInstance }),
+  },
+};

@@ -53,11 +53,33 @@ const remember = (map, wc, value) => {
   map.get(wc).add(value);
 };
 
-/** End sessions whose window is gone (closing a window = closing its tabs). */
-async function endWindowSessions(sessionIds) {
+/* Kept sessions (session keeper) a window owns. Closing the window only
+   detaches them: they keep running on the server, listed in Background
+   sessions. main.js asks whether to keep them or end them. */
+function isKept(sid) {
+  const s = sshService.sessions && sshService.sessions.get(sid);
+  return !!(s && s.keeper);
+}
+function keptSessionsOf(win) {
+  if (!win || !win.webContents) return [];
+  return windowRegistry.sessionsOf(win.webContents).filter(isKept);
+}
+/* Windows whose kept sessions are to be ended (KILL) when they close */
+const endKeptOnClose = new WeakSet();   // webContents
+function endKeptWhenClosed(win) {
+  if (win && win.webContents) endKeptOnClose.add(win.webContents);
+}
+
+/** End sessions whose window is gone (closing a window = closing its tabs).
+ *  Kept sessions are detached (disconnect), or ended on the server with
+ *  `endKept` (the same keeperEnd as the tab's "End session"). */
+async function endWindowSessions(sessionIds, { endKept = false } = {}) {
   for (const sid of sessionIds) {
     try {
-      if (sshService.isConnected(sid)) {
+      if (endKept && isKept(sid)) {
+        await sshService.keeperEnd(sid);
+        sftpService.closeSFTP(sid);
+      } else if (sshService.isConnected(sid)) {
         await sshService.disconnect(sid);
         sftpService.closeSFTP(sid);
       } else if (localShellService.isActive(sid)) {
@@ -104,7 +126,7 @@ function attachWindow(win) {
     if (quitting || lastAndQuitting) return;
     for (const id of transfers) { try { transferService.cancel(id); } catch (_) { /* done already */ } }
     for (const owner of edits) sftpEditService.cleanup(owner).catch(() => {});
-    endWindowSessions(owned);
+    endWindowSessions(owned, { endKept: endKeptOnClose.has(wc) });
   });
   return entry;
 }
@@ -951,4 +973,4 @@ function removeIpcHandlers() {
   ipcMain.removeAllListeners('window:close');
 }
 
-module.exports = { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting, endWindowSessions, attention };
+module.exports = { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting, endWindowSessions, attention, keptSessionsOf, endKeptWhenClosed };
