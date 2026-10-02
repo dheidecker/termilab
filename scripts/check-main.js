@@ -20,6 +20,8 @@
  *  5. La BOVEDA: clave maestra derivada del passphrase de la cuenta, con
  *     varios dispositivos simulados en el mismo proceso (cada uno con su
  *     userData, su llavero y su almacen; ver `usarDispositivo`).
+ *  6. VARIAS VENTANAS (W*, scripts/lib/check-windows.js): eventos por sesion
+ *     solo a su ventana, mudanza con bufer sin perder ni repetir, cierre.
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -98,6 +100,7 @@ const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'termilab-arnes-'));
 // Mutable: `usarDispositivo` cambia de equipo simulado cambiando esto.
 let currentUserData = userData;
 const handlers = new Map();      // canal -> handler registrado por ipc-handlers
+const onHandlers = new Map();    // canal -> listener de ipcMain.on (send-data, resize, local:write…)
 let bridge = null;               // lo que preload expone como window.electronAPI
 
 // Listeners que preload engancha con ipcRenderer.on, para poder comprobar que
@@ -125,7 +128,7 @@ const electronStub = {
   },
   ipcMain: {
     handle: (channel, fn) => handlers.set(channel, fn),
-    on: () => {},
+    on: (channel, fn) => onHandlers.set(channel, fn),
     removeHandler: channel => handlers.delete(channel),
   },
   ipcRenderer: {
@@ -1353,6 +1356,9 @@ async function main() {
 
   // ── L/F. SFTP de dos paneles: local-fs, sshd real, transferencias ──
   await require('./lib/check-sftp').seccionSftp({ check, ROOT, getBridge: () => bridge });
+
+  // ── W. Varias ventanas: enrutado por sesion, mudanzas con bufer, cierre ──
+  await require('./lib/check-windows').seccionVentanas({ check, ROOT, handlers, onHandlers });
 
   const cryptoService = require(path.join(ROOT, 'electron', 'services', 'crypto-service.js'));
   const storeService = require(path.join(ROOT, 'electron', 'services', 'store-service.js'));

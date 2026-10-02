@@ -292,6 +292,72 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeMaximizeListener: () => {
       ipcRenderer.removeAllListeners('window:maximize-change');
     },
+
+    /* ── Several windows (desktop only; Android omits `window`) ──
+       {id, number} of this window; [{id, number, focused, self, sessions}] of all. */
+    info: () => invoke('window:info'),
+    list: () => invoke('window:list'),
+    /* {unseen, flash}: done-but-unseen panes here (badge = app total); flash a new one if unfocused */
+    attention: (spec) => invoke('window:attention', spec || {}),
+    /* A new, empty window: {x, y} = screen point to open at (optional) */
+    create: (opts) => invoke('window:new', opts || {}),
+    /* Moving a tab: see electron/window-registry.js. begin() makes main buffer
+       the sessions' output and resolves the move id; transfer() hands over
+       {target: windowId|'new', x?, y?, adoption} — but only after the
+       'window:move-mark' push for it (onMoveMark); the target answers with
+       moveAdopted() once and moveReady() per restored session. */
+    moveBegin: (sessionIds) => invoke('window:move-begin', sessionIds),
+    moveTransfer: (moveId, spec) => invoke('window:move-transfer', moveId, spec),
+    moveAdopted: (moveId) => invoke('window:move-adopted', moveId),
+    moveReady: (moveId, sessionId) => invoke('window:move-ready', moveId, sessionId),
+    moveAbort: (moveId) => invoke('window:move-abort', moveId),
+    takeAdoptions: () => invoke('window:take-adoptions'),
+    /* A tab of another window dropped here: {fromWindowId, tabId, index} */
+    requestMove: (spec) => invoke('window:request-move', spec),
+    /* After a tab drag nobody accepted: {kind: 'self'|'window'|'outside', id?, x, y} */
+    dropTarget: () => invoke('window:drop-target'),
+    /* Pushes. Each returns its listener; offEvents(listener) detaches it. */
+    onAdopt: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('window:adopt', listener);
+      return listener;
+    },
+    /* {moveId}: main is buffering; everything sent before it has arrived */
+    onMoveMark: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('window:move-mark', listener);
+      return listener;
+    },
+    onMoveDone: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('window:move-done', listener);
+      return listener;
+    },
+    onMoveAborted: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('window:move-aborted', listener);
+      return listener;
+    },
+    onMoveRequest: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('window:move-request', listener);
+      return listener;
+    },
+    /* {collection} saved by another window (or 'all' after a sync there) */
+    onStoreChanged: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('window:store-changed', listener);
+      return listener;
+    },
+    offEvents: (listener) => {
+      if (!listener) return;
+      ipcRenderer.removeListener('window:adopt', listener);
+      ipcRenderer.removeListener('window:move-mark', listener);
+      ipcRenderer.removeListener('window:move-done', listener);
+      ipcRenderer.removeListener('window:move-aborted', listener);
+      ipcRenderer.removeListener('window:move-request', listener);
+      ipcRenderer.removeListener('window:store-changed', listener);
+    },
   },
 
   // ─── Auto-Updater ───────────────────────────────────────

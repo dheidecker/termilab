@@ -11,7 +11,7 @@ import './Mobile.css';
 const SWIPE_CLOSE_PX = 96;
 
 /* One open session. Swipe left past the threshold (or X) closes it. */
-function SessionRow({ tab, host, groupMap, onOpen, onClose }) {
+function SessionRow({ tab, host, groupMap, done, onOpen, onClose }) {
   const [dx, setDx] = useState(0);
   const start = useRef(null);
   const status = sessionStatus(tab);
@@ -61,7 +61,17 @@ function SessionRow({ tab, host, groupMap, onOpen, onClose }) {
             {distro ? <DistroLogo os={cfg.os} /> : <ServerIcon />}
           </span>
           <span className="m-session-text">
-            <span className="m-session-name">{paneName(tab)}</span>
+            <span className="m-session-name-row">
+              <span className="m-session-name">{paneName(tab)}</span>
+              {/* An agent finished there and it has not been opened since */}
+              {done && (
+                <span className="m-session-done" role="img" aria-label="Finished" title="An agent finished here">
+                  <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true">
+                    <path d="M2.5 6.3l2.3 2.2 4.7-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </span>
+              )}
+            </span>
             <span className="m-session-meta">
               <span className={`m-status-dot m-status-${status}`} aria-hidden="true" />
               {STATUS_LABEL[status]}{where ? ` · ${where}` : ''}
@@ -81,6 +91,7 @@ export default function SessionsScreen() {
   const { state, actions } = useApp();
   const tabs = sessionTabs(state.tabs);
   const groupMap = Object.fromEntries((state.groups || []).map(g => [g.id, g]));
+  const visualAlerts = state.settings?.terminal?.visualAlerts !== false;
 
   return (
     <div className="m-screen">
@@ -101,6 +112,7 @@ export default function SessionsScreen() {
                 tab={tab}
                 host={state.hosts.find(h => h.id === tab.hostId)}
                 groupMap={groupMap}
+                done={visualAlerts && !!tab.doneAt}
                 onOpen={() => actions.setActiveTab(tab.id)}
                 onClose={() => closeSessionTab(tab, actions)}
               />

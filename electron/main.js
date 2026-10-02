@@ -1,7 +1,8 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 
-const { registerIpcHandlers, removeIpcHandlers } = require('./ipc-handlers');
+const { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting } = require('./ipc-handlers');
+const windowRegistry = require('./window-registry');
 const sshService = require('./services/ssh-service');
 const sftpService = require('./services/sftp-service');
 const transferService = require('./services/transfer-service');
@@ -12,19 +13,34 @@ const syncService = require('./services/sync-service');
 const hostKeyService = require('./services/host-key-service');
 const connectionLogService = require('./services/connection-log-service');
 
-// Prevent garbage collection of mainWindow
-let mainWindow = null;
+// Every open window (keeps them from being garbage collected). Several since
+// multi-window; what goes to which one is electron/window-registry.js.
+const windows = new Set();
+let handlersRegistered = false;
 // before-quit holds the first quit until the history is written (see below)
 let quitCleanupDone = false;
 let installingUpdate = false;
 const QUIT_LOG_TIMEOUT_MS = 2000;
+// Windows closed by the user after saying yes to "close its sessions?"
+const closeConfirmed = new WeakSet();
 
-function createWindow() {
+/**
+ * A full Termilab window (tab bar, Hosts, sidebar). `bounds` places it: a tab
+ * dropped outside a window opens one where it was dropped.
+ */
+function createWindow(bounds = {}) {
   const preloadPath = path.join(__dirname, 'preload.js');
+  const first = windows.size === 0;
 
-  mainWindow = new BrowserWindow({
+  const place = {};
+  for (const k of ['x', 'y', 'width', 'height']) {
+    if (Number.isFinite(bounds[k])) place[k] = Math.round(bounds[k]);
+  }
+
+  const win = new BrowserWindow({
     width: 1200,
     height: 800,
+    ...place,
     minWidth: 900,
     minHeight: 600,
     frame: false,
@@ -42,36 +58,93 @@ function createWindow() {
       webviewTag: false,
     },
   });
+  windows.add(win);
 
-  // Register all IPC handlers with the window reference
-  registerIpcHandlers(mainWindow);
+  // IPC handlers once, with the first window; every window joins the registry
+  if (!handlersRegistered) {
+    handlersRegistered = true;
+    registerIpcHandlers(win);
+  } else {
+    attachWindow(win);
+  }
 
   // Show window once content is ready to avoid white flash
-  mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
+  win.once('ready-to-show', () => {
+    win.show();
   });
 
   // Load the app
   if (process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-    // Open DevTools in development
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
+    win.loadURL(process.env.VITE_DEV_SERVER_URL);
+    // DevTools in development, for the first window only (they steal focus)
+    if (first && !process.env.TERMILAB_NO_DEVTOOLS) win.webContents.openDevTools({ mode: 'detach' });
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    win.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
   // Handle external links - open in default browser
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url }) => {
     const { shell } = require('electron');
     shell.openExternal(url);
     return { action: 'deny' };
   });
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
+  /* Closing one of several windows ends its sessions (like closing its tabs):
+     ask first if it has any. The last window closes as it always did. */
+  win.on('close', (event) => {
+    if (quitCleanupDone || closeConfirmed.has(win)) return;
+    const others = [...windows].filter(w => w !== win && !w.isDestroyed());
+    if (others.length === 0) return;
+    const open = windowRegistry.sessionsOf(win.webContents).length;
+    if (open === 0) return;
+    event.preventDefault();
+    dialog.showMessageBox(win, {
+      type: 'question',
+      buttons: ['Close Window', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      message: open === 1 ? 'Close this window and its open session?' : `Close this window and its ${open} open sessions?`,
+      detail: 'Any running process in them will be terminated.',
+    }).then(({ response }) => {
+      if (response !== 0 || win.isDestroyed()) return;
+      closeConfirmed.add(win);
+      win.close();
+    }).catch(() => {});
   });
 
-  return mainWindow;
+  win.on('closed', () => {
+    windows.delete(win);
+  });
+
+  return win;
+}
+
+windowRegistry.setWindowFactory((bounds) => createWindow(bounds));
+
+/* macOS has a visible app menu: give it New Window (Cmd+Shift+N). Elsewhere
+   the window is frameless with no menu bar; the renderer handles Ctrl+Shift+N. */
+function setupMenu() {
+  if (process.platform !== 'darwin') return;
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { role: 'appMenu' },
+    {
+      label: 'File',
+      submenu: [
+        { label: 'New Window', accelerator: 'CmdOrCtrl+Shift+N', click: () => createWindow(nextToFocused()) },
+        { role: 'close' },
+      ],
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+  ]));
+}
+
+function nextToFocused() {
+  const w = BrowserWindow.getFocusedWindow() || [...windows][0];
+  if (!w || w.isDestroyed()) return {};
+  const b = w.getBounds();
+  return { x: b.x + 32, y: b.y + 32, width: b.width, height: b.height };
 }
 
 // ─── Auto-Updater ───────────────────────────────────────
@@ -174,14 +247,14 @@ function setupAutoUpdater() {
 }
 
 function sendUpdateStatus(status, data = {}) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('updater:status', { status, ...data });
-  }
+  // Every window: each has its own Settings → About and update banner
+  windowRegistry.broadcast('updater:status', { status, ...data });
 }
 
 // ─── App Lifecycle ──────────────────────────────────────
 
 app.whenReady().then(() => {
+  setupMenu();
   createWindow();
   setupAutoUpdater();
 
@@ -214,6 +287,8 @@ app.on('window-all-closed', () => {
 app.on('before-quit', async (event) => {
   if (quitCleanupDone) return;
   quitCleanupDone = true;
+  // Windows closing from here on end nothing themselves: this handler does
+  setQuitting(true);
   if (installingUpdate) {
     connectionLogService.closeAllSync();
   } else {

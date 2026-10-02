@@ -3,11 +3,14 @@ const crypto = require('crypto');
 const { detectOs } = require('./os-detect');
 const hostKeyService = require('./host-key-service');
 const connectionLogService = require('./connection-log-service');
+const windowRegistry = require('../window-registry');
 
 class SSHService {
   constructor() {
     /** @type {Map<string, { client: Client, stream: any, config: object }>} */
     this.sessions = new Map();
+    /** connects in flight: sessionId -> { cancelled, client } */
+    this._connecting = new Map();
     /** @type {import('electron').BrowserWindow | null} */
     this.mainWindow = null;
   }
@@ -26,12 +29,56 @@ class SSHService {
     }
   }
 
-  async connect(config) {
+  /**
+   * `owner` (the IPC event's sender) is the window this session's events go
+   * to. Claimed before any listener exists: ssh2 can emit the first 'data'
+   * synchronously, in the same tick that opens the shell.
+   */
+  async connect(config, owner) {
     const sessionId = crypto.randomUUID();
+    if (owner) windowRegistry.claim(sessionId, owner);
+    const pend = { cancelled: false, client: null };
+    this._connecting.set(sessionId, pend);
+    try {
+      await this._connect(sessionId, config, pend);
+      if (pend.cancelled) {
+        /* Its window closed while it connected: nobody will ever show it */
+        await this.disconnect(sessionId);
+        throw new Error('The window that opened this connection was closed.');
+      }
+      return sessionId;
+    } catch (err) {
+      if (!this.sessions.has(sessionId)) windowRegistry.release(sessionId);
+      throw err;
+    } finally {
+      this._connecting.delete(sessionId);
+    }
+  }
+
+  /** A connect still in flight (claimed, not in `sessions` yet)? */
+  isPending(sessionId) {
+    return this._connecting.has(sessionId);
+  }
+
+  /**
+   * Its window closed: drop the socket now (a host-key prompt it waits on is
+   * left, so it rejects), and if it still resolves, connect() disconnects it.
+   */
+  cancelPending(sessionId) {
+    const pend = this._connecting.get(sessionId);
+    if (!pend) return false;
+    pend.cancelled = true;
+    try { if (pend.client) pend.client.end(); } catch (_) { /* already down */ }
+    return true;
+  }
+
+  async _connect(sessionId, config, pend = null) {
     const client = new Client();
+    if (pend) pend.client = client;
     /* Known key types for this host:port first, so a server with several host
        keys presents one we already trust (see known-hosts hostKeyAlgorithms). */
     const serverHostKey = await hostKeyService.algorithmsFor(config.host, config.port || 22);
+    if (pend && pend.cancelled) throw new Error('The window that opened this connection was closed.');
 
     return new Promise((resolve, reject) => {
       const timeoutMs = config.timeout || 30000;
@@ -58,6 +105,8 @@ class SSHService {
           clearTimeout(client._readyTimeout);
         },
         onSettled: () => armTimeout(),
+        /* The dialog opens in the window this session belongs to */
+        sessionId,
       });
       const hostKeyError = () => new Error(
         `Host key rejected: the key presented by ${config.host}:${config.port || 22} was not accepted, so the connection was closed.`
@@ -294,6 +343,7 @@ class SSHService {
       } catch (_) { /* ignore cleanup errors */ }
       this.sessions.delete(sessionId);
     }
+    windowRegistry.release(sessionId);
   }
 
   async disconnectAll() {

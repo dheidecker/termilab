@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
+import { SerializeAddon } from '@xterm/addon-serialize';
 import '@xterm/xterm/css/xterm.css';
 import { useApp } from '../../contexts/AppContext';
 import { getTheme } from '../../themes/terminal-themes';
@@ -17,6 +18,8 @@ import { attachTouch, readPinchedFont, writePinchedFont, FONT_EVENT } from './mo
 import { readClipboard, writeClipboard } from './mobile/clipboard';
 import { sessionStatus } from '../Mobile/sessions';
 import { liveSessionId } from '../SplitPane/sessions';
+import { registerTerminal, adoptedReady } from '../SplitPane/windowMove';
+import { playChime, TYPING_QUIET_MS } from './agentChime';
 import './TerminalView.css';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
@@ -30,6 +33,9 @@ export default function TerminalView({ tab }) {
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [connected, setConnected] = useState(false);
+  /* For the snapshot a move to another window takes (windowMove.js) */
+  const connectedRef = useRef(false);
+  connectedRef.current = connected;
   const initializedRef = useRef(false);
   const sessionIdRef = useRef(null);
   const mountedRef = useRef(true);
@@ -64,6 +70,9 @@ export default function TerminalView({ tab }) {
   const termSettings = state.settings?.terminal || {};
   const termSettingsRef = useRef(termSettings);
   termSettingsRef.current = termSettings;
+  /* The tab as it is now (alias, mute), for listeners set up once */
+  const tabLiveRef = useRef(tab);
+  tabLiveRef.current = tab;
   const lastSettingsFontRef = useRef(undefined);
 
   /* The scheme, with this terminal's colour (if any) mixed into its
@@ -83,8 +92,15 @@ export default function TerminalView({ tab }) {
     mountedRef.current = true;
     /* This run's cleanup happened (pane closed, or StrictMode's remount) */
     let disposed = false;
+    /* Moved in from another window: its screen (serialized there), written
+       into this new xterm before anything else; then main is told to hand the
+       session's output over (windowMove.js). Same geometry as the source until
+       that is done, then a normal fit. */
+    const adopt = tab.adopt && tab.adopt.moveId ? tab.adopt : null;
+    const adoptSize = adopt && adopt.cols > 0 && adopt.rows > 0 ? { cols: adopt.cols, rows: adopt.rows } : {};
 
     const term = new Terminal({
+      ...adoptSize,
       fontFamily: termSettings.fontFamily || 'JetBrains Mono, Consolas, monospace',
       fontSize: (IS_ANDROID && readPinchedFont()) || termSettings.fontSize || 14,
       cursorStyle: termSettings.cursorStyle || 'block',
@@ -97,10 +113,12 @@ export default function TerminalView({ tab }) {
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
     const searchAddon = new SearchAddon();
+    const serializeAddon = new SerializeAddon();
 
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
     term.loadAddon(searchAddon);
+    term.loadAddon(serializeAddon);
 
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
@@ -108,11 +126,81 @@ export default function TerminalView({ tab }) {
 
     term.open(containerRef.current);
 
-    /* ─── Bell notification for inactive tabs ─── */
-    term.onBell(() => {
-      if (tab.id !== activeTabIdRef.current) {
-        dispatch({ type: 'TAB_NOTIFY', payload: tab.id });
+    /* The adopted screen first; it resolves once xterm has parsed it */
+    const restored = adopt && adopt.data
+      ? new Promise((resolve) => term.write(adopt.data, resolve))
+      : Promise.resolve();
+    /* Moving this tab to another window: the screen as it is now, after
+       everything already received has been parsed (write('') resolves once
+       the queue before it is done). */
+    const unregister = registerTerminal(tab.id, {
+      snapshot: () => new Promise((resolve) => term.write('', resolve)).then(() => ({
+        data: serializeAddon.serialize({ scrollback: term.options.scrollback }),
+        cols: term.cols,
+        rows: term.rows,
+        connected: connectedRef.current,
+      })),
+    });
+
+    /* ─── Attention: bell mark, agent chime, desktop notification ───
+       Agent CLIs (Claude Code, Codex...) end a turn with BEL or a
+       notification escape (OSC 9 / 777 notify / 99). Either plays the chime
+       unless muted (Settings → Terminal, or this terminal's own mute); a
+       plain BEL right after typing is the shell complaining and only marks
+       the tab, as before. When the window is not focused a desktop
+       notification says which terminal it was. */
+    let lastTyped = 0;
+    /* Focusing or typing in a pane is looking at it: its "done" mark goes.
+       From the textarea's own focus/keydown, NOT onData: xterm also emits
+       onData by itself (focus reports \e[I/\e[O, cursor-position and DA
+       replies a TUI asks for while redrawing), which would clear the mark
+       of a pane nobody looked at. */
+    const seen = () => {
+      const live = tabLiveRef.current || tab;
+      if (live.doneAt) dispatch({ type: 'PANE_SEEN', payload: live.id });
+    };
+    term.onData(() => { lastTyped = Date.now(); });
+    if (term.textarea) {
+      term.textarea.addEventListener('focus', seen);
+      term.textarea.addEventListener('keydown', seen);
+    }
+    const attention = (kind, message) => {
+      const live = tabLiveRef.current || tab;
+      const ts = termSettingsRef.current || {};
+      const complaint = kind === 'bell' && Date.now() - lastTyped < TYPING_QUIET_MS;
+      /* An agent finished: the pane glows, its tab gets the done badge, the
+         taskbar flashes (Settings → Terminal → Visual Alerts; a muted
+         terminal still shows them, muting is about sound). The reducer skips
+         the pane the user is looking at. A shell complaint, or visual alerts
+         off: the old bell mark, as before. */
+      if (!complaint && ts.visualAlerts !== false) {
+        dispatch({ type: 'PANE_DONE', payload: { id: live.id, windowFocused: document.hasFocus(), at: Date.now() } });
+      } else if (live.id !== activeTabIdRef.current) {
+        dispatch({ type: 'TAB_NOTIFY', payload: live.id });
       }
+      if (complaint) return;
+      if (ts.agentSound !== false && !live.muted) playChime();
+      if (ts.agentNotify !== false && !document.hasFocus() && typeof Notification !== 'undefined') {
+        const name = live.alias ? `${live.alias} · ${live.label || 'Terminal'}` : (live.label || 'Terminal');
+        try { new Notification(name, { body: message || 'Finished', silent: true }); } catch (_) { /* not allowed */ }
+      }
+    };
+    term.onBell(() => attention('bell'));
+    const oscText = (data) => (data || '').slice(0, 200);
+    term.parser.registerOscHandler(9, (data) => {
+      // OSC 9;4;... is ConEmu progress, not a notification
+      if (!/^4;/.test(data)) attention('osc', oscText(data));
+      return true;
+    });
+    term.parser.registerOscHandler(777, (data) => {
+      const [cmd, title, body] = (data || '').split(';');
+      if (cmd === 'notify') attention('osc', oscText(body || title));
+      return true;
+    });
+    term.parser.registerOscHandler(99, (data) => {
+      const body = (data || '').split(';').slice(1).join(';');
+      attention('osc', oscText(body));
+      return true;
     });
 
     /* ─── Copy / Paste support ───
@@ -133,8 +221,24 @@ export default function TerminalView({ tab }) {
     const doPaste = () => {
       readClipboard().then((text) => { if (text) term.paste(text); });
     };
+    /* Space is sent by us on keydown. xterm takes printable keys from the
+       textarea's input/composition events, and on Linux (IBus/fcitx, Spanish
+       layouts with dead keys) that path sometimes swallows the space after a
+       composition: letters keep arriving but spaces don't. Sending it here
+       and cancelling the default makes it independent of that state. Right
+       after a dead key (´ + space = ´) the default path is kept. */
+    let afterDeadKey = false;
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown') return true;
+      if (ev.key === 'Dead') { afterDeadKey = true; return true; }
+      const wasDead = afterDeadKey;
+      afterDeadKey = false;
+      if (!IS_ANDROID && (ev.code === 'Space' || ev.key === ' ') && !ev.ctrlKey && !ev.altKey && !ev.metaKey
+          && !wasDead && !ev.isComposing && ev.keyCode !== 229) {
+        ev.preventDefault();
+        term.input(' ', true);
+        return false;
+      }
       const ctrl = ev.ctrlKey || ev.metaKey;
       // Ctrl+Shift+C / Ctrl+Insert → copy the selection
       if ((ctrl && ev.shiftKey && ev.code === 'KeyC') || (ev.ctrlKey && !ev.shiftKey && ev.code === 'Insert')) {
@@ -153,6 +257,10 @@ export default function TerminalView({ tab }) {
           || (ev.metaKey && !ev.shiftKey && ev.code === 'KeyV')) {
         doPaste();
         ev.preventDefault();
+        return false;
+      }
+      // Ctrl+Shift+N → new window (App handles it): xterm must not also send ^N
+      if (!IS_ANDROID && ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.code === 'KeyN') {
         return false;
       }
       // Ctrl+F → Search
@@ -191,17 +299,18 @@ export default function TerminalView({ tab }) {
     /* Input from the keyboard, after the sticky modifiers */
     const filterInput = (data) => (inputFilterRef.current ? inputFilterRef.current(data) : data);
 
-    /* Fit after a small delay */
-    requestAnimationFrame(() => {
+    /* Fit after a small delay (an adopted screen: after it is written) */
+    restored.then(() => requestAnimationFrame(() => {
+      if (disposed) return;
       try { fitAddon.fit(); } catch (e) { /* ignore */ }
-    });
+    }));
 
 
     /* Setup data flow based on mode */
     if (hasApi()) {
       if (isLocal) {
         /* ─── Local Terminal Mode ─── */
-        term.writeln('\x1b[90mOpening local shell...\x1b[0m');
+        if (!adopt) term.writeln('\x1b[90mOpening local shell...\x1b[0m');
 
         /* Register data listeners FIRST with a pending queue */
         const pendingData = [];
@@ -238,23 +347,15 @@ export default function TerminalView({ tab }) {
         const cols = term.cols || 80;
         const rows = term.rows || 24;
 
-        window.electronAPI.localShell.spawn({ cols, rows })
-          .then((result) => {
-            const realSessionId = result?.sessionId;
-            /* Closed before the pty existed: nobody else knows its id, so
-               nobody else would ever kill it */
-            if (disposed || !mountedRef.current) {
-              if (realSessionId) window.electronAPI.localShell.kill(realSessionId)?.catch?.(() => {});
-              return;
-            }
-            if (!realSessionId) return;
-
+        /* The pty is there (spawned now, or adopted from another window):
+           wire input, resize and the first fit to it */
+        const wireLocal = (realSessionId, fresh) => {
             sessionIdRef.current = realSessionId;
             sessionReady = true;
-            setConnected(true);
+            setConnected(fresh ? true : adopt.connected !== false);
             /* tab.sessionId is only a placeholder: closing, broadcast and
                snippets need the pty's id (not in this effect's deps) */
-            dispatch({ type: 'UPDATE_TAB', payload: { id: tab.id, ptySessionId: realSessionId } });
+            if (fresh) dispatch({ type: 'UPDATE_TAB', payload: { id: tab.id, ptySessionId: realSessionId } });
 
             /* Flush any queued data */
             for (const item of pendingData) {
@@ -265,7 +366,7 @@ export default function TerminalView({ tab }) {
             pendingData.length = 0;
 
             /* Clear the "Opening..." message */
-            term.clear();
+            if (fresh) term.clear();
 
             /* Terminal -> local shell */
             term.onData((raw) => {
@@ -296,10 +397,28 @@ export default function TerminalView({ tab }) {
             });
 
             /* Send initial fit resize */
-            try {
-              fitAddon.fit();
-              window.electronAPI.localShell.resize(realSessionId, term.cols, term.rows);
-            } catch (e) { /* ignore */ }
+            restored.then(() => {
+              if (disposed) return;
+              try {
+                fitAddon.fit();
+                window.electronAPI.localShell.resize(realSessionId, term.cols, term.rows);
+              } catch (e) { /* ignore */ }
+            });
+        };
+
+        if (adopt) {
+          if (tab.ptySessionId) wireLocal(tab.ptySessionId, false);
+        } else window.electronAPI.localShell.spawn({ cols, rows })
+          .then((result) => {
+            const realSessionId = result?.sessionId;
+            /* Closed before the pty existed: nobody else knows its id, so
+               nobody else would ever kill it */
+            if (disposed || !mountedRef.current) {
+              if (realSessionId) window.electronAPI.localShell.kill(realSessionId)?.catch?.(() => {});
+              return;
+            }
+            if (!realSessionId) return;
+            wireLocal(realSessionId, true);
           })
           .catch((err) => {
             if (!mountedRef.current) return;
@@ -365,16 +484,16 @@ export default function TerminalView({ tab }) {
           }
         });
 
-        setConnected(true);
+        setConnected(adopt ? adopt.connected !== false : true);
 
         /* Send initial resize to sync terminal dimensions */
-        setTimeout(() => {
-          if (!mountedRef.current) return;
+        restored.then(() => setTimeout(() => {
+          if (!mountedRef.current || disposed) return;
           try {
             fitAddon.fit();
             window.electronAPI.ssh.resize(sessionIdRef.current, term.cols, term.rows);
           } catch (e) { /* ignore */ }
-        }, 100);
+        }, 100));
       }
     } else {
       /* ─── Mock mode for browser dev ─── */
@@ -398,11 +517,22 @@ export default function TerminalView({ tab }) {
       });
     }
 
-    /* ResizeObserver for auto-fit */
+    /* ResizeObserver for auto-fit (an adopted screen: once it is written) */
     const ro = new ResizeObserver(() => {
       try { fitAddon.fit(); } catch (e) { /* ignore */ }
     });
-    ro.observe(containerRef.current);
+    const observed = containerRef.current;
+    restored.then(() => { if (!disposed) ro.observe(observed); });
+
+    /* Adopted: the screen is in, the listeners are up. Main may now route the
+       session here and flush what it buffered during the move. */
+    if (adopt) {
+      restored.then(() => {
+        if (disposed) return;
+        adoptedReady(adopt.moveId, isLocal ? tab.ptySessionId : tab.sessionId);
+        dispatch({ type: 'UPDATE_TAB', payload: { id: tab.id, adopt: null } });
+      });
+    }
 
     /* The web font (JetBrains Mono, from Google Fonts with display=swap) often
        arrives after xterm has measured its cells with the fallback font. xterm
@@ -443,11 +573,16 @@ export default function TerminalView({ tab }) {
 
     return () => {
       disposed = true;
+      unregister();
       mountedRef.current = false;
       initializedRef.current = false;  // Allow re-init on StrictMode remount
       ro.disconnect();
       document.fonts?.removeEventListener?.('loadingdone', remeasure);
       document.removeEventListener('keydown', keyHandler);
+      if (term.textarea) {
+        term.textarea.removeEventListener('focus', seen);
+        term.textarea.removeEventListener('keydown', seen);
+      }
       if (detachTouch) detachTouch();
       window.removeEventListener(FONT_EVENT, onPinchedFont);
       term.dispose();

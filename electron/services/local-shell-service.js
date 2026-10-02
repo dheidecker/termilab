@@ -1,6 +1,7 @@
 const os = require('os');
 const crypto = require('crypto');
 const connectionLogService = require('./connection-log-service');
+const windowRegistry = require('../window-registry');
 
 let pty;
 try {
@@ -52,12 +53,14 @@ class LocalShellService {
    * @param {object} [options.env] - Additional environment variables
    * @returns {Promise<string>} - Session ID
    */
-  async spawn(options = {}) {
+  async spawn(options = {}, owner = null) {
     if (!pty) {
       throw new Error('node-pty is not installed. Run: npm install node-pty');
     }
 
     const sessionId = crypto.randomUUID();
+    /* `owner`: the window whose renderer asked; its events go only there */
+    if (owner) windowRegistry.claim(sessionId, owner);
     const shell = options.shell || this._getDefaultShell();
     const cols = options.cols || 80;
     const rows = options.rows || 24;
@@ -111,10 +114,12 @@ class LocalShellService {
         this._send('local:close', sessionId, exitCode, signal);
         this.shells.delete(sessionId);
         this._endLog(sessionId);
+        windowRegistry.release(sessionId);
       });
 
       return sessionId;
     } catch (err) {
+      windowRegistry.release(sessionId);
       throw new Error(`Failed to spawn local shell "${shell}": ${err.message}`);
     }
   }

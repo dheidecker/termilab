@@ -32,6 +32,7 @@ const PROMPT_TIMEOUT_MS = 120 * 1000;
 class HostKeyService {
   constructor() {
     this.mainWindow = null;
+    this.router = null;
     this.timeoutMs = PROMPT_TIMEOUT_MS;
     /** requestId -> { id, hostId, fingerprint, payload, waiters:Set, timer, resolve, promise, replaceAll, info } */
     this._pending = new Map();
@@ -39,23 +40,47 @@ class HostKeyService {
     this._chains = new Map();
   }
 
+  /** One fixed window for every prompt (the harness; also clears the router). */
   setMainWindow(win) {
     this.mainWindow = win;
+    this.router = null;
   }
 
-  _windowAlive() {
+  /**
+   * Several windows (window-registry): a prompt goes to the window that owns
+   * the connecting session (`createVerifier(..., { sessionId })`), else the
+   * focused one; its cancel goes to that same window.
+   */
+  setRouter(router) {
+    this.router = router;
+    this.mainWindow = null;
+  }
+
+  /** The webContents a new prompt for `sessionId` goes to, or null. */
+  _target(sessionId) {
+    if (this.router) return this.router.windowForSession(sessionId || null);
     try {
-      return !!(this.mainWindow && !this.mainWindow.isDestroyed()
-        && this.mainWindow.webContents && !(this.mainWindow.webContents.isDestroyed?.()));
+      if (this.mainWindow && !this.mainWindow.isDestroyed()
+        && this.mainWindow.webContents && !(this.mainWindow.webContents.isDestroyed?.())) {
+        return this.mainWindow.webContents;
+      }
+    } catch (_) { /* gone */ }
+    return null;
+  }
+
+  _windowAlive(target) {
+    if (!target) return false;
+    try {
+      return !(target.isDestroyed?.());
     } catch (_) {
       return false;
     }
   }
 
-  _send(channel, payload) {
-    if (!this._windowAlive()) return false;
+  _send(channel, payload, target) {
+    if (!this._windowAlive(target)) return false;
     try {
-      this.mainWindow.webContents.send(channel, payload);
+      target.send(channel, payload);
       return true;
     } catch (err) {
       console.error(`[HostKeyService] Failed to send ${channel}:`, err.message);
@@ -99,6 +124,7 @@ class HostKeyService {
         try { hooks.onSettled?.(); } catch (_) { /* ignore */ }
       },
       handle: hooks.handle,
+      sessionId: hooks.sessionId,
     };
 
     /* Cancellable while queued: the connection died before its turn. */
@@ -173,7 +199,8 @@ class HostKeyService {
   }
 
   _prompt(hostId, host, port, decision, hooks) {
-    if (!this._windowAlive()) return false;
+    const target = this._target(hooks.sessionId);
+    if (!this._windowAlive(target)) return false;
 
     const requestId = crypto.randomUUID();
     const payload = {
@@ -199,6 +226,7 @@ class HostKeyService {
       resolve,
       promise,
       timer: null,
+      target,
     };
     this._pending.set(requestId, req);
     /* Not unref'd: a pending question must keep the process alive until it
@@ -206,7 +234,7 @@ class HostKeyService {
     req.timer = setTimeout(() => this._finish(requestId, false, 'timeout'), this.timeoutMs);
 
     const joined = this._join(req, hooks);
-    if (!this._send('ssh:host-key-prompt', payload)) {
+    if (!this._send('ssh:host-key-prompt', payload, target)) {
       this._finish(requestId, false, 'no-window');
     }
     return joined;
@@ -242,14 +270,45 @@ class HostKeyService {
     this._pending.delete(requestId);
     clearTimeout(req.timer);
     if (why !== 'accepted' && why !== 'rejected') {
-      this._send('ssh:host-key-prompt-cancel', { requestId, reason: why });
+      this._send('ssh:host-key-prompt-cancel', { requestId, reason: why }, req.target);
     }
     req.resolve(accepted);
   }
 
-  /** Window closing / app quitting: reject everything still open. */
+  /** App quitting: reject everything still open. */
   rejectAll() {
     for (const id of [...this._pending.keys()]) this._finish(id, false, 'no-window');
+  }
+
+  /**
+   * One window closed. A prompt asked there moves to the window of another
+   * connection waiting on it (one that joined from another window), shown
+   * again with the full timeout; with nobody else left, it is rejected. A
+   * waiter whose own window closed has no window (windowForSession → null)
+   * and never takes the prompt anywhere.
+   */
+  rejectFor(target) {
+    for (const [id, req] of [...this._pending]) {
+      if (req.target !== target) continue;
+      const next = this._otherWindow(req, target);
+      if (!next) { this._finish(id, false, 'no-window'); continue; }
+      req.target = next;
+      clearTimeout(req.timer);
+      req.timer = setTimeout(() => this._finish(id, false, 'timeout'), this.timeoutMs);
+      if (!this._send('ssh:host-key-prompt', req.payload, next)) this._finish(id, false, 'no-window');
+    }
+  }
+
+  /** A live window, other than `gone`, of a connection waiting on `req`. */
+  _otherWindow(req, gone) {
+    if (!this.router) return null;
+    for (const w of req.waiters) {
+      const sid = w.hooks && w.hooks.sessionId;
+      if (!sid) continue;
+      const wc = this.router.windowForSession(sid);
+      if (wc && wc !== gone && this._windowAlive(wc)) return wc;
+    }
+    return null;
   }
 
   /**
@@ -258,14 +317,14 @@ class HostKeyService {
    * connection dies before the user answered, wasRejected() to word the
    * error, and isPending() to know a decision was still open when it died.
    */
-  createVerifier(host, port, { onPrompt, onSettled } = {}) {
+  createVerifier(host, port, { onPrompt, onSettled, sessionId } = {}) {
     const handle = { cancel: () => {} };
     let rejected = false;
     let pending = false;
     const hostVerifier = (key, verify) => {
       const blob = Buffer.isBuffer(key) ? key : Buffer.from(String(key), 'hex');
       pending = true;
-      this.verify(host, port, blob, { onPrompt, onSettled, handle })
+      this.verify(host, port, blob, { onPrompt, onSettled, handle, sessionId })
         .then(ok => { pending = false; rejected = !ok; verify(!!ok); })
         .catch(() => { pending = false; rejected = true; verify(false); });
     };

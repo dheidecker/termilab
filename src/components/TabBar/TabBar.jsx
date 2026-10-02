@@ -7,7 +7,8 @@ import { useBackHandler } from '../../hooks/useBackHandler';
 import { confirmCloseSftp } from '../SFTP/activeTransfers';
 import { memberTabs, groupLabel, groupOf, isTerminalTab, paneName, paneTitle, cleanAlias } from '../SplitPane/layoutTree';
 import InlineRename from '../SplitPane/InlineRename';
-import { useDrag, beginDrag, setDrag } from '../SplitPane/dragState';
+import { useDrag, beginDrag, setDrag, DRAG_MIME, isLocalDrag } from '../SplitPane/dragState';
+import { cannotMove, selfWindowId, windowInfo, requestMoveHere, dropTarget } from '../SplitPane/windowMove';
 import { confirmCloseSessions, endSessions } from '../SplitPane/sessions';
 import { tabColor } from '../HostList/hostColor';
 import { ColorPopover, anchorOf } from '../ColorPicker/ColorPicker';
@@ -30,6 +31,7 @@ function getTabIcon(tab) {
  */
 export default function TabBar() {
   const { state, actions } = useApp();
+  const visualAlerts = state.settings?.terminal?.visualAlerts !== false;
   const { tabs, activeTabId, broadcast } = state;
   const [contextMenu, setContextMenu] = useState(null);
   /* Colour popover from the active tab: { anchor, el, paneId, groupId }. It
@@ -39,6 +41,11 @@ export default function TabBar() {
   /* Inline rename of a tab's lead pane (the one it is named after): { groupId, paneId } */
   const [renaming, setRenaming] = useState(null);
   useBackHandler(!!contextMenu, () => setContextMenu(null));
+  /* Other windows, for "Move to Window N" (read when the menu opens) */
+  const [otherWindows, setOtherWindows] = useState([]);
+  /* A tab of ANOTHER window dragged over this one: where it would land */
+  const [foreignDrop, setForeignDrop] = useState(null);
+  const tabsRef = useRef(null);
 
   const visibleTabs = tabs.filter(t => !t.hidden);
   const homeActive = !tabs.some(t => t.id === activeTabId);
@@ -101,7 +108,82 @@ export default function TabBar() {
 
   const handleContextMenu = (e, tab) => {
     e.preventDefault();
-    setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 170), y: e.clientY, tab });
+    setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: e.clientY, tab });
+    if (FEATURES.multiWindow) {
+      setOtherWindows([]);
+      actions.listWindows().then(list => setOtherWindows(list.filter(w => !w.self)));
+    }
+  };
+
+  /* ── Other windows ── */
+  const moveTo = (groupId, target, opts) => {
+    actions.moveTabToWindow(groupId, target, opts).catch((err) => {
+      window.alert(`Could not move the tab: ${err.message}`);
+    });
+  };
+
+  /* Which visible tab index a pointer at clientX lands before */
+  const indexAt = (clientX) => {
+    const els = tabsRef.current ? [...tabsRef.current.querySelectorAll('.tab:not(.tab-home)')] : [];
+    let i = 0;
+    for (const el of els) {
+      const r = el.getBoundingClientRect();
+      if (clientX > r.left + r.width / 2) i++;
+    }
+    return i;
+  };
+
+  /* Tabs dragged in from another window drop anywhere on this one (the
+     window's drag regions excepted). Theirs, not ours: our own drags set
+     isLocalDrag() synchronously in dragstart. */
+  useEffect(() => {
+    if (!FEATURES.multiWindow) return undefined;
+    windowInfo();
+    const foreign = (e) => !isLocalDrag() && !!e.dataTransfer && [...(e.dataTransfer.types || [])].includes(DRAG_MIME);
+    const over = (e) => {
+      if (!foreign(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const bar = tabsRef.current?.getBoundingClientRect();
+      const onBar = bar && e.clientY >= bar.top - 8 && e.clientY <= bar.bottom + 8;
+      setForeignDrop(onBar ? { index: indexAt(e.clientX) } : { index: null });
+    };
+    const leave = (e) => { if (!e.relatedTarget) setForeignDrop(null); };
+    const drop = (e) => {
+      if (!foreign(e)) return;
+      e.preventDefault();
+      setForeignDrop(null);
+      let d = null;
+      try { d = JSON.parse(e.dataTransfer.getData(DRAG_MIME) || 'null'); } catch (_) { d = null; }
+      if (!d || d.kind !== 'tab' || d.windowId == null || d.windowId === selfWindowId()) return;
+      const bar = tabsRef.current?.getBoundingClientRect();
+      const onBar = bar && e.clientY >= bar.top - 8 && e.clientY <= bar.bottom + 8;
+      requestMoveHere({ fromWindowId: d.windowId, tabId: d.tabId, index: onBar ? indexAt(e.clientX) : null })
+        ?.catch?.(err => console.error('[windows] drop failed:', err.message));
+    };
+    const end = () => setForeignDrop(null);
+    document.addEventListener('dragover', over);
+    document.addEventListener('dragleave', leave);
+    document.addEventListener('drop', drop);
+    document.addEventListener('dragend', end);
+    return () => {
+      document.removeEventListener('dragover', over);
+      document.removeEventListener('dragleave', leave);
+      document.removeEventListener('drop', drop);
+      document.removeEventListener('dragend', end);
+    };
+  }, []);
+
+  /* Our tab drag ended and nobody took it: dropped outside the window (new
+     window there) or on another Termilab window that did not accept it */
+  const tabDragEnd = (e, tab) => {
+    setDrag(null);
+    if (!FEATURES.multiWindow || !e.dataTransfer || e.dataTransfer.dropEffect !== 'none') return;
+    if (cannotMove(state, tab.id)) return;
+    dropTarget().then((where) => {
+      if (!where || where.kind === 'self') return;
+      moveTo(tab.id, where.kind === 'window' ? where.id : 'new', { x: where.x, y: where.y });
+    }).catch(err => console.error('[windows] detach failed:', err.message));
   };
 
   const closeOtherTabs = () => {
@@ -147,11 +229,11 @@ export default function TabBar() {
 
   return (
     <div
-      className={`tab-bar${paneDrag ? ' tab-bar-dropping' : ''}`}
+      className={`tab-bar${paneDrag || foreignDrop ? ' tab-bar-dropping' : ''}`}
       onDragOver={barDragOver}
       onDrop={barDrop}
     >
-      <div className="tab-bar-tabs" role="tablist">
+      <div className={`tab-bar-tabs${foreignDrop ? ' tab-bar-foreign-drop' : ''}`} role="tablist" ref={tabsRef}>
         <div
           className={`tab tab-home ${homeActive ? 'active' : ''}`}
           role="tab"
@@ -164,11 +246,15 @@ export default function TabBar() {
           <span className="tab-label">Hosts</span>
         </div>
 
-        {visibleTabs.map(tab => {
+        {visibleTabs.map((tab, i) => {
           /* A split tab: "first host +N", every pane in the tooltip */
           const members = isTerminalTab(tab) ? memberTabs(state, tab.id) : [tab];
           const { label, title } = groupLabel(members);
-          const notify = members.some(m => m.notify);
+          /* Panes where an agent finished and nobody looked yet: a green
+             check (or how many, in a split tab). It replaces the bell mark,
+             which stays only for plain bells (and visual alerts off). */
+          const done = visualAlerts ? members.filter(m => m.doneAt).length : 0;
+          const notify = !done && members.some(m => m.notify);
           const canDrag = FEATURES.splitPanes && isTerminalTab(tab);
           /* A split tab shows its first (top-left) pane's colour */
           const lead = isTerminalTab(tab) ? members[0] : null;
@@ -178,14 +264,14 @@ export default function TabBar() {
           return (
           <div
             key={tab.id}
-            className={`tab ${isActive ? 'active' : ''} ${notify ? 'notify' : ''} ${drag?.kind === 'tab' && tab.id === drag.tabId ? 'dragging' : ''}${color ? ' has-color' : ''}`}
+            className={`tab ${isActive ? 'active' : ''} ${notify ? 'notify' : ''} ${drag?.kind === 'tab' && tab.id === drag.tabId ? 'dragging' : ''}${color ? ' has-color' : ''}${tab.moving ? ' moving' : ''}${foreignDrop && foreignDrop.index === i ? ' drop-before' : ''}${foreignDrop && foreignDrop.index === visibleTabs.length && i === visibleTabs.length - 1 ? ' drop-after' : ''}`}
             style={color ? { '--tab-color': color } : undefined}
             role="tab"
             aria-selected={tab.id === activeTabId}
             title={title}
             draggable={canDrag && !editing}
-            onDragStart={canDrag ? (e) => beginDrag(e, { kind: 'tab', tabId: tab.id }, label) : undefined}
-            onDragEnd={canDrag ? () => setDrag(null) : undefined}
+            onDragStart={canDrag ? (e) => beginDrag(e, { kind: 'tab', tabId: tab.id, windowId: selfWindowId() }, label) : undefined}
+            onDragEnd={canDrag ? (e) => tabDragEnd(e, tab) : undefined}
             onDragOver={() => hoverOpen(tab)}
             onDragLeave={(e) => hoverLeave(e, tab)}
             onClick={() => actions.setActiveTab(tab.id)}
@@ -206,6 +292,20 @@ export default function TabBar() {
               />
             ) : (
               <span className="tab-label">{label}</span>
+            )}
+            {done > 0 && (
+              <span
+                className={`tab-done${done > 1 ? ' count' : ''}`}
+                role="img"
+                aria-label={done > 1 ? `Finished in ${done} panes` : 'Finished'}
+                title={done > 1 ? `An agent finished in ${done} panes` : 'An agent finished here'}
+              >
+                {done > 1 ? done : (
+                  <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
+                    <path d="M2.5 6.3l2.3 2.2 4.7-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
+              </span>
             )}
             {isActive && lead && (
               <button
@@ -253,6 +353,7 @@ export default function TabBar() {
           then the whole bar is a drop target) */}
       <div className="tab-bar-drag">
         {paneDrag && <span className="tab-bar-drop-hint">Drop here to move to a new tab</span>}
+        {!paneDrag && foreignDrop && <span className="tab-bar-drop-hint">Drop to move the tab to this window</span>}
       </div>
 
       {broadcast && (
@@ -294,6 +395,14 @@ export default function TabBar() {
               {ctxMembers.length > 1 ? `Rename ${paneName(ctxLead)}…` : 'Rename…'}
             </button>
           )}
+          {ctxLead && (
+            <button className="tab-context-menu-item" onClick={() => {
+              const mute = !ctxMembers.every(m => m.muted);
+              ctxMembers.forEach(m => actions.setTabMuted(m.id, mute));
+            }}>
+              {ctxMembers.every(m => m.muted) ? 'Unmute Sound' : 'Mute Sound'}
+            </button>
+          )}
           <button className="tab-context-menu-item" onClick={() => handleCloseTab(contextMenu.tab.id)}>
             Close
           </button>
@@ -302,6 +411,28 @@ export default function TabBar() {
               Move Panes to Separate Tabs
             </button>
           )}
+          {FEATURES.multiWindow && (() => {
+            const why = cannotMove(state, contextMenu.tab.id);
+            return (
+              <>
+                <div className="tab-context-menu-sep" />
+                <button className="tab-context-menu-item" disabled={!!why} title={why || undefined}
+                  onClick={() => moveTo(contextMenu.tab.id, 'new')}>
+                  Move to New Window
+                </button>
+                {otherWindows.map(w => (
+                  <button key={w.id} className="tab-context-menu-item" disabled={!!why} title={why || undefined}
+                    onClick={() => moveTo(contextMenu.tab.id, w.id)}>
+                    Move to Window {w.number}
+                  </button>
+                ))}
+                <button className="tab-context-menu-item" onClick={() => actions.newWindow()}>
+                  New Window<span className="tab-context-menu-key">Ctrl+Shift+N</span>
+                </button>
+                <div className="tab-context-menu-sep" />
+              </>
+            );
+          })()}
           <button className="tab-context-menu-item" onClick={closeOtherTabs}>
             Close Others
           </button>

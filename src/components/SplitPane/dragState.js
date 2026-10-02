@@ -10,6 +10,10 @@ export const DRAG_MIME = 'application/x-termilab-pane';
 
 let current = null;
 const subs = new Set();
+/* Set synchronously in dragstart (the store waits a tick): a drag of OURS,
+   so a window can tell its own drags from a tab coming from another window. */
+let localDrag = false;
+export const isLocalDrag = () => localDrag;
 
 export const getDrag = () => current;
 export function setDrag(d) {
@@ -23,6 +27,7 @@ export const useDrag = () => useSyncExternalStore(subscribe, getDrag);
 /* dragstart handler body. The store is set on the next tick: changing the DOM
    during dragstart (the drop layer appears) makes Chromium cancel the drag. */
 export function beginDrag(e, d, label) {
+  localDrag = true;
   e.dataTransfer.effectAllowed = 'move';
   try { e.dataTransfer.setData(DRAG_MIME, JSON.stringify(d)); } catch (_) { /* synthetic events */ }
   try { e.dataTransfer.setData('text/plain', label || ''); } catch (_) { /* idem */ }
@@ -33,6 +38,10 @@ export function beginDrag(e, d, label) {
    pane header disappears once its tab is down to one pane): the first mouse
    move after any drag clears what is left. */
 if (typeof window !== 'undefined') {
-  window.addEventListener('dragend', () => setDrag(null), true);
-  window.addEventListener('mousemove', (e) => { if (current && e.buttons === 0) setDrag(null); }, true);
+  window.addEventListener('dragend', () => { localDrag = false; setDrag(null); }, true);
+  window.addEventListener('mousemove', (e) => {
+    if (e.buttons !== 0) return;
+    localDrag = false;
+    if (current) setDrag(null);
+  }, true);
 }

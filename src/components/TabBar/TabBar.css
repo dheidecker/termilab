@@ -219,6 +219,28 @@
   color: var(--color-danger);
 }
 
+.tab-context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tab-context-menu-item:disabled:hover {
+  background: none;
+  color: var(--text-secondary);
+}
+
+.tab-context-menu-key {
+  float: right;
+  margin-left: 16px;
+  color: var(--text-tertiary);
+}
+
+.tab-context-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-primary);
+}
+
 /* Tab status indicator */
 .tab-status {
   width: 6px;
@@ -259,6 +281,33 @@
 
 .tab.notify .tab-label {
   color: var(--color-warning);
+}
+
+/* "An agent finished" (TabBar: panes with doneAt). A soft green dot with a
+   check, or the count of finished panes in a split tab. Quiet on purpose:
+   no animation here, the pane itself pulses. */
+.tab-done {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-success) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-success) 35%, transparent);
+  color: var(--color-success);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.tab-done:not(.count) {
+  padding: 0;
+  width: 15px;
 }
 
 @keyframes bell-pulse {
@@ -367,4 +416,18 @@
   border: 1px dashed var(--accent);
   border-radius: var(--radius-md);
   padding: 3px 10px;
+}
+
+/* Being handed to another window */
+.tab.moving {
+  opacity: 0.5;
+}
+
+/* A tab from another window dragged over this bar: where it lands */
+.tab.drop-before {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.tab.drop-after {
+  box-shadow: inset -2px 0 0 var(--accent);
 }

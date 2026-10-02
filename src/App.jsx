@@ -40,7 +40,7 @@ function readSidebarCollapsed() {
 function AppContent() {
   const { state, actions } = useApp();
   const { activeSection, tabs, activeTabId, loading, hostFormOpen } = state;
-  const { openLocalTerminal, setActiveTab, removeTab, disconnectSession, goHome, setActiveSection } = actions;
+  const { openLocalTerminal, setActiveTab, removeTab, disconnectSession, goHome, setActiveSection, newWindow } = actions;
   const { layouts } = state;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
 
@@ -75,6 +75,11 @@ function AppContent() {
         e.preventDefault();
         openLocalTerminal();
       }
+      // Ctrl+Shift+N → New window (desktop; macOS also has it in the app menu)
+      if (e.ctrlKey && e.shiftKey && !e.altKey && e.code === 'KeyN' && FEATURES.multiWindow) {
+        e.preventDefault();
+        newWindow();
+      }
       // Ctrl+W → Close active tab (the home tab has no id and never closes)
       if (e.ctrlKey && !e.shiftKey && e.key === 'w') {
         e.preventDefault();
@@ -100,7 +105,7 @@ function AppContent() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [tabs, layouts, activeTabId, openLocalTerminal, setActiveTab, removeTab, disconnectSession]);
+  }, [tabs, layouts, activeTabId, openLocalTerminal, setActiveTab, removeTab, disconnectSession, newWindow]);
 
   if (loading) {
     return (

@@ -178,7 +178,8 @@ const ZONE_TEXT = { left: 'Left', right: 'Right', top: 'Top', bottom: 'Bottom', 
 export default function SessionStage() {
   const { state, actions } = useApp();
   const { tabs, layouts, activeTabId } = state;
-  const { splitPane, dropOnPane, detachPane, focusPane, setPaneRatio, removeTab, disconnectSession, setTabColor, setTabAlias } = actions;
+  const { splitPane, dropOnPane, detachPane, focusPane, seePane, setPaneRatio, removeTab, disconnectSession, setTabColor, setTabAlias } = actions;
+  const visualAlerts = state.settings?.terminal?.visualAlerts !== false;
   const drag = useDrag();
 
   const stageRef = useRef(null);
@@ -337,8 +338,15 @@ export default function SessionStage() {
             data-pane-id={id}
             style={color ? { ...style, '--pane-color': color } : style}
             onFocus={shown && multi ? () => focusPane(groupId, id) : undefined}
-            onMouseDownCapture={shown && multi ? () => focusPane(groupId, id) : undefined}
+            onMouseDownCapture={shown ? () => (multi ? focusPane(groupId, id) : tab.doneAt && seePane(id)) : undefined}
           >
+            {/* "An agent finished here": pulses twice in the pane's colour,
+                then a thin ring until the pane is focused. An overlay with
+                pointer-events none, so nothing shifts and clicks go through;
+                keyed by doneAt so the next one pulses again. */}
+            {shown && visualAlerts && tab.doneAt && (
+              <div key={tab.doneAt} className="pane-done-glow" aria-hidden="true" />
+            )}
             {FEATURES.splitPanes && shown && (multi ? (
               <PaneHeader
                 tab={tab}
@@ -416,6 +424,9 @@ export default function SessionStage() {
       {menuLive && (
         <div className="tab-context-menu pane-context-menu" style={{ top: menu.y, left: menu.x }}>
           <button className="tab-context-menu-item" onClick={(e) => { e.stopPropagation(); startRename(menu.paneId); }}>Rename…</button>
+          <button className="tab-context-menu-item" onClick={() => actions.setTabMuted(menu.paneId, !byId.get(menu.paneId)?.muted)}>
+            {byId.get(menu.paneId)?.muted ? 'Unmute Sound' : 'Mute Sound'}
+          </button>
           <button className="tab-context-menu-item" onClick={() => detachPane(menu.paneId)}>Move to New Tab</button>
           <button className="tab-context-menu-item" onClick={() => splitPane(groupId, menu.paneId, 'horizontal')}>Split Right</button>
           <button className="tab-context-menu-item" onClick={() => splitPane(groupId, menu.paneId, 'vertical')}>Split Down</button>

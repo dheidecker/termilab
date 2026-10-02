@@ -3,6 +3,8 @@ import { normalizeSyncStatus } from '../components/Sync/helpers';
 import { mockConnect } from '../components/SFTP/fsApi';
 import * as Layout from '../components/SplitPane/layoutTree';
 import { connectTab, markAbandoned } from '../components/SplitPane/sessions';
+import { listenForAdoptions, listenForMoves, moveTabToWindow as moveTabToWindowImpl, windowInfo } from '../components/SplitPane/windowMove';
+import { FEATURES } from '../platform';
 
 const AppContext = createContext(null);
 
@@ -317,14 +319,41 @@ function baseReducer(state, action) {
         const g = Layout.groupOf(state, id);
         if (g) { focusedPane = { ...focusedPane, [g]: id }; id = g; }
       }
-      /* Opening a split tab clears the bell of every pane in it */
+      /* Opening a split tab clears the bell of every pane in it, and the
+         "done" mark of the pane that gets the keyboard (the others keep
+         theirs, and their ring, until they are focused: per pane) */
       const members = id ? Layout.collectIds(Layout.layoutOf(state.layouts, id)) : [];
+      const seen = id ? Layout.focusedPaneOf({ ...state, focusedPane }, id) : null;
       return {
         ...state,
         activeTabId: id,
         focusedPane,
-        tabs: state.tabs.map(t => members.includes(t.id) && t.notify ? { ...t, notify: false } : t),
+        tabs: state.tabs.map(t => {
+          if (!members.includes(t.id)) return t;
+          if (!t.notify && !(t.doneAt && t.id === seen)) return t;
+          const n = { ...t, notify: false };
+          if (t.id === seen) delete n.doneAt;
+          return n;
+        }),
       };
+    }
+    /* An agent finished in a pane (TerminalView's attention()): unless it is
+       the pane the user is looking at (the focused pane of the tab on screen,
+       in a focused window), it is marked "done" until seen. doneAt is a fresh
+       value each time, so the pane's glow pulses again on the next one. */
+    case 'PANE_DONE': {
+      const { id, windowFocused, at } = action.payload || {};
+      const t = state.tabs.find(x => x.id === id);
+      if (!t) return state;
+      const g = Layout.groupOf(state, id);
+      if (windowFocused && g && g === state.activeTabId && Layout.focusedPaneOf(state, g) === id) return state;
+      return { ...state, tabs: state.tabs.map(x => (x.id === id ? { ...x, doneAt: at || Date.now(), notify: false } : x)) };
+    }
+    /* The pane was focused or typed in: its done mark (ring, badge) goes */
+    case 'PANE_SEEN': {
+      const t = state.tabs.find(x => x.id === action.payload);
+      if (!t || !t.doneAt) return state;
+      return { ...state, tabs: state.tabs.map(x => { if (x.id !== t.id) return x; const n = { ...x }; delete n.doneAt; return n; }) };
     }
     case 'TAB_NOTIFY':
       /* A pane of the tab on screen is visible: no bell mark */
@@ -360,8 +389,12 @@ function baseReducer(state, action) {
       return Layout.applyModel(state, Layout.ungroup(state, action.payload));
     case 'PANE_FOCUS': {
       const { groupId, paneId } = action.payload;
-      if (state.focusedPane[groupId] === paneId) return state;
-      return { ...state, focusedPane: { ...state.focusedPane, [groupId]: paneId } };
+      const pane = state.tabs.find(t => t.id === paneId);
+      const tabs = pane && pane.doneAt
+        ? state.tabs.map(t => { if (t.id !== paneId) return t; const n = { ...t }; delete n.doneAt; return n; })
+        : state.tabs;
+      if (state.focusedPane[groupId] === paneId && tabs === state.tabs) return state;
+      return { ...state, tabs, focusedPane: { ...state.focusedPane, [groupId]: paneId } };
     }
     case 'PANE_RATIO': {
       const { groupId, path, ratio } = action.payload;
@@ -371,6 +404,31 @@ function baseReducer(state, action) {
     }
     case 'UPDATE_TAB':
       return { ...state, tabs: state.tabs.map(t => t.id === action.payload.id ? { ...t, ...action.payload } : t) };
+
+    /* A tab (all its panes) moved in from another window: same ids, same
+       sessions, its layout; each pane carries `adopt` (its serialized screen)
+       until TerminalView has restored it. See SplitPane/windowMove.js. */
+    case 'ADOPT_GROUP': {
+      const { tabs: incoming, layout, groupId, focusedPane, sessions, index } = action.payload || {};
+      if (!Array.isArray(incoming) || !incoming.length || !groupId) return state;
+      if (incoming.some(t => state.tabs.some(x => x.id === t.id))) return state;
+      const lead = incoming.find(t => t.id === groupId);
+      if (!lead) return state;
+      const others = incoming.filter(t => t.id !== groupId).map(t => ({ ...t, hidden: true }));
+      const visible = state.tabs.filter(t => !t.hidden);
+      const at = Number.isInteger(index) && index >= 0 && index < visible.length
+        ? state.tabs.indexOf(visible[index])
+        : state.tabs.length;
+      const tabs = [...state.tabs.slice(0, at), { ...lead, hidden: false }, ...state.tabs.slice(at), ...others];
+      return {
+        ...state,
+        tabs,
+        layouts: layout ? { ...state.layouts, [groupId]: layout } : state.layouts,
+        focusedPane: focusedPane ? { ...state.focusedPane, [groupId]: focusedPane } : state.focusedPane,
+        activeSessions: { ...state.activeSessions, ...(sessions || {}) },
+        activeTabId: groupId,
+      };
+    }
 
     /* ── Navigation ── */
     case 'SET_ACTIVE_SECTION':
@@ -615,6 +673,12 @@ export function AppProvider({ children }) {
        touches the host; empty = back to the host label. Lives on the tab, so
        split moves, swaps and detaching keep it (layoutTree only patches
        `hidden`). */
+    /* Silence the agent chime for one terminal, this session only */
+    setTabMuted: useCallback((tabId, muted) => {
+      if (!stateRef.current.tabs.some(t => t.id === tabId)) return;
+      dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, muted: !!muted } });
+    }, []),
+
     setTabAlias: useCallback((tabId, alias) => {
       if (!stateRef.current.tabs.some(t => t.id === tabId)) return;
       dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, alias: Layout.cleanAlias(alias) || null } });
@@ -858,12 +922,31 @@ export function AppProvider({ children }) {
     detachPane: useCallback((paneId) => dispatch({ type: 'PANE_DETACH', payload: paneId }), []),
     ungroupTab: useCallback((groupId) => dispatch({ type: 'PANE_UNGROUP', payload: groupId }), []),
     focusPane: useCallback((groupId, paneId) => dispatch({ type: 'PANE_FOCUS', payload: { groupId, paneId } }), []),
+    /* Its "agent finished" mark (pane glow, tab badge, taskbar count) goes */
+    seePane: useCallback((paneId) => dispatch({ type: 'PANE_SEEN', payload: paneId }), []),
     setPaneRatio: useCallback((groupId, path, ratio) => dispatch({ type: 'PANE_RATIO', payload: { groupId, path, ratio } }), []),
     setActiveTab: useCallback((tabId) => dispatch({ type: 'SET_ACTIVE_TAB', payload: tabId }), []),
     updateTab: useCallback((tab) => dispatch({ type: 'UPDATE_TAB', payload: tab }), []),
 
     /* Navigation */
     setActiveSection: useCallback((section) => dispatch({ type: 'SET_ACTIVE_SECTION', payload: section }), []),
+
+    /* ── Windows (desktop) ── Tabs and layouts are per window, in memory;
+       hosts, settings… are shared through the store (see the reload below). */
+    newWindow: useCallback(async (opts) => {
+      if (!FEATURES.multiWindow) return null;
+      return window.electronAPI.window.create(opts || {});
+    }, []),
+    /* [{id, number, focused, self, sessions}] */
+    listWindows: useCallback(async () => {
+      if (!FEATURES.multiWindow) return [];
+      try { return (await window.electronAPI.window.list()) || []; } catch (_) { return []; }
+    }, []),
+    /* target: a window id, or 'new' (at screen point {x, y} if given) */
+    moveTabToWindow: useCallback((groupId, target = 'new', opts = {}) => {
+      if (!FEATURES.multiWindow) return Promise.reject(new Error('Not available'));
+      return moveTabToWindowImpl({ state: stateRef.current, dispatch, groupId, target, ...opts });
+    }, []),
 
     /* Host form */
     /* `defaults` only applies to a new host, e.g. the group being browsed. */
@@ -1157,6 +1240,58 @@ export function AppProvider({ children }) {
       ssh.removeOsDetectedListener?.(listener);
     };
   }, []);
+
+  /* ── Taskbar / dock: "an agent finished" (desktop) ──
+     How many of this window's panes are done-but-unseen goes to main, which
+     shows the app-wide total as the badge; a NEW one also asks it to flash
+     this window (main does it only when the window is not focused, and stops
+     on focus). Visual alerts off = nothing unseen. */
+  const visualAlerts = state.settings?.terminal?.visualAlerts !== false;
+  const doneTabs = visualAlerts ? state.tabs.filter(t => t.doneAt) : [];
+  const unseenPanes = doneTabs.length;
+  const latestDone = doneTabs.reduce((m, t) => Math.max(m, t.doneAt), 0);
+  const flashedRef = useRef(0);
+  useEffect(() => {
+    const api = typeof window !== 'undefined' ? window.electronAPI?.window : null;
+    if (!api || typeof api.attention !== 'function') return;
+    const flash = latestDone > flashedRef.current;
+    if (flash) flashedRef.current = latestDone;
+    api.attention({ unseen: unseenPanes, flash }).catch(() => {});
+  }, [unseenPanes, latestDone]);
+
+  /* ── Several windows (desktop) ──
+     Tabs moving in and out, and another window saving hosts/settings/…: the
+     store is shared, so reload it (debounced; a merge saves several things). */
+  const { reloadStore } = actions;
+  useEffect(() => {
+    if (!FEATURES.multiWindow) return undefined;
+    const w = window.electronAPI.window;
+    windowInfo().then((info) => {
+      if (info && info.number > 1) document.title = `Termilab · Window ${info.number}`;
+    });
+    const stopMoves = listenForMoves({ dispatch, getState: () => stateRef.current });
+    const stopAdopt = listenForAdoptions({ dispatch });
+    let timer = null;
+    const changed = w.onStoreChanged(() => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { reloadStore().catch(() => {}); }, 150);
+    });
+    /* A tab of ours dropped on another window's tab bar */
+    const request = w.onMoveRequest(({ tabId, targetId, index }) => {
+      const st = stateRef.current;
+      const groupId = Layout.groupOf(st, tabId);
+      if (!groupId) return;
+      moveTabToWindowImpl({ state: st, dispatch, groupId, target: targetId, index })
+        .catch(err => console.error('[windows] move failed:', err.message));
+    });
+    return () => {
+      clearTimeout(timer);
+      stopMoves();
+      stopAdopt();
+      w.offEvents(changed);
+      w.offEvents(request);
+    };
+  }, [reloadStore]);
 
   /* A rule deleted elsewhere (a sync pull rewrites the collection) while it
      runs here would keep its tunnel open with no card left to stop it. */

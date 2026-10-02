@@ -11,6 +11,7 @@ import { hostIconBackground } from '../HostList/hostColor';
 import HostPicker from './HostPicker';
 import { DeleteDialog, NameDialog, PermissionsDialog } from './dialogs';
 import { fsFor, endpointOf, edits as editApi, onSessionClose, pathForFile } from './fsApi';
+import { borrowSession } from '../SplitPane/windowMove';
 import {
   baseName, parentPath, isRoot, segments, normalizeTyped, nameProblem, isDirLike,
   formatSize, formatDate, iconKind, kindLabel, isEditable, sortEntries,
@@ -128,6 +129,13 @@ export default function FilePane({
       if (mine?.owned) { const id = mine.sessionId; setTimeout(() => disconnectSession(id), 1500); }
     };
   }, [source?.kind, source?.hostId, host?.id, reconnect, connectSftp, disconnectSession]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Borrowing a terminal tab's session: that tab cannot move to another
+     window meanwhile (its close would no longer reach this pane). */
+  useEffect(() => {
+    if (conn.status !== 'ready' || kind !== 'remote' || conn.owned || !conn.sessionId) return undefined;
+    return borrowSession(conn.sessionId);
+  }, [conn.status, conn.sessionId, conn.owned, kind]);
 
   /* The session went away under us (server closed it, or the terminal tab we
      borrowed it from was closed). */

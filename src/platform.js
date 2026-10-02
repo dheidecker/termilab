@@ -20,6 +20,9 @@ export const FEATURES = {
   splitPanes: !IS_ANDROID,
   knownHostsFileImport: !IS_ANDROID, // reads ~/.ssh/known_hosts
   keyFileImport: !IS_ANDROID,       // needs a native file dialog
+  /* Several windows, tabs moving between them: only a main process that has
+     the window:move-* channels (the shim omits `window` entirely) */
+  multiWindow: !IS_ANDROID && typeof window !== 'undefined' && typeof window.electronAPI?.window?.moveBegin === 'function',
 };
 
 /* What the sync and unlock copy calls the machine it runs on. Desktop keeps
