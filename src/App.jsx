@@ -8,6 +8,7 @@ import SplitPane from './components/SplitPane/SplitPane';
 import SessionStage from './components/SplitPane/SessionStage';
 import { memberTabs, groupLabel, isTerminalTab } from './components/SplitPane/layoutTree';
 import { confirmCloseSessions, endSessions } from './components/SplitPane/sessions';
+import { planKeeperClose } from './components/Keeper/closePlan';
 import SFTPView from './components/SFTP/SFTPView';
 import { confirmCloseSftp } from './components/SFTP/activeTransfers';
 import Snippets from './components/Snippets/Snippets';
@@ -104,8 +105,11 @@ function AppContent() {
           const members = isTerminalTab(tab) ? memberTabs({ tabs, layouts }, activeTabId) : (tab ? [tab] : []);
           if (!confirmCloseSessions(members, groupLabel(members).label)) return;
           if (!confirmCloseSftp(tab)) return;
-          endSessions(members, disconnectSession);
-          removeTab(members.map(t => t.id));
+          planKeeperClose(members).then((plan) => {
+            if (!plan) return;
+            endSessions(members, disconnectSession, plan);
+            removeTab(members.map(t => t.id));
+          });
         }
       }
       // Ctrl+Tab / Ctrl+Shift+Tab → cycle tabs; the home tab (null) comes first

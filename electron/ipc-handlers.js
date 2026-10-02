@@ -242,6 +242,32 @@ function registerIpcHandlers(mainWindow) {
     return true;
   }));
 
+  /* Session keeper (keeper-service, ssh-service). foreground: what closing
+     the tab would interrupt; end: KILL the kept session, then disconnect;
+     list/kill: "Background sessions" over any connection to that host. */
+  ipcMain.handle('ssh:keeper-foreground', wrapHandler(async (event, sessionId) => {
+    ensureMayUse(event, sessionId, 'ssh:keeper-foreground');
+    return sshService.keeperForeground(sessionId);
+  }));
+
+  ipcMain.handle('ssh:keeper-end', wrapHandler(async (event, sessionId) => {
+    ensureMayUse(event, sessionId, 'ssh:keeper-end');
+    await sshService.keeperEnd(sessionId);
+    sftpService.closeSFTP(sessionId);
+    return true;
+  }));
+
+  ipcMain.handle('ssh:keeper-list', wrapHandler(async (event, sessionId) => {
+    ensureMayUse(event, sessionId, 'ssh:keeper-list');
+    return sshService.keeperList(sessionId);
+  }));
+
+  ipcMain.handle('ssh:keeper-kill', wrapHandler(async (event, sessionId, id) => {
+    ensureMayUse(event, sessionId, 'ssh:keeper-kill');
+    if (typeof id !== 'string' || !/^[a-z0-9]{8,40}$/.test(id)) throw new Error('Invalid session id');
+    return sshService.keeperKill(sessionId, id);
+  }));
+
   // Answer to an 'ssh:host-key-prompt' push. Unknown/expired ids are ignored.
   ipcMain.handle('ssh:host-key-response', wrapHandler(async (event, payload) => {
     const { requestId, accept } = payload || {};
@@ -880,6 +906,7 @@ function placeNear(event, opts = {}) {
 function removeIpcHandlers() {
   const channels = [
     'ssh:connect', 'ssh:disconnect', 'ssh:host-key-response',
+    'ssh:keeper-foreground', 'ssh:keeper-end', 'ssh:keeper-list', 'ssh:keeper-kill',
     'known-hosts:list', 'known-hosts:delete', 'known-hosts:import',
     'logs:list', 'logs:clear',
     'sftp:list', 'sftp:realpath', 'sftp:stat', 'sftp:mkdir', 'sftp:create-file',

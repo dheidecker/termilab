@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import DuplicateReview from './DuplicateReview';
+import BackgroundSessions from '../Keeper/BackgroundSessions';
 import { findDuplicateGroups, endpointKey, rankForKeeping } from './duplicates';
 import { parseQuickConnect } from './quickConnect';
 import {
@@ -35,6 +36,8 @@ export default function HostList() {
   const [sort, setSort] = useSortChoice('termilab.hosts.sort');
   const [tagFilter, setTagFilter] = useState([]);
   const [contextMenu, setContextMenu] = useState(null);
+  /* Host whose Background sessions (session keeper) are open */
+  const [bgHost, setBgHost] = useState(null);
   /* Colour popover from the context menu: { anchor, hostId } */
   const [colorPicker, setColorPicker] = useState(null);
   const [newMenuOpen, setNewMenuOpen] = useState(false);
@@ -188,7 +191,7 @@ export default function HostList() {
     if (IS_ANDROID) { setSheetHost(host); return; }
     /* Keep the menu on screen near the right and bottom edges */
     const x = Math.min(e.clientX, window.innerWidth - 200);
-    const y = Math.min(e.clientY, window.innerHeight - 280);
+    const y = Math.min(e.clientY, window.innerHeight - 320);
     setContextMenu({ x, y, host });
   };
 
@@ -196,6 +199,7 @@ export default function HostList() {
   const ctxConnect = () => contextMenu && handleConnect(contextMenu.host);
   const ctxNewSession = () => contextMenu && connectToHost(contextMenu.host);
   const ctxSftp = () => contextMenu && openSFTPTab(contextMenu.host);
+  const ctxBackground = () => contextMenu && setBgHost(contextMenu.host);
   const ctxEdit = () => contextMenu && openHostForm(contextMenu.host);
   const ctxDuplicate = () => {
     if (contextMenu) {
@@ -579,6 +583,8 @@ export default function HostList() {
         />
       )}
 
+      {bgHost && <BackgroundSessions host={bgHost} onClose={() => setBgHost(null)} />}
+
       {/* Context menu */}
       {contextMenu && (
         <div
@@ -597,6 +603,9 @@ export default function HostList() {
               <FolderIcon /> Open SFTP
             </button>
           )}
+          <button className="host-context-menu-item" onClick={ctxBackground}>
+            <SessionIcon /> Background Sessions
+          </button>
           <div className="host-context-separator" />
           <button className="host-context-menu-item" onClick={ctxEdit}>
             <PencilIcon /> Edit

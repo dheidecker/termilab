@@ -196,7 +196,7 @@ function start() {
   registerIpcHandlers(shim.mainWindow);
 
   sshService = require('../../electron/services/ssh-service');
-  for (const ch of ['ssh:connect', 'ssh:disconnect']) {
+  for (const ch of ['ssh:connect', 'ssh:disconnect', 'ssh:keeper-end']) {
     const original = shim.handlers.get(ch);
     shim.handlers.set(ch, async (...a) => {
       try { return await original(...a); } finally { reportSessions(); }

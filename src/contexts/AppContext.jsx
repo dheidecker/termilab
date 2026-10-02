@@ -105,9 +105,13 @@ const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
    the same host-key verification either way. */
 function buildConnectConfig(host, extra = {}) {
   const config = {
-    /* Stable per tab across restarts (workspace): opaque to main today, the
-       seam a future session keeper would attach by (ssh-service _openShell) */
+    /* Stable per tab across restarts (workspace): the session keeper on the
+       server attaches by it (ssh-service _openShell). `restored`: a restore
+       only reattaches keys this device created; `adopted`: "Attach here" on
+       a background session (sessionKey 'keeper:<id>'), never recreated. */
     ...(extra.sessionKey ? { sessionKey: extra.sessionKey } : {}),
+    ...(extra.restored ? { restored: true } : {}),
+    ...(extra.adopted ? { adopted: true } : {}),
     host: host.hostname,
     port: host.port || 22,
     username: host.username,
@@ -946,6 +950,36 @@ export function AppProvider({ children }) {
       }
     }, []),
 
+    /* "Background sessions" → Attach here: a tab bound to keeper session `id`
+       on that host (adopted: not one this device created, see buildConnectConfig) */
+    attachBackgroundSession: useCallback(async (host, id) => {
+      const tabId = crypto.randomUUID();
+      const sessionKey = `keeper:${id}`;
+      dispatch({ type: 'ADD_TAB', payload: {
+        id: tabId, type: 'terminal', label: host.label || host.hostname, sessionId: null,
+        hostId: host.id, connecting: true, hostConfig: host, sessionKey,
+      }});
+      if (!hasApi()) {
+        dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, connecting: false, error: 'Not available in the browser preview.' } });
+        return { tabId, sessionId: null };
+      }
+      return connectTab({ tabId, host, config: buildConnectConfig(host, { sessionKey, adopted: true }), ssh: api().ssh, dispatch });
+    }, []),
+
+    /* A control connection to `host` for the Background sessions list (no
+       shell, like an SFTP pane's). → {list(), end(id), close()} */
+    openBackgroundSessions: useCallback(async (host) => {
+      if (!hasApi() || typeof api().ssh.keeperList !== 'function') {
+        return { list: async () => ({ installed: false, rows: [] }), end: async () => true, close: async () => {} };
+      }
+      const { sessionId } = await api().ssh.connect({ ...buildConnectConfig(host), purpose: 'sftp' });
+      return {
+        list: () => api().ssh.keeperList(sessionId),
+        end: (id) => api().ssh.keeperKill(sessionId, id),
+        close: async () => { try { await api().ssh.disconnect(sessionId); } catch (_) { /* gone */ } },
+      };
+    }, []),
+
     disconnectSession: useCallback(async (sessionId) => {
       if (hasApi()) {
         try { await api().ssh.disconnect(sessionId); } catch (e) { /* ignore */ }
@@ -1423,7 +1457,7 @@ export function AppProvider({ children }) {
           dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, connecting: false, error: 'This host was deleted.' } });
           return null;
         }
-        return connectTab({ tabId, host, config: buildConnectConfig(host, { sessionKey: tab.sessionKey || tabId }), ssh: api().ssh, dispatch });
+        return connectTab({ tabId, host, config: buildConnectConfig(host, { sessionKey: tab.sessionKey || tabId, restored: true }), ssh: api().ssh, dispatch });
       });
       w.workspaceRestored().catch(() => {});
     })();

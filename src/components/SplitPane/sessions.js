@@ -18,13 +18,19 @@ export function confirmCloseSessions(members, label) {
   return window.confirm(`Close "${label}" and its ${members.length} panes? Any running process will be terminated.`);
 }
 
-export async function endSessions(members, disconnectSession) {
+/* plan (planKeeperClose): which kept sessions to END; the rest only detach.
+   Closing never kills a kept session otherwise: quitting, closing a window
+   or a dropped link all just detach. */
+export async function endSessions(members, disconnectSession, plan = null) {
   await Promise.all(members.map(async (t) => {
     if (!t.sessionId) return;
     if (t.type === 'local-terminal') {
       const sid = liveSessionId(t);
       if (sid) { try { await window.electronAPI?.localShell?.kill(sid); } catch (_) { /* already gone */ } }
     } else {
+      if (plan && plan.end && plan.end.has(t.id)) {
+        try { await window.electronAPI?.ssh?.keeperEnd?.(t.sessionId); } catch (_) { /* gone */ }
+      }
       await disconnectSession(t.sessionId);
     }
   }));

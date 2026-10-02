@@ -12,6 +12,7 @@ import InlineRename from '../SplitPane/InlineRename';
 import { useDrag, beginDrag, setDrag, DRAG_MIME, isLocalDrag } from '../SplitPane/dragState';
 import { cannotMove, selfWindowId, windowInfo, requestMoveHere, dropTarget } from '../SplitPane/windowMove';
 import { confirmCloseSessions, endSessions } from '../SplitPane/sessions';
+import { planKeeperClose } from '../Keeper/closePlan';
 import { tabColor } from '../HostList/hostColor';
 import { ColorPopover, anchorOf } from '../ColorPicker/ColorPicker';
 
@@ -96,7 +97,9 @@ export default function TabBar() {
     // Confirm before closing active terminal/SSH sessions
     if (!confirmCloseSessions(members, groupLabel(members).label)) return;
     if (!confirmCloseSftp(tab)) return;
-    await endSessions(members, actions.disconnectSession);
+    const plan = await planKeeperClose(members);
+    if (!plan) return;
+    await endSessions(members, actions.disconnectSession, plan);
     actions.removeTab(members.map(t => t.id));
   }, [tabs, state, actions]);
 

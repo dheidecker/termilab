@@ -7,6 +7,7 @@ import {
 } from './layoutTree';
 import { useDrag, beginDrag, setDrag } from './dragState';
 import { confirmCloseSessions, endSessions } from './sessions';
+import { planKeeperClose } from '../Keeper/closePlan';
 import { tabColor } from '../HostList/hostColor';
 import { solidHeader } from '../../themes/tint';
 import InlineRename from './InlineRename';
@@ -306,7 +307,9 @@ export default function SessionStage() {
 
   const closePane = async (tab) => {
     if (!confirmCloseSessions([tab], paneName(tab))) return;
-    await endSessions([tab], disconnectSession);
+    const plan = await planKeeperClose([tab]);
+    if (!plan) return;
+    await endSessions([tab], disconnectSession, plan);
     removeTab(tab.id);
   };
 

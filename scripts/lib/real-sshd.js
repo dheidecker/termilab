@@ -48,7 +48,13 @@ function waitForPort(port, timeoutMs, child) {
   });
 }
 
-async function startRealSshd() {
+/*
+ * opts.forceCommand: a script every session runs instead (it sees the asked
+ *   command in $SSH_ORIGINAL_COMMAND, subsystems included). The keeper suite
+ *   uses it to point HOME at a temp folder and to fake uname / noexec.
+ * opts.noSftp: no Subsystem line, so an SFTP request is refused.
+ */
+async function startRealSshd(opts = {}) {
   if (!fs.existsSync(SSHD)) throw new Error(`${SSHD} not found`);
   const sftpServer = SFTP_SERVERS.find(p => fs.existsSync(p)) || 'internal-sftp';
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'termilab-realsshd-'));
@@ -69,7 +75,8 @@ async function startRealSshd() {
     'PasswordAuthentication no',
     'KbdInteractiveAuthentication no',
     'PubkeyAuthentication yes',
-    `Subsystem sftp ${sftpServer}`,
+    ...(opts.noSftp ? [] : [`Subsystem sftp ${sftpServer}`]),
+    ...(opts.forceCommand ? [`ForceCommand ${opts.forceCommand}`] : []),
     'LogLevel ERROR',
   ].join('\n');
   const configFile = path.join(dir, 'sshd_config');
@@ -87,6 +94,7 @@ async function startRealSshd() {
   }
   return {
     port,
+    sftpServer,
     user: os.userInfo().username,
     privateKey: fs.readFileSync(userKey, 'utf-8'),
     pid: child.pid,

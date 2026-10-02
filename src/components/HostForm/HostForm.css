@@ -290,3 +290,19 @@
   color: var(--text-primary);
   border-left-color: var(--color-danger);
 }
+
+/* Keep sessions alive */
+.host-form-hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.host-form-inline-btn {
+  align-self: flex-start;
+  padding: 6px 12px;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}

@@ -4,6 +4,7 @@ const { detectOs } = require('./os-detect');
 const hostKeyService = require('./host-key-service');
 const connectionLogService = require('./connection-log-service');
 const windowRegistry = require('../window-registry');
+const keeperService = require('./keeper-service');
 
 /*
  * Auto-reconnect: when a terminal's connection drops without the user asking
@@ -34,6 +35,10 @@ class SSHService {
     this.reconnectDelays = RECONNECT_DELAYS_MS.slice();
     /* Per-attempt handshake timeout: an attempt must not eat the whole budget */
     this.reconnectAttemptTimeoutMs = 20000;
+    /* The session keeper (keeper-service). The harness turns it off for the
+       suites that test plain shells against the toy ssh2 server. */
+    this.keeperEnabled = true;
+    this.keeperPrepareCapMs = 25000;
   }
 
   setMainWindow(win) {
@@ -308,11 +313,16 @@ class SSHService {
 
   /**
    * THE place a terminal's shell is opened: the first connect and every
-   * reconnect go through here. `config.sessionKey` (stable per tab, kept in the
-   * workspace across restarts) is passed through untouched. It is the seam for
-   * a future session keeper (a Termilab-owned helper on the server that holds
-   * the pty): this function would attach to it by sessionKey instead of
-   * asking for a fresh shell. Nothing of that exists yet.
+   * reconnect go through here.
+   *
+   * Session keeper (keeper-service): when "Keep sessions alive" is on for
+   * this host and the keeper could be prepared on the server, the "shell" is
+   * `<bin> attach <id> --create` run with a pty (exec, not shell): same
+   * stream, same sendData/resize (the attach client turns the pty's SIGWINCH
+   * into the keeper's RESIZE). <id> comes from config.sessionKey (stable per
+   * tab, kept in the workspace). Anything that keeps it from working is a
+   * plain shell plus one dim line: the connect never fails because of it.
+   * Never for purpose:'sftp' (no shell at all) or port forwards (own client).
    */
   _openShell(sessionId, client, config, cb) {
     const entry = this.sessions.get(sessionId);
@@ -323,37 +333,164 @@ class SSHService {
       rows: (entry && entry.rows) || config.rows || 24,
       env: config.env || {},
     };
-    client.shell(shellOpts, cb);
+    const plain = (lines) => client.shell(shellOpts, (err, stream) => {
+      if (!err && stream) stream._termilabPreface = lines;
+      cb(err, stream);
+    });
+    (async () => {
+      if (!this.keeperEnabled || !(await keeperService.wanted(config))) return plain(null);
+      /* A slow server delays the shell, it never blocks it: past the cap the
+         terminal gets a plain shell (the prepare may still finish and cache) */
+      let capTimer = null;
+      const prep = await Promise.race([
+        keeperService.prepare(client, config),
+        new Promise((resolve) => {
+          capTimer = setTimeout(() => resolve({ fallback: true, reason: 'the server took too long to set it up', notices: [] }), this.keeperPrepareCapMs);
+        }),
+      ]);
+      clearTimeout(capTimer);
+      const notices = prep.notices || [];
+      if (prep.fallback) {
+        return plain([...notices, `Session keeping unavailable on this host (${prep.reason}): using a plain shell`]);
+      }
+      /* A reconnect reattaches the session this terminal already had */
+      const sess = (entry && entry.keeper && entry.keeper.session) || keeperService.sessionFor(config);
+      if (!sess) return plain(notices.length ? notices : null);
+      const command = keeperService.attachCommand(prep.bin, sess, shellOpts.cols, shellOpts.rows);
+      client.exec(command, { pty: { term: shellOpts.term, cols: shellOpts.cols, rows: shellOpts.rows }, env: shellOpts.env }, (err, stream) => {
+        if (err) {
+          return plain([...notices, `Session keeping unavailable on this host (${err.message}): using a plain shell`]);
+        }
+        if (sess.create && !sess.adopted) keeperService.markOwned(sess.id);
+        stream._termilabKeeper = { bin: prep.bin, session: { ...sess, create: true }, installed: prep.installed, kv: prep.kv };
+        /* An adopted session that is gone must not be recreated by a reconnect */
+        if (sess.adopted) stream._termilabKeeper.session.create = false;
+        stream._termilabNotices = notices;
+        cb(null, stream);
+      });
+    })().catch((err) => {
+      console.error('[SSHService] keeper prepare failed:', err && err.message);
+      plain([`Session keeping unavailable on this host (${err && err.message}): using a plain shell`]);
+    });
+  }
+
+  /* One dim line per notice, as terminal output */
+  _dim(lines) {
+    return lines.map(l => `\x1b[2m[${l}]\x1b[0m\r\n`).join('');
   }
 
   /* Stream -> renderer, for the stream the session carries right now */
   _wireStream(sessionId, client, stream) {
     const current = () => this.sessions.get(sessionId)?.stream === stream;
+    const s0 = this.sessions.get(sessionId);
+    const keeper = stream._termilabKeeper || null;
+    if (s0) {
+      s0.keeper = keeper;
+      s0.exitCode = null;
+      s0.keeperStderr = '';
+    }
+    /* Out to the renderer. The very first terminal of a session may not be
+       listening yet (the invoke reply is not ordered with these pushes), so a
+       keeper session's output is held until its first resize (TerminalView
+       sends one once its listeners exist), 3 s at most: losing the start of a
+       replay would lose the screen. */
+    const out = (text) => {
+      const s = this.sessions.get(sessionId);
+      if (s && s.hold) { s.hold.push(text); return; }
+      this._send('ssh:data', sessionId, text);
+    };
+    if (keeper && s0 && !s0.everWired) {
+      s0.hold = [];
+      s0.holdTimer = setTimeout(() => this._release(sessionId), 3000);
+    }
+    if (s0) s0.everWired = true;
+    if (stream._termilabPreface && stream._termilabPreface.length) out(this._dim(stream._termilabPreface));
+    /* Keeper notices go right after the replay's ESC c (which would wipe
+       anything printed before it) */
+    let notices = stream._termilabNotices && stream._termilabNotices.length ? this._dim(stream._termilabNotices) : null;
     stream.on('data', (data) => {
-      if (current()) this._send('ssh:data', sessionId, data.toString('utf-8'));
+      if (!current()) return;
+      let text = data.toString('utf-8');
+      if (notices) {
+        const i = text.indexOf('\x1bc');
+        text = i === -1 ? notices + text : text.slice(0, i + 2) + notices + text.slice(i + 2);
+        notices = null;
+      }
+      out(text);
     });
     stream.stderr.on('data', (data) => {
-      if (current()) this._send('ssh:data', sessionId, data.toString('utf-8'));
+      if (!current()) return;
+      const s = this.sessions.get(sessionId);
+      /* The attach client's own messages: kept, and said in our words at exit */
+      if (keeper && s) { if (s.keeperStderr.length < 4096) s.keeperStderr += data.toString('utf-8'); return; }
+      out(data.toString('utf-8'));
     });
     /* exit-status / exit-signal: the shell ended (`exit`, killed). That close
-       is the session's normal end, never a reason to reconnect. */
-    stream.on('exit', () => {
+       is the session's normal end, never a reason to reconnect. For the
+       keeper's attach client the code says what happened (README):
+       0 shell exited, 75 replaced, 76 killed/expired, 77 this client went
+       away (the session lives: reconnect reattaches), 101-104 errors. */
+    stream.on('exit', (code) => {
       const s = this.sessions.get(sessionId);
-      if (s && s.stream === stream) s.exited = true;
+      if (!s || s.stream !== stream) return;
+      s.exitCode = typeof code === 'number' ? code : null;
+      if (!keeper || (s.exitCode !== null && s.exitCode !== 77)) s.exited = true;
     });
     stream.on('close', () => {
       const s = this.sessions.get(sessionId);
       if (!s || s.stream !== stream || s.lost) return;
+      if (keeper && !s.exited && !s.userClosed) {
+        /* 77 / killed by a signal with the transport up: the session lives
+           on the server. Same path as a drop: a fresh transport reattaches. */
+        this._lost(sessionId, client, 'the session keeper client went away');
+        return;
+      }
       /* ssh2 emits the client's 'close' BEFORE closing its channels, so a
          dropped socket has already marked the session lost by now. A channel
          closed with the transport still up is the server ending the shell. */
-      this._send('ssh:close', sessionId);
+      this._release(sessionId);
+      const reason = keeper ? this._keeperEnd(sessionId, s) : 'exited';
+      this._send('ssh:close', sessionId, { reason });
       this._cleanup(sessionId);
-      try { client.end(); } catch (_) { /* gone */ }
+      /* keeperEnd still waits on its `kill` exec on this client: it ends it */
+      if (!s.ending) { try { client.end(); } catch (_) { /* gone */ } }
     });
     stream.on('error', (err) => {
       if (current()) this._send('ssh:error', sessionId, err.message);
     });
+  }
+
+  /* Say why a keeper session's attach ended; → the ssh:close reason */
+  _keeperEnd(sessionId, s) {
+    const code = s.exitCode;
+    const id = s.keeper && s.keeper.session && s.keeper.session.id;
+    const say = (t) => this._send('ssh:data', sessionId, t);
+    if (code === 0) { if (id) keeperService.forget(id); return 'exited'; }
+    if (code === 75) { say('\r\n\x1b[33m[Session opened elsewhere]\x1b[0m\r\n'); return 'replaced'; }
+    if (code === 76) {
+      if (id) keeperService.forget(id);
+      if (!s.ending) say('\r\n\x1b[33m[Session ended on the server (killed or expired)]\x1b[0m\r\n');
+      return 'killed';
+    }
+    if (code === 102) {
+      if (id) keeperService.forget(id);
+      say('\r\n\x1b[33m[That background session no longer exists]\x1b[0m\r\n');
+      return 'gone';
+    }
+    if (code === 126 || code === 127) keeperService.invalidate(s.config);
+    const why = (s.keeperStderr || '').replace(/\[termilab-keeper: |\]/g, '').trim().slice(0, 400);
+    say(`\r\n\x1b[31m[Session keeper error (exit ${code === null ? 'unknown' : code})${why ? `: ${why}` : ''}]\x1b[0m\r\n`);
+    return 'error';
+  }
+
+  /* Flush output held for a terminal that was not listening yet */
+  _release(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (!s || !s.hold) return;
+    clearTimeout(s.holdTimer);
+    const held = s.hold;
+    s.hold = null;
+    if (held.length) this._send('ssh:data', sessionId, held.join(''));
   }
 
   /**
@@ -368,7 +505,7 @@ class SSHService {
     const reconnectable = !s.userClosed && !s.exited && s.config.purpose !== 'sftp'
       && s.config.autoReconnect !== false && this.reconnectDelays.length > 0;
     if (!reconnectable) {
-      this._send('ssh:close', sessionId);
+      this._send('ssh:close', sessionId, { reason: s.userClosed ? 'closed' : 'lost' });
       this._cleanup(sessionId);
       return;
     }
@@ -430,7 +567,9 @@ class SSHService {
         if (gone() || s.reconnecting !== rc) return;
         s.reconnecting = null;
         s.reconnects = (s.reconnects || 0) + 1;
-        say('Reconnected');
+        /* A keeper reattach replays the screen (it starts with ESC c): a line
+           printed now would land in the middle of it */
+        if (!s.keeper) say('Reconnected');
         push('reconnected');
         return;
       } catch (err) {
@@ -443,7 +582,7 @@ class SSHService {
     if (gone()) return;
     say(`Could not reconnect${lastError ? `: ${lastError.message}` : ''}`);
     push('failed', { error: lastError ? lastError.message : null });
-    this._send('ssh:close', sessionId);
+    this._send('ssh:close', sessionId, { reason: 'lost' });
     this._cleanup(sessionId);
   }
 
@@ -500,12 +639,84 @@ class SSHService {
     if (!session) return;
     /* Remembered for the shell a reconnect opens */
     if (cols > 0 && rows > 0) { session.cols = cols; session.rows = rows; }
+    /* The terminal is listening now (it resizes once its listeners exist) */
+    if (session.hold) this._release(sessionId);
     if (!session.stream) return;
     try {
       session.stream.setWindow(rows, cols, 0, 0);
     } catch (err) {
       console.error(`[SSHService] Error resizing session ${sessionId}:`, err.message);
     }
+  }
+
+  /* ── Session keeper, for a live terminal ── */
+
+  /**
+   * What closing this tab would interrupt: {keeper:false} for a plain shell;
+   * else {keeper:true, fgCommand, isShell} (fgCommand null when the keeper
+   * could not say within 2 s).
+   */
+  async keeperForeground(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (!s || !s.keeper || !s.client || s.reconnecting) return { keeper: false };
+    try {
+      const fg = await keeperService.foreground(s.client, s.keeper.bin, s.keeper.session.id);
+      if (!fg) return { keeper: true, fgCommand: null, isShell: false, missing: true };
+      return { keeper: true, ...fg };
+    } catch (_) {
+      return { keeper: true, fgCommand: null, isShell: false };
+    }
+  }
+
+  /** End the kept session itself (KILL), not just this attach. Then disconnect. */
+  async keeperEnd(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (s && s.keeper && s.client && !s.reconnecting) {
+      /* The attach exits 76 while `kill` still runs on the same client: its
+         close must not end the client under us (see _wireStream) */
+      s.ending = true;
+      const client = s.client;
+      try { await keeperService.kill(client, s.keeper.bin, s.keeper.session.id); } catch (err) {
+        console.error(`[SSHService] keeper kill for ${sessionId} failed:`, err.message);
+      }
+      await this.disconnect(sessionId);
+      try { client.end(); } catch (_) { /* gone */ }
+      return true;
+    }
+    await this.disconnect(sessionId);
+    return true;
+  }
+
+  /**
+   * Background sessions on the server behind `sessionId` (any connection,
+   * usually an SFTP-purpose one): {installed:false} or {installed:true, rows}.
+   * Never installs anything.
+   */
+  async keeperList(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (!s || !s.client) throw new Error('Not connected');
+    const bin = await keeperService.locate(s.client);
+    if (!bin) return { installed: false, rows: [] };
+    const rows = await keeperService.list(s.client, bin);
+    return {
+      installed: true,
+      rows: rows.map(r => ({
+        id: r.id,
+        fgCommand: r.fgCommand || null,
+        created: r.created || null,
+        lastAttach: r.lastAttach || null,
+        attached: !!r.attached,
+        keeperVersion: r.keeperVersion || null,
+      })),
+    };
+  }
+
+  async keeperKill(sessionId, id) {
+    const s = this.sessions.get(sessionId);
+    if (!s || !s.client) throw new Error('Not connected');
+    const bin = await keeperService.locate(s.client);
+    if (!bin) throw new Error('The session keeper is not installed on this server');
+    return keeperService.kill(s.client, bin, id);
   }
 
   getClient(sessionId) {
@@ -522,6 +733,7 @@ class SSHService {
     const session = this.sessions.get(sessionId);
     if (session) {
       if (session.reconnecting) clearTimeout(session.reconnecting.timer);
+      clearTimeout(session.holdTimer);
       connectionLogService.end(session.logId);
       try {
         if (session.stream) {

@@ -32,11 +32,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('ssh:data', listener);
       return listener;
     },
+    /* info: {reason: exited|replaced|killed|gone|error|lost|closed} (older
+       mains send nothing) */
     onClose: (callback) => {
-      const listener = (event, sessionId) => callback(sessionId);
+      const listener = (event, sessionId, info) => callback(sessionId, info || {});
       ipcRenderer.on('ssh:close', listener);
       return listener;
     },
+    /* Session keeper. keeperForeground → {keeper:false} | {keeper:true,
+       fgCommand, isShell}; keeperEnd kills the kept session and disconnects;
+       keeperList/keeperKill take any connection to the host (purpose:'sftp'). */
+    keeperForeground: (sessionId) => invoke('ssh:keeper-foreground', sessionId),
+    keeperEnd: (sessionId) => invoke('ssh:keeper-end', sessionId),
+    keeperList: (sessionId) => invoke('ssh:keeper-list', sessionId),
+    keeperKill: (sessionId, id) => invoke('ssh:keeper-kill', sessionId, id),
     onError: (callback) => {
       const listener = (event, sessionId, error) => callback(sessionId, error);
       ipcRenderer.on('ssh:error', listener);

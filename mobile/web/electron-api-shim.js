@@ -176,10 +176,15 @@ export function createElectronAPI(transport, options = {}) {
         return listener;
       },
       onClose: (callback) => {
-        const listener = (event, sessionId) => callback(sessionId);
+        const listener = (event, sessionId, info) => callback(sessionId, info || {});
         ipc.on('ssh:close', listener);
         return listener;
       },
+      /* Session keeper: same main code as desktop (ssh-service, keeper-service) */
+      keeperForeground: (sessionId) => invoke('ssh:keeper-foreground', sessionId),
+      keeperEnd: (sessionId) => invoke('ssh:keeper-end', sessionId),
+      keeperList: (sessionId) => invoke('ssh:keeper-list', sessionId),
+      keeperKill: (sessionId, id) => invoke('ssh:keeper-kill', sessionId, id),
       onError: (callback) => {
         const listener = (event, sessionId, error) => callback(sessionId, error);
         ipc.on('ssh:error', listener);

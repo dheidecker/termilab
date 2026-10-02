@@ -24,6 +24,8 @@
  *     solo a su ventana, mudanza con bufer sin perder ni repetir, cierre.
  *  7. RESTAURAR al arrancar (R*) y RECONEXION automatica (A*),
  *     scripts/lib/check-workspace.js.
+ *  7b. SESSION KEEPER (KP*, scripts/lib/check-keeper.js) contra un sshd de
+ *     OpenSSH de verdad, sin root, con HOME en una carpeta temporal.
  *  8. TERMINAL LOCAL con no_new_privs (N*, scripts/lib/check-local-shell.js):
  *     shell fuera del arbol de procesos via systemd-run --user, de verdad si
  *     aqui hay gestor de usuario.
@@ -1351,6 +1353,14 @@ async function main() {
     }
   });
 
+  // TERMILAB_CHECK_ONLY=KP: solo el grafo + la seccion KP (iterar sobre el keeper)
+  if (process.env.TERMILAB_CHECK_ONLY === 'KP') {
+    await require('./lib/check-keeper').seccionKeeper({ check, ROOT });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo KP)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // ── K. Known hosts + historial de conexiones ─────────────
   // Todo local (ninguna de las dos colecciones esta en sync-service). Se prueba
   // antes que el sync para que el almacen sea el del primer dispositivo.
@@ -1371,6 +1381,9 @@ async function main() {
   // ── R/A. Restaurar el espacio de trabajo; reconexion automatica ──
   await require('./lib/check-workspace').seccionWorkspace({ check, ROOT });
   await require('./lib/check-workspace').seccionReconexion({ check, ROOT });
+
+  // ── KP. Session keeper contra un sshd de OpenSSH de verdad ──
+  await require('./lib/check-keeper').seccionKeeper({ check, ROOT });
 
   const cryptoService = require(path.join(ROOT, 'electron', 'services', 'crypto-service.js'));
   const storeService = require(path.join(ROOT, 'electron', 'services', 'store-service.js'));

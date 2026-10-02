@@ -425,6 +425,17 @@ export default function Settings({ fullPage = false, onBack }) {
 
             <div className="settings-field">
               <div className="settings-field-label">
+                <span>Keep sessions alive on servers</span>
+                <small>Termilab installs a small helper in ~/.termilab on Linux servers that keeps each terminal's shell running through disconnects and app restarts, and reattaches with the screen as it was. Each host can override this in its settings</small>
+              </div>
+              <button
+                className={`settings-toggle ${settings.terminal?.keepSessions !== false ? 'active' : ''}`}
+                onClick={() => update('terminal.keepSessions', !(settings.terminal?.keepSessions !== false))}
+              />
+            </div>
+
+            <div className="settings-field">
+              <div className="settings-field-label">
                 <span>Copy on Select</span>
                 <small>Automatically copy text when selected</small>
               </div>

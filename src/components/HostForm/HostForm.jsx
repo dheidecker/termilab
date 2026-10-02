@@ -5,7 +5,11 @@ import { IS_ANDROID } from '../../platform';
 import { MobileTopBar } from '../Mobile/MobileScreen';
 import { ColorSwatches } from '../ColorPicker/ColorPicker';
 import { validColor } from '../HostList/hostColor';
+import BackgroundSessions from '../Keeper/BackgroundSessions';
 import './HostForm.css';
+
+/* host.keepSessions: 'on' | 'off' | null (= Settings → Terminal) */
+const keepValue = (v) => (v === 'on' || v === 'off' ? v : 'inherit');
 
 export default function HostForm() {
   const { state, actions } = useApp();
@@ -27,7 +31,9 @@ export default function HostForm() {
     groupId: newHostDefaults?.groupId || '',
     tags: [],
     color: null,
+    keepSessions: 'inherit',
   });
+  const [showBackground, setShowBackground] = useState(false);
 
   const [tagInput, setTagInput] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -48,6 +54,7 @@ export default function HostForm() {
         groupId: editingHost.groupId || '',
         tags: editingHost.tags || [],
         color: validColor(editingHost.color),
+        keepSessions: keepValue(editingHost.keepSessions),
       });
     }
   }, [editingHost]);
@@ -121,6 +128,8 @@ export default function HostForm() {
       /* null, not undefined: the Android bridge is JSON, where an undefined
          key vanishes and saveHost's merge would keep the old colour */
       color: form.color || null,
+      /* null, not undefined, for the same reason */
+      keepSessions: form.keepSessions === 'inherit' ? null : form.keepSessions,
     };
     setSaveError(null);
     try {
@@ -292,6 +301,23 @@ export default function HostForm() {
           </div>
 
           <div className="host-form-group">
+            <label>Keep sessions alive</label>
+            <select value={form.keepSessions} onChange={e => updateField('keepSessions', e.target.value)}>
+              <option value="inherit">Default ({state.settings?.terminal?.keepSessions !== false ? 'on' : 'off'}, from Settings → Terminal)</option>
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
+            <span className="host-form-hint">
+              Shells keep running on the server through disconnects (a helper in ~/.termilab, Linux only).
+            </span>
+            {editingHost?.id && (
+              <button type="button" className="host-form-cancel host-form-inline-btn" onClick={() => setShowBackground(true)}>
+                Background sessions…
+              </button>
+            )}
+          </div>
+
+          <div className="host-form-group">
             <label>Color</label>
             <ColorSwatches value={form.color} onPick={(hex) => updateField('color', hex)} label="Color" />
           </div>
@@ -324,6 +350,12 @@ export default function HostForm() {
           </button>
         </div>}
       </div>
+      {showBackground && editingHost?.id && (
+        <BackgroundSessions
+          host={state.hosts.find(h => h.id === editingHost.id) || editingHost}
+          onClose={() => setShowBackground(false)}
+        />
+      )}
     </div>
   );
 }
