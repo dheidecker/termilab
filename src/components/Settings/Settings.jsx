@@ -425,8 +425,8 @@ export default function Settings({ fullPage = false, onBack }) {
 
             <div className="settings-field">
               <div className="settings-field-label">
-                <span>Keep sessions alive on servers</span>
-                <small>Termilab installs a small helper in ~/.termilab on Linux servers that keeps each terminal's shell running through disconnects and app restarts, and reattaches with the screen as it was. Each host can override this in its settings</small>
+                <span>Keep sessions alive</span>
+                <small>Termilab installs a small helper in ~/.termilab on Linux servers (and on this computer, for local terminals on Linux) that keeps each terminal's shell running through disconnects and app restarts, and reattaches with the screen as it was. Each host can override this in its settings</small>
               </div>
               <button
                 className={`settings-toggle ${settings.terminal?.keepSessions !== false ? 'active' : ''}`}

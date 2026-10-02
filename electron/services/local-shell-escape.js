@@ -165,5 +165,7 @@ module.exports = {
   unitName,
   launchDecision,
   stopUnit,
+  findInPath,
+  probeManager,
   _resetCache: () => { cached = null; },
 };

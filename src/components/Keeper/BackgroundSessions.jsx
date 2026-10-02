@@ -56,7 +56,7 @@ export default function BackgroundSessions({ host, onClose }) {
       opening.current = null;
       if (p) p.then(c => c.close(), () => {});
     };
-  }, [load, host.id]);
+  }, [load, host.id, host.local]);
 
   useBackHandler(true, onClose);
   useEffect(() => {
@@ -85,15 +85,15 @@ export default function BackgroundSessions({ host, onClose }) {
       <div className="keeper-modal keeper-modal-wide" role="dialog" aria-modal="true" aria-labelledby="keeper-bg-title" ref={ref}>
         <div className="keeper-modal-header">
           <h3 id="keeper-bg-title">Background sessions</h3>
-          <p>{host.label || host.hostname} — sessions kept alive on the server</p>
+          <p>{host.local ? 'This computer — local terminals kept alive in the background' : `${host.label || host.hostname} — sessions kept alive on the server`}</p>
         </div>
         <div className="keeper-modal-body">
           {state.loading && !state.rows.length && <p>Connecting…</p>}
           {state.error && <p className="keeper-error">{state.error}</p>}
           {!state.loading && !state.error && !state.installed && (
-            <p>Termilab's session keeper is not installed on this server, so nothing runs in the background.</p>
+            <p>{host.local ? 'No local terminal has been kept alive on this computer yet.' : "Termilab's session keeper is not installed on this server, so nothing runs in the background."}</p>
           )}
-          {!state.loading && !state.error && state.installed && !state.rows.length && <p>No background sessions on this server.</p>}
+          {!state.loading && !state.error && state.installed && !state.rows.length && <p>{host.local ? 'No background sessions on this computer.' : 'No background sessions on this server.'}</p>}
           {state.rows.length > 0 && (
             <ul className="keeper-list">
               {state.rows.map(row => (

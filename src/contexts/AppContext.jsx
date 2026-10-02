@@ -958,6 +958,12 @@ export function AppProvider({ children }) {
     attachBackgroundSession: useCallback(async (host, id) => {
       const tabId = crypto.randomUUID();
       const sessionKey = `keeper:${id}`;
+      /* This computer's kept sessions (local keeper): a local terminal tab
+         bound to it; TerminalView's spawn attaches and never creates */
+      if (host && host.local) {
+        dispatch({ type: 'ADD_TAB', payload: { id: tabId, type: 'local-terminal', label: 'Local Terminal', sessionId: `local-${tabId}`, sessionKey } });
+        return { tabId, sessionId: null };
+      }
       dispatch({ type: 'ADD_TAB', payload: {
         id: tabId, type: 'terminal', label: host.label || host.hostname, sessionId: null,
         hostId: host.id, connecting: true, hostConfig: host, sessionKey,
@@ -990,6 +996,13 @@ export function AppProvider({ children }) {
     /* A control connection to `host` for the Background sessions list (no
        shell, like an SFTP pane's). → {list(), end(id), close()} */
     openBackgroundSessions: useCallback(async (host) => {
+      if (host && host.local) {
+        const local = hasApi() ? api().localShell : null;
+        if (!local || typeof local.keeperList !== 'function') {
+          return { list: async () => ({ installed: false, rows: [] }), end: async () => true, close: async () => {} };
+        }
+        return { list: () => local.keeperList(), end: (id) => local.keeperKill(id), close: async () => {} };
+      }
       if (!hasApi() || typeof api().ssh.keeperList !== 'function') {
         return { list: async () => ({ installed: false, rows: [] }), end: async () => true, close: async () => {} };
       }

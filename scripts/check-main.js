@@ -29,6 +29,8 @@
  *  8. TERMINAL LOCAL con no_new_privs (N*, scripts/lib/check-local-shell.js):
  *     shell fuera del arbol de procesos via systemd-run --user, de verdad si
  *     aqui hay gestor de usuario.
+ *  8b. KEEPER LOCAL (LK*, scripts/lib/check-local-keeper.js): terminales
+ *     locales guardadas; de verdad, matando el arbol entero de "Termilab".
  *  9. BINARIOS DEL KEEPER (KB*, scripts/lib/check-keeper-files.js): manifest,
  *     sha256, ELF estatico por arquitectura, Zig fijado.
  *
@@ -1355,6 +1357,14 @@ async function main() {
     }
   });
 
+  // TERMILAB_CHECK_ONLY=LK: solo el grafo + el keeper local
+  if (process.env.TERMILAB_CHECK_ONLY === 'LK') {
+    await require('./lib/check-local-keeper').seccionLocalKeeper({ check, ROOT });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo LK)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // TERMILAB_CHECK_ONLY=KP: solo el grafo + la seccion KP (iterar sobre el keeper)
   if (process.env.TERMILAB_CHECK_ONLY === 'KP') {
     await require('./lib/check-keeper').seccionKeeper({ check, ROOT });
@@ -1373,6 +1383,8 @@ async function main() {
 
   // ── N. Terminal local con no_new_privs: shell via systemd-run (Linux) ──
   await require('./lib/check-local-shell').seccionLocalShell({ check, ROOT });
+  // ── LK. Session keeper para terminales locales (Linux) ──
+  await require('./lib/check-local-keeper').seccionLocalKeeper({ check, ROOT });
 
   // ── L/F. SFTP de dos paneles: local-fs, sshd real, transferencias ──
   await require('./lib/check-sftp').seccionSftp({ check, ROOT, getBridge: () => bridge });

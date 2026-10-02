@@ -134,7 +134,7 @@ function confirmClose(win, event) {
       buttons: ['Keep Running in Background', 'End Sessions', 'Cancel'],
       defaultId: 0,
       cancelId: 2,
-      message: plural(kept, 'This window has a session kept alive on the server.', 'This window has # sessions kept alive on the server.'),
+      message: plural(kept, 'This window has a session kept alive in the background.', 'This window has # sessions kept alive in the background.'),
       detail: 'Keep them running to reopen them later from Background sessions, or end them and every process in them.'
         + (open > kept ? ` ${plural(open - kept, 'The other open session', `The other ${open - kept} open sessions`)} will be terminated either way.` : ''),
     };

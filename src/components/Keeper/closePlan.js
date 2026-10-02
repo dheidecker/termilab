@@ -2,7 +2,8 @@
 import { askKeeperClose } from './KeeperCloseDialog';
 
 /*
- * SSH tabs whose session the keeper holds on the server (ssh-service): ask
+ * Tabs whose session a keeper holds (on the server via ssh-service, or on
+ * this computer for a kept local terminal): ask
  * main what is in the foreground (2 s cap). Only the shell, and no `cmd &` /
  * nohup jobs under it → end the kept session silently; anything else →
  * "‹cmd› is still running" with [Keep running in background] / [End
@@ -11,11 +12,24 @@ import { askKeeperClose } from './KeeperCloseDialog';
  */
 export async function planKeeperClose(members) {
   const end = new Set();
-  const ssh = typeof window !== 'undefined' ? window.electronAPI?.ssh : null;
-  if (!ssh || typeof ssh.keeperForeground !== 'function') return { end };
-  const live = members.filter(t => t.type === 'terminal' && t.sessionId && !t.connecting);
-  const infos = await Promise.all(live.map(async (t) => {
-    try { return [t, await ssh.keeperForeground(t.sessionId)]; } catch (_) { return [t, null]; }
+  const api = typeof window !== 'undefined' ? window.electronAPI : null;
+  const ssh = api?.ssh;
+  const local = api?.localShell;
+  /* Who answers for each tab: ssh-service, or the local keeper (Linux) for a
+     kept local terminal (its pty id is ptySessionId) */
+  const askFor = (t) => {
+    if (t.type === 'terminal' && t.sessionId && !t.connecting && typeof ssh?.keeperForeground === 'function') {
+      return () => ssh.keeperForeground(t.sessionId);
+    }
+    if (t.type === 'local-terminal' && t.kept && t.ptySessionId && typeof local?.keeperForeground === 'function') {
+      return () => local.keeperForeground(t.ptySessionId);
+    }
+    return null;
+  };
+  const live = members.map(t => [t, askFor(t)]).filter(([, ask]) => ask);
+  if (!live.length) return { end };
+  const infos = await Promise.all(live.map(async ([t, ask]) => {
+    try { return [t, await ask()]; } catch (_) { return [t, null]; }
   }));
   const running = [];
   for (const [t, info] of infos) {

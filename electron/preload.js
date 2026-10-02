@@ -271,6 +271,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     write: (sessionId, data) => ipcRenderer.send('local:write', sessionId, data),
     resize: (sessionId, cols, rows) => ipcRenderer.send('local:resize', sessionId, cols, rows),
     kill: (sessionId) => invoke('local:kill', sessionId),
+    /* Local session keeper (Linux): same shapes as ssh.keeper*. keeperList /
+       keeperKill take no tab: they act on this computer's kept sessions. */
+    keeperForeground: (sessionId) => invoke('local:keeper-foreground', sessionId),
+    keeperEnd: (sessionId) => invoke('local:keeper-end', sessionId),
+    keeperList: () => invoke('local:keeper-list'),
+    keeperKill: (id) => invoke('local:keeper-kill', id),
     onData: (callback) => {
       const listener = (event, sessionId, data) => callback(sessionId, data);
       ipcRenderer.on('local:data', listener);

@@ -17,6 +17,8 @@ export const FEATURES = {
   portForwarding: !IS_ANDROID,
   sftp: !IS_ANDROID,
   localTerminal: !IS_ANDROID,       // no pty on Android
+  /* Kept local sessions (local keeper): Linux desktop only */
+  localKeeper: PLATFORM === 'linux' && typeof window !== 'undefined' && typeof window.electronAPI?.localShell?.keeperList === 'function',
   splitPanes: !IS_ANDROID,
   knownHostsFileImport: !IS_ANDROID, // reads ~/.ssh/known_hosts
   keyFileImport: !IS_ANDROID,       // needs a native file dialog

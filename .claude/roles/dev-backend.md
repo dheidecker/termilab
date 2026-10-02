@@ -724,3 +724,37 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   con `attach --create` y stdin vacío (sale 77, la sesión queda suelta).
 - `N5` del arnés falla si la app Termilab instalada está abierta con
   terminales locales: cuenta sus unidades `termilab-shell-*`. No es regresión.
+
+## Keeper local (rama `feat/local-keeper`, 2026-10-02, arnés LK1–LK4h)
+
+- `local-keeper.js`: mismo binario, KV 1 sin tocar. Se copia (readFileSync, vale dentro de asar) a
+  `~/.termilab/bin/termilab-keeper-<KV>-<arch>` con las reglas del remoto (0700, sin symlink, dueño,
+  `.tmp-<rand>` O_EXCL + sha + rename). Id = `keeperIdFor(sessionKey)` como en remoto; `keeper:<id>` =
+  adoptada (nunca `--create`). Sin `owned`/deviceId: en local todo es de este equipo.
+- **Un demonio doble-forkeado NO sobrevive a Termilab si este corre en un `.service`**: en la máquina
+  del dueño Termilab vivía en `app.slice/run-r….service` (lanzador vía systemd-run). Al salir el main,
+  systemd mata el cgroup entero (KillMode=control-group). El control negativo de LK4g (crear con
+  `--create` dentro del árbol) se pone rojo justo por eso. Un `app-*.scope` de GNOME no mataría, pero
+  no se puede contar con él.
+- Por eso, con gestor de usuario, la sesión la CREA el gestor: `systemd-run --user --collect
+  --unit=termilab-keep-<id> -p Type=forking -- /bin/sh -c '<bin> attach <id> --create </dev/null
+  >/dev/null; [ $? -eq 77 ]'`. Con stdin /dev/null el attach crea y suelta (77); el demonio queda
+  reparentado al gestor (subreaper) y systemd lo adivina como MainPID: la unidad vive lo que la sesión
+  y `--collect` la recoge. Sale del gestor → NNP=0 aunque Termilab tenga NNP=1 (LK4b corre el driver
+  con `-p NoNewPrivileges=yes` y exige `nnpSelf=1`, si no la prueba no prueba nada).
+- La pestaña ejecuta SOLO el attach, directo bajo node-pty, **sin** unidad `termilab-shell-*` (la del
+  escape se para al cerrar la pestaña y mataría lo que tenga dentro). Cerrar/salir = SIGHUP → 77.
+  Sin systemd: `attach --create` directo (como antes, el demonio en nuestro cgroup).
+- Attach que muere solo (77 o señal, la pestaña abierta) → se reengancha en el mismo `sessionId`
+  (máx. 3/min; `ents` guarda el pty actual y el `onExit` viejo se ignora). 75/76/102/10x → línea + close.
+- `kill()` borra de `shells` pero no de `ents`: el `onExit` sigue emitiendo `local:close` (N5 lo exige).
+- Renderer: `local:spawn` devuelve `{sessionId, kept, notice}`; con `kept` TerminalView NO hace
+  `term.clear()` (la repetición empieza con ESC c) y fija `sessionKey` en la pestaña. `kept` saca la
+  pestaña de `window.confirm` y la mete en `planKeeperClose` (vía `localShell.keeperForeground`).
+- Jobs del shell en local: `/proc/<pid>/task/<pid>/children`, no `ps`.
+- Arnés LK: HOME en `/tmp/tlk-*` (corto: el socket tiene que caber en sun_path; con el scratchpad
+  largo el keeper se iría a `/tmp/termilab-<uid>/`, compartido). `TERMILAB_CHECK_ONLY=LK` (~40 s).
+  Copia para controles negativos: además de `electron scripts src`, enlazar `server/` (fake-sync-server
+  lee `server/api/src/server.js` al cargar).
+- Hueco conocido: una restauración local no comprueba si la sesión ya está enganchada en otro sitio
+  (otra instalación de Termilab con el mismo HOME): gana la más nueva (75 en la otra).

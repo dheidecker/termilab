@@ -58,7 +58,10 @@ export function snapshotWindow(state) {
  * From a saved window to tabs ready for the reducer:
  *  - host tab, host still saved   → terminal tab `connecting`, reconnected
  *  - host tab, host deleted since → dropped (its split heals, as on close)
- *  - local                        → a local terminal (a fresh shell)
+ *  - local                        → a local terminal with its sessionKey: on
+ *                                   Linux with the local keeper it reattaches
+ *                                   that kept session (replayed screen), else
+ *                                   a fresh shell
  *  - quick                        → a note in the tab: not reconnected
  * → { tabs, layouts, activeTabId, focusedPane, connect: [tabId…], dropped: [id…] }
  * `connect` order: the active tab's panes first, then the bar left to right,

@@ -22,6 +22,9 @@ const hostCount = (n) => `${n} ${n === 1 ? 'Host' : 'Hosts'}`;
 const matchCount = (n, total, filtering) => (filtering ? `${n} of ${hostCount(total)}` : hostCount(total));
 const hostName = (h) => h.label || h.hostname;
 
+/* The pseudo-host Background sessions shows for this computer */
+const LOCAL_MACHINE = { id: '__local__', local: true, label: 'This computer' };
+
 export default function HostList() {
   const { state, actions } = useApp();
   const { hosts, groups, activeSessions } = state;
@@ -416,6 +419,12 @@ export default function HostList() {
             <button className="hv-btn" onClick={openLocalTerminal}>
               <TerminalIcon />
               Terminal
+            </button>
+          )}
+          {/* This computer's kept local terminals (local keeper, Linux) */}
+          {FEATURES.localKeeper && (
+            <button className="hv-btn" onClick={() => setBgHost(LOCAL_MACHINE)} title="Local terminals kept alive in the background">
+              Background
             </button>
           )}
 

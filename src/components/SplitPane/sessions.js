@@ -8,8 +8,9 @@
  */
 export const liveSessionId = (tab) => (tab?.type === 'local-terminal' ? tab.ptySessionId : tab?.sessionId) || null;
 
-/* Same rule as before splits: a live local shell (or legacy 'ssh' tab) asks */
-const asks = (t) => !!t?.sessionId && (t.type === 'local-terminal' || t.type === 'ssh');
+/* Same rule as before splits: a live local shell (or legacy 'ssh' tab) asks.
+   A kept local session (local keeper) asks through planKeeperClose instead. */
+const asks = (t) => !!t?.sessionId && !t.kept && (t.type === 'local-terminal' || t.type === 'ssh');
 
 export function confirmCloseSessions(members, label) {
   const live = members.filter(asks);
@@ -26,7 +27,13 @@ export async function endSessions(members, disconnectSession, plan = null) {
     if (!t.sessionId) return;
     if (t.type === 'local-terminal') {
       const sid = liveSessionId(t);
-      if (sid) { try { await window.electronAPI?.localShell?.kill(sid); } catch (_) { /* already gone */ } }
+      if (!sid) return;
+      const local = window.electronAPI?.localShell;
+      try {
+        /* Kept: kill only detaches (the session lives on); End ends it */
+        if (plan && plan.end && plan.end.has(t.id) && local?.keeperEnd) await local.keeperEnd(sid);
+        else await local?.kill(sid);
+      } catch (_) { /* already gone */ }
     } else {
       if (plan && plan.end && plan.end.has(t.id)) {
         try { await window.electronAPI?.ssh?.keeperEnd?.(t.sessionId); } catch (_) { /* gone */ }

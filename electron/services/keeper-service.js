@@ -699,4 +699,7 @@ module.exports.isShellCommand = isShellCommand;
 module.exports.lingerRiskFrom = lingerRiskFrom;
 module.exports.localBinaries = localBinaries;
 module.exports.binDirCandidates = binDirCandidates;
+module.exports.localBinary = localBinary;
+module.exports.ADOPTED_KEY_RE = ADOPTED_KEY_RE;
+module.exports.ID_RE = ID_RE;
 module.exports.EXIT = { OK: 0, REPLACED: 75, KILLED: 76, GONE: 77, ERR: 101, NOSESSION: 102, CAP: 103, PROTO: 104 };

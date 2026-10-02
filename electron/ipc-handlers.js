@@ -58,7 +58,7 @@ const remember = (map, wc, value) => {
    sessions. main.js asks whether to keep them or end them. */
 function isKept(sid) {
   const s = sshService.sessions && sshService.sessions.get(sid);
-  return !!(s && s.keeper);
+  return !!(s && s.keeper) || localShellService.isKept(sid);
 }
 function keptSessionsOf(win) {
   if (!win || !win.webContents) return [];
@@ -76,7 +76,9 @@ function endKeptWhenClosed(win) {
 async function endWindowSessions(sessionIds, { endKept = false } = {}) {
   for (const sid of sessionIds) {
     try {
-      if (endKept && isKept(sid)) {
+      if (endKept && localShellService.isKept(sid)) {
+        await localShellService.keeperEnd(sid);
+      } else if (endKept && isKept(sid)) {
         await sshService.keeperEnd(sid);
         sftpService.closeSFTP(sid);
       } else if (sshService.isConnected(sid)) {
@@ -670,9 +672,30 @@ function registerIpcHandlers(mainWindow) {
 
   // ─── Local Shell Handlers ──────────────────────────────
 
+  /* options.sessionKey (the tab's stable key): on Linux the shell is a kept
+     session (local-keeper.js) when "Keep sessions alive" is on.
+     → { sessionId, kept, notice } */
   ipcMain.handle('local:spawn', wrapHandler(async (event, options) => {
     const sessionId = await localShellService.spawn(options, event.sender);
-    return { sessionId };
+    return { sessionId, ...localShellService.spawnInfo(sessionId) };
+  }));
+
+  /* Local session keeper: same shapes as the ssh:keeper-* channels */
+  ipcMain.handle('local:keeper-foreground', wrapHandler(async (event, sessionId) => {
+    ensureMayUse(event, sessionId, 'local:keeper-foreground');
+    return localShellService.keeperForeground(sessionId);
+  }));
+
+  ipcMain.handle('local:keeper-end', wrapHandler(async (event, sessionId) => {
+    ensureMayUse(event, sessionId, 'local:keeper-end');
+    return localShellService.keeperEnd(sessionId);
+  }));
+
+  ipcMain.handle('local:keeper-list', wrapHandler(async () => localShellService.keeperList()));
+
+  ipcMain.handle('local:keeper-kill', wrapHandler(async (event, id) => {
+    if (typeof id !== 'string') throw new Error('bad keeper id');
+    return localShellService.keeperKill(id);
   }));
 
   ipcMain.handle('local:kill', wrapHandler(async (event, sessionId) => {
@@ -971,6 +994,7 @@ function removeIpcHandlers() {
     'app:get-settings', 'app:save-settings',
     'port-forward:start', 'port-forward:stop', 'port-forward:status',
     'local:spawn', 'local:kill',
+    'local:keeper-foreground', 'local:keeper-end', 'local:keeper-list', 'local:keeper-kill',
     'dialog:open-file', 'dialog:save-file',
     'window:is-maximized',
     'window:info', 'window:list', 'window:attention', 'window:new', 'window:move-begin', 'window:move-transfer',

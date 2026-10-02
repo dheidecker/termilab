@@ -445,13 +445,15 @@ export default function TerminalView({ tab }) {
 
         /* The pty is there (spawned now, or adopted from another window):
            wire input, resize and the first fit to it */
-        const wireLocal = (realSessionId, fresh) => {
+        const wireLocal = (realSessionId, fresh, info = {}) => {
             sessionIdRef.current = realSessionId;
             sessionReady = true;
             setConnected(fresh ? true : adopt.connected !== false);
             /* tab.sessionId is only a placeholder: closing, broadcast and
-               snippets need the pty's id (not in this effect's deps) */
-            if (fresh) dispatch({ type: 'UPDATE_TAB', payload: { id: tab.id, ptySessionId: realSessionId } });
+               snippets need the pty's id (not in this effect's deps).
+               kept: a session the local keeper holds (closing asks, like SSH);
+               sessionKey is pinned so a restore reattaches the same one. */
+            if (fresh) dispatch({ type: 'UPDATE_TAB', payload: { id: tab.id, ptySessionId: realSessionId, kept: !!info.kept, sessionKey: tab.sessionKey || tab.id } });
 
             /* Flush any queued data */
             for (const item of pendingData) {
@@ -461,8 +463,10 @@ export default function TerminalView({ tab }) {
             }
             pendingData.length = 0;
 
-            /* Clear the "Opening..." message */
-            if (fresh) term.clear();
+            /* Clear the "Opening..." message. A kept session's replay starts
+               with ESC c and repaints the screen: never clear over it. */
+            if (fresh && !info.kept) term.clear();
+            if (fresh && info.notice) term.writeln(`\x1b[2m[${info.notice}]\x1b[0m`);
 
             /* Terminal -> local shell */
             term.onData((raw) => {
@@ -504,7 +508,7 @@ export default function TerminalView({ tab }) {
 
         if (adopt) {
           if (tab.ptySessionId) wireLocal(tab.ptySessionId, false);
-        } else window.electronAPI.localShell.spawn({ cols, rows })
+        } else window.electronAPI.localShell.spawn({ cols, rows, sessionKey: tab.sessionKey || tab.id })
           .then((result) => {
             const realSessionId = result?.sessionId;
             /* Closed before the pty existed: nobody else knows its id, so
@@ -514,7 +518,7 @@ export default function TerminalView({ tab }) {
               return;
             }
             if (!realSessionId) return;
-            wireLocal(realSessionId, true);
+            wireLocal(realSessionId, true, { kept: !!result.kept, notice: result.notice || null });
           })
           .catch((err) => {
             if (!mountedRef.current) return;
