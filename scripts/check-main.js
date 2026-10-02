@@ -27,6 +27,8 @@
  *  8. TERMINAL LOCAL con no_new_privs (N*, scripts/lib/check-local-shell.js):
  *     shell fuera del arbol de procesos via systemd-run --user, de verdad si
  *     aqui hay gestor de usuario.
+ *  9. BINARIOS DEL KEEPER (KB*, scripts/lib/check-keeper-files.js): manifest,
+ *     sha256, ELF estatico por arquitectura, Zig fijado.
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -1371,6 +1373,9 @@ async function main() {
   // ── R/A. Restaurar el espacio de trabajo; reconexion automatica ──
   await require('./lib/check-workspace').seccionWorkspace({ check, ROOT });
   await require('./lib/check-workspace').seccionReconexion({ check, ROOT });
+
+  // KB: binarios de termilab-keeper que viajan en los paquetes.
+  await require('./lib/check-keeper-files').seccionKeeperFiles({ check, ROOT });
 
   const cryptoService = require(path.join(ROOT, 'electron', 'services', 'crypto-service.js'));
   const storeService = require(path.join(ROOT, 'electron', 'services', 'store-service.js'));

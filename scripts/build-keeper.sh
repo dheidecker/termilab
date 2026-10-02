@@ -11,6 +11,13 @@ ZIG="${ZIG:-$HOME/opt/zig/zig}"
 [ -x "$ZIG" ] || ZIG="$(command -v zig || true)"
 [ -n "$ZIG" ] || { echo "zig not found (set ZIG=...)" >&2; exit 1; }
 
+# Pinned: another Zig (another bundled musl/clang) gives other bytes, and the
+# sha256 in manifest.json would change with no source change. Checked by
+# scripts/lib/check-keeper-files.js. Bump on purpose, together with a rebuild.
+ZIG_VERSION="0.16.0"
+got="$("$ZIG" version)"
+[ "$got" = "$ZIG_VERSION" ] || { echo "zig $got at $ZIG, need $ZIG_VERSION (pinned)" >&2; exit 1; }
+
 KV="$(sed -n 's/^#define KEEPER_VERSION \([0-9][0-9]*\).*/\1/p' "$KDIR/src/keeper.h")"
 [ -n "$KV" ] || { echo "KEEPER_VERSION not found in keeper.h" >&2; exit 1; }
 
