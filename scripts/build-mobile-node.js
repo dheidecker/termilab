@@ -41,7 +41,35 @@ async function build(outfile = DEFAULT_OUT) {
   // The plugin reads "main" from here; without it, index.js is assumed anyway.
   fs.writeFileSync(path.join(path.dirname(outfile), 'package.json'),
     JSON.stringify({ name: 'termilab-node', private: true, main: path.basename(outfile) }, null, 2) + '\n');
+  copyKeeper(path.dirname(outfile));
   return outfile;
+}
+
+/**
+ * The termilab-keeper binaries (static Linux ELF uploaded to the user's
+ * servers) go next to the bundle: <outdir>/keeper/{manifest.json,bin/<file>}.
+ * On the device the plugin copies assets/public/nodejs/ to
+ * <filesDir>/nodejs/public/, so at runtime that is
+ * path.join(__dirname, 'keeper') of the bundle. They live in assets, NOT in
+ * jniLibs: nothing strips or aligns them. Only what the manifest lists is
+ * copied, after checking size and sha256.
+ */
+function copyKeeper(outdir) {
+  const src = path.join(ROOT, 'electron', 'keeper');
+  const dst = path.join(outdir, 'keeper');
+  const manifest = JSON.parse(fs.readFileSync(path.join(src, 'manifest.json'), 'utf8'));
+  const crypto = require('crypto');
+  fs.rmSync(dst, { recursive: true, force: true });
+  fs.mkdirSync(path.join(dst, 'bin'), { recursive: true });
+  for (const [arch, b] of Object.entries(manifest.binaries)) {
+    const buf = fs.readFileSync(path.join(src, 'bin', b.file));
+    const sha = crypto.createHash('sha256').update(buf).digest('hex');
+    if (buf.length !== b.size || sha !== b.sha256) {
+      throw new Error(`keeper ${arch}: ${b.file} does not match manifest.json (run npm run keeper:build)`);
+    }
+    fs.writeFileSync(path.join(dst, 'bin', b.file), buf);
+  }
+  fs.copyFileSync(path.join(src, 'manifest.json'), path.join(dst, 'manifest.json'));
 }
 
 module.exports = { build, DEFAULT_OUT };

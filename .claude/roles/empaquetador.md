@@ -86,9 +86,10 @@ tuyos — corrige lo que compruebes que ya no es cierto.
 
 ## Android (fase 5, 2026-09-24)
 
-- **Keystore de release:** `~/.config/termilab/termilab-release.jks` + `keystore.properties` (600).
-  Nunca se regenera si existe: otra clave = ninguna instalación puede actualizar. Ese directorio
-  es también el `userData` de Electron.
+- **Keystore de release:** la ruta vigente es la del `CLAUDE.md` (`~/.termilab-signing/`); esta
+  memoria decía `~/.config/termilab/` (el `userData` de Electron), probablemente la de antes de
+  moverla. No comprobado (el clasificador bloquea listar ese directorio). Nunca se regenera si
+  existe: otra clave = ninguna instalación puede actualizar.
 - `npm run android:apk` = sync + `scripts/android-apk.js`: falla con APK sin firmar o con la
   clave debug; comprueba apksigner, `zipalign -c -P 16` y el LOAD de cada `.so` (parser ELF en JS).
   Variables de prueba: `TERMILAB_VERSION`, `TERMILAB_ABI=x86_64`, `TERMILAB_BUILD_TYPE=updateTest`,
@@ -102,3 +103,31 @@ tuyos — corrige lo que compruebes que ya no es cierto.
   feed local con `adb reverse` y `am start ... --es TERMILAB_UPDATE_URL`. Sustituir una
   debuggable por una no debuggable con la misma firma funciona. Instalar sobre la debug de
   siempre no: otra clave, hay que desinstalar.
+
+## termilab-keeper (binarios ELF para los servidores, 2026-10-02)
+
+- **Rutas en runtime:** escritorio `app.asar/electron/keeper/{manifest.json,bin/}`, leídos con el
+  `fs` parcheado de Electron (comprobado con `ELECTRON_RUN_AS_NODE=1 ./termilab script.js`: sha256
+  coinciden). Android: el plugin copia `assets/public/nodejs/` a `<filesDir>/nodejs/public/`, así
+  que es `path.join(__dirname, 'keeper')` **del bundle**, no `__dirname/../keeper` como en
+  escritorio: el servicio necesita las dos rutas.
+- **No hace falta `asarUnpack`:** el smart-unpack de electron-builder solo mira archivos con
+  `moduleRootPath` (dentro de `node_modules`); un ELF sin extensión en `electron/` se queda en el
+  asar. Tampoco los ve la firma de mac (osx-sign recorre el `.app`, no el interior del asar).
+- **En el APK van en `assets/`, comprimidos (Defl), nunca en `lib/`:** no los toca strip ni
+  zipalign, y `android-apk.js` solo valida `lib/*.so`. El plugin los copia sin bit de ejecución
+  (irrelevante: se suben por SFTP).
+- **Peso:** 304 KB crudos (4 arquitecturas); ~152 KB en xz (deb/pacman), ~166 KB zstd, ~183 KB
+  gzip; en el APK, 190 KB medidos. Estimación por compresión, no diff de dos builds reales.
+- **Zig 0.16.0 fijado** en `build-keeper.sh`; con caché caliente el build tarda <1 s y da el mismo
+  sha256 (reproducible comprobado).
+- **Trampa de worktree: `node_modules` como symlink rompe el empaquetado.** electron-builder 26
+  avisa `cannot find path for dependency` y mete 11 de las 32 dependencias de primer nivel
+  (faltaban asn1, js-yaml, graceful-fs...): el paquete sale con código 0 y roto. En un worktree,
+  copia `node_modules` (`cp -a --reflink=auto`) en vez de enlazarlo, antes de `pack`/`dist`.
+- **`npm run android:debug` hace `adb install -r`** en el dispositivo que haya conectado. Para
+  solo construir: `npm run android:sync` y luego `./gradlew assembleDebug -PtermilabAbis=...` en
+  `mobile/android`.
+- **Sin comprobar:** la extracción del keeper en un dispositivo real (se dedujo de
+  `CapacitorNodeJS.copyNodeProjectFromAPK` + el listado del APK), y los paquetes de mac/win con el
+  keeper dentro (solo se construyó `linux-unpacked`).
