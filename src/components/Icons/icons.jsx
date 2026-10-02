@@ -470,3 +470,11 @@ export const PaletteIcon = (p) => (
     <circle cx="14.5" cy="7.2" r="1.1" />
   </Svg>
 );
+
+/* A four-point spark: the Agents section (agent CLIs running in terminals) */
+export const AgentIcon = (p) => (
+  <Svg {...p}>
+    <path d="M11 3.5c.5 3.9 2.6 6 6.5 6.5-3.9.5-6 2.6-6.5 6.5-.5-3.9-2.6-6-6.5-6.5 3.9-.5 6-2.6 6.5-6.5z" />
+    <path d="M18.5 15.5c.2 1.6 1 2.4 2.5 2.5-1.5.2-2.3 1-2.5 2.5-.2-1.5-1-2.3-2.5-2.5 1.5-.1 2.3-.9 2.5-2.5z" />
+  </Svg>
+);

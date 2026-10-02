@@ -84,6 +84,8 @@ function attachWindow(win) {
   win.on('closed', () => {
     const owned = windowRegistry.removeWindow(wc);
     setBadge();
+    /* Its agents leave every other window's panel */
+    broadcastAgents();
     // A prompt nobody can answer any more is a rejection, not a 2-minute hang.
     hostKeyService.rejectFor(wc);
     const edits = editOwnersByWindow.get(wc) || new Set();
@@ -135,6 +137,28 @@ function attention(event, spec) {
     } catch (_) { /* not supported here */ }
   }
   return { total: setBadge(), flashed };
+}
+
+/* ─── Agents panel (window:agents*) ───
+   Each window reports its terminals running an agent CLI; every window gets
+   the merged list (its own rows marked self). A click on a row of another
+   window focuses that BrowserWindow and tells its renderer which tab. */
+function broadcastAgents() {
+  for (const e of windowRegistry.liveWindows()) {
+    windowRegistry.sendTo(e.wc, 'window:agents', windowRegistry.agentRows(e.wc));
+  }
+}
+function focusAgent(event, spec) {
+  const entry = spec && spec.windowId != null ? windowRegistry.byId(spec.windowId) : null;
+  const tabId = spec && typeof spec.tabId === 'string' ? spec.tabId : null;
+  if (!entry || !tabId || !windowRegistry.liveWindows().includes(entry)) return false;
+  const win = entry.win;
+  try {
+    if (win && typeof win.isMinimized === 'function' && win.isMinimized()) win.restore();
+    if (win && typeof win.show === 'function') win.show();
+    if (win && typeof win.focus === 'function') win.focus();
+  } catch (_) { /* gone meanwhile */ }
+  return windowRegistry.sendTo(entry.wc, 'window:activate-tab', { tabId });
 }
 
 /**
@@ -655,6 +679,16 @@ function registerIpcHandlers(mainWindow) {
   /* {unseen, flash}: this window's done-but-unseen panes; flash = a new one */
   ipcMain.handle('window:attention', wrapHandler(async (event, spec = {}) => attention(event, spec)));
 
+  /* Agents panel: this window's rows in, everybody's merged list out */
+  ipcMain.handle('window:agents-report', wrapHandler(async (event, rows) => {
+    if (!windowRegistry.setAgents(event.sender, rows)) return false;
+    broadcastAgents();
+    return true;
+  }));
+  ipcMain.handle('window:agents', wrapHandler(async (event) => windowRegistry.agentRows(event.sender)));
+  /* {windowId, tabId}: focus that window, which then opens that tab/pane */
+  ipcMain.handle('window:focus-agent', wrapHandler(async (event, spec = {}) => focusAgent(event, spec)));
+
   /* A new empty window: offset from the one asking, or at {x, y} */
   ipcMain.handle('window:new', wrapHandler(async (event, opts) => {
     const e = windowRegistry.createWindow(placeNear(event, opts));
@@ -854,6 +888,7 @@ function removeIpcHandlers() {
     'window:info', 'window:list', 'window:attention', 'window:new', 'window:move-begin', 'window:move-transfer',
     'window:take-adoptions', 'window:move-adopted', 'window:move-ready', 'window:move-abort',
     'window:request-move', 'window:drop-target',
+    'window:agents-report', 'window:agents', 'window:focus-agent',
     'system:info',
     'sync:status', 'sync:login', 'sync:logout', 'sync:now',
     'sync:devices', 'sync:revoke-device',

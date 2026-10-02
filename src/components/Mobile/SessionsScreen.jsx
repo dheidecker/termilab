@@ -6,6 +6,8 @@ import { hostIconBackground, tabColor } from '../HostList/hostColor';
 import { MobileTopBar } from './MobileScreen';
 import { sessionTabs, sessionStatus, STATUS_LABEL, closeSessionTab } from './sessions';
 import { paneName, cleanAlias } from '../SplitPane/layoutTree';
+import AgentDot from '../Agents/AgentDot';
+import { AGENT_STATE_LABEL } from '../Terminal/agentRules';
 import './Mobile.css';
 
 const SWIPE_CLOSE_PX = 96;
@@ -64,6 +66,8 @@ function SessionRow({ tab, host, groupMap, done, onOpen, onClose }) {
             <span className="m-session-name-row">
               <span className="m-session-name">{paneName(tab)}</span>
               {/* An agent finished there and it has not been opened since */}
+              {/* The agent CLI running there (working / waiting for you) */}
+              <AgentDot agent={tab.agent} />
               {done && (
                 <span className="m-session-done" role="img" aria-label="Finished" title="An agent finished here">
                   <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true">
@@ -75,6 +79,7 @@ function SessionRow({ tab, host, groupMap, done, onOpen, onClose }) {
             <span className="m-session-meta">
               <span className={`m-status-dot m-status-${status}`} aria-hidden="true" />
               {STATUS_LABEL[status]}{where ? ` · ${where}` : ''}
+              {tab.agent ? ` · ${tab.agent.name} ${AGENT_STATE_LABEL[tab.agent.state] || ''}` : ''}
             </span>
           </span>
         </button>
@@ -112,7 +117,7 @@ export default function SessionsScreen() {
                 tab={tab}
                 host={state.hosts.find(h => h.id === tab.hostId)}
                 groupMap={groupMap}
-                done={visualAlerts && !!tab.doneAt}
+                done={visualAlerts && !!tab.doneAt && tab.doneKind !== 'blocked'}
                 onOpen={() => actions.setActiveTab(tab.id)}
                 onClose={() => closeSessionTab(tab, actions)}
               />

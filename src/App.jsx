@@ -16,6 +16,7 @@ import PortForwarding from './components/PortForwarding/PortForwarding';
 import Settings from './components/Settings/Settings';
 import KnownHosts from './components/KnownHosts/KnownHosts';
 import Logs from './components/Logs/Logs';
+import AgentsPanel from './components/Agents/AgentsPanel';
 import HostKeyPrompt from './components/HostKeyPrompt/HostKeyPrompt';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
 import { FEATURES, IS_ANDROID } from './platform';
@@ -27,6 +28,7 @@ import MoreScreen from './components/Mobile/MoreScreen';
 import './App.css';
 
 const SIDEBAR_KEY = 'termilab.sidebar.collapsed';
+const SESSION_SIDEBAR_KEY = 'termilab.sidebar.overSessions';
 
 /* On a phone the full-width sidebar eats half the screen: start collapsed
    there unless the user expanded it before. Desktop default unchanged. */
@@ -47,7 +49,20 @@ function AppContent() {
   /* No session tab selected → the home tab (sidebar + section) is showing */
   const homeActive = !tabs.some(t => t.id === activeTabId);
 
+  /* Over a session tab the sidebar is hidden by default (terminals get the
+     width); the hamburger shows it there too, with its own remembered state. */
+  const [sessionSidebar, setSessionSidebar] = useState(() => {
+    try { return window.localStorage.getItem(SESSION_SIDEBAR_KEY) === '1'; } catch { return false; }
+  });
   const toggleSidebar = () => {
+    if (!homeActive) {
+      setSessionSidebar(prev => {
+        const next = !prev;
+        try { window.localStorage.setItem(SESSION_SIDEBAR_KEY, next ? '1' : '0'); } catch { /* storage blocked */ }
+        return next;
+      });
+      return;
+    }
     setSidebarCollapsed(prev => {
       const next = !prev;
       try { window.localStorage.setItem(SIDEBAR_KEY, next ? '1' : '0'); } catch { /* storage blocked */ }
@@ -122,6 +137,7 @@ function AppContent() {
       case 'snippets': return <div className="app-section-column"><Snippets /></div>;
       case 'known-hosts': return <KnownHosts />;
       case 'logs': return <Logs />;
+      case 'agents': return <AgentsPanel />;
       case 'settings': return <Settings fullPage />;
       case 'hosts':
       default: return <HostList />;
@@ -198,10 +214,13 @@ function AppContent() {
 
   return (
     <div className="app">
-      <Titlebar sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
+      <Titlebar
+        sidebarCollapsed={homeActive ? sidebarCollapsed : !sessionSidebar}
+        onToggleSidebar={toggleSidebar}
+      />
       <div className="app-body">
+        {(homeActive || sessionSidebar) && <Sidebar collapsed={sidebarCollapsed} />}
         <div className="app-home" style={{ display: homeActive ? 'flex' : 'none' }}>
-          <Sidebar collapsed={sidebarCollapsed} />
           <main className="app-section">{renderSection()}</main>
         </div>
         <div className="app-view" style={{ display: homeActive ? 'none' : 'flex' }}>

@@ -299,6 +299,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     list: () => invoke('window:list'),
     /* {unseen, flash}: done-but-unseen panes here (badge = app total); flash a new one if unfocused */
     attention: (spec) => invoke('window:attention', spec || {}),
+    /* Agents panel: report this window's [{tabId, agentId, name, state, since,
+       title, color}]; agents() = {windows, rows} of every window (own rows
+       self:true); focusAgent({windowId, tabId}) focuses that window and tab */
+    reportAgents: (rows) => invoke('window:agents-report', rows || []),
+    agents: () => invoke('window:agents'),
+    focusAgent: (spec) => invoke('window:focus-agent', spec || {}),
     /* A new, empty window: {x, y} = screen point to open at (optional) */
     create: (opts) => invoke('window:new', opts || {}),
     /* Moving a tab: see electron/window-registry.js. begin() makes main buffer
@@ -343,6 +349,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('window:move-request', listener);
       return listener;
     },
+    /* {windows, rows}: the merged agents list changed */
+    onAgents: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('window:agents', listener);
+      return listener;
+    },
+    /* {tabId}: another window's Agents panel asked for this tab */
+    onActivateTab: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('window:activate-tab', listener);
+      return listener;
+    },
     /* {collection} saved by another window (or 'all' after a sync there) */
     onStoreChanged: (cb) => {
       const listener = (event, payload) => cb(payload);
@@ -357,6 +375,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('window:move-aborted', listener);
       ipcRenderer.removeListener('window:move-request', listener);
       ipcRenderer.removeListener('window:store-changed', listener);
+      ipcRenderer.removeListener('window:agents', listener);
+      ipcRenderer.removeListener('window:activate-tab', listener);
     },
   },
 

@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { VaultIcon, ServerIcon, TerminalIcon, FolderIcon, PlusIcon, CloseIcon, BroadcastIcon, PaletteIcon } from '../Icons/icons';
 import { FEATURES } from '../../platform';
+import AgentDot from '../Agents/AgentDot';
+import { leadAgent, agentTooltip } from '../Terminal/agentRules';
 import './TabBar.css';
 import { useBackHandler } from '../../hooks/useBackHandler';
 import { confirmCloseSftp } from '../SFTP/activeTransfers';
@@ -253,8 +255,15 @@ export default function TabBar() {
           /* Panes where an agent finished and nobody looked yet: a green
              check (or how many, in a split tab). It replaces the bell mark,
              which stays only for plain bells (and visual alerts off). */
-          const done = visualAlerts ? members.filter(m => m.doneAt).length : 0;
-          const notify = !done && members.some(m => m.notify);
+          const marked = visualAlerts ? members.filter(m => m.doneAt) : [];
+          /* …or is waiting for an answer (a permission prompt): the same
+             badge in amber, with a "?" (doneKind 'blocked') */
+          const waiting = marked.filter(m => m.doneKind === 'blocked').length;
+          const done = marked.length - waiting;
+          const notify = !marked.length && members.some(m => m.notify);
+          /* The agent state dot: the most urgent pane's (working spins,
+             blocked is amber; done is the badge above, idle nothing) */
+          const agent = isTerminalTab(tab) ? leadAgent(members) : null;
           const canDrag = FEATURES.splitPanes && isTerminalTab(tab);
           /* A split tab shows its first (top-left) pane's colour */
           const lead = isTerminalTab(tab) ? members[0] : null;
@@ -292,6 +301,19 @@ export default function TabBar() {
               />
             ) : (
               <span className="tab-label">{label}</span>
+            )}
+            {agent && !(agent.state === 'blocked' && waiting > 0) && (
+              <AgentDot agent={agent} className="tab-agent-dot" />
+            )}
+            {waiting > 0 && (
+              <span
+                className={`tab-done tab-waiting${waiting > 1 ? ' count' : ''}`}
+                role="img"
+                aria-label={waiting > 1 ? `Waiting for you in ${waiting} panes` : 'Waiting for you'}
+                title={agent && agent.state === 'blocked' ? `${agentTooltip(agent)}` : 'An agent is waiting for your input'}
+              >
+                {waiting > 1 ? waiting : '?'}
+              </span>
             )}
             {done > 0 && (
               <span

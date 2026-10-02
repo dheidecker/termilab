@@ -43,6 +43,28 @@ const crypto = require('crypto');
 
 const MOVE_TIMEOUT_MS = 15000;
 
+const AGENT_STATES = new Set(['working', 'blocked', 'done', 'idle']);
+const MAX_AGENT_ROWS = 200;
+const text = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
+function cleanAgentRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  const out = [];
+  for (const r of rows.slice(0, MAX_AGENT_ROWS)) {
+    if (!r || typeof r !== 'object' || typeof r.tabId !== 'string' || !r.tabId) continue;
+    if (!AGENT_STATES.has(r.state)) continue;
+    out.push({
+      tabId: r.tabId.slice(0, 80),
+      agentId: text(r.agentId, 32),
+      name: text(r.name, 40) || 'Agent',
+      state: r.state,
+      since: Number.isFinite(r.since) ? r.since : null,
+      title: text(r.title, 120),
+      color: typeof r.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(r.color) ? r.color : null,
+    });
+  }
+  return out;
+}
+
 class WindowRegistry {
   constructor() {
     /** webContents -> { id, number, win, wc, ready, adoptions: [] } */
@@ -122,7 +144,7 @@ class WindowRegistry {
     let number = 1;
     while (used.has(number)) number++;
     const id = (win && typeof win.id === 'number') ? win.id : `w${++this._seq}`;
-    const entry = { id, number, win: win === wc ? null : win, wc, ready: false, adoptions: [], unseen: 0 };
+    const entry = { id, number, win: win === wc ? null : win, wc, ready: false, adoptions: [], unseen: 0, agents: [] };
     this._windows.set(wc, entry);
     return entry;
   }
@@ -203,6 +225,28 @@ class WindowRegistry {
 
   totalUnseen() {
     return this.liveWindows().reduce((sum, e) => sum + (e.unseen || 0), 0);
+  }
+
+  /* Agents panel: each window reports its terminals that run an agent CLI
+     (window:agents-report); every window gets the merged list, its own rows
+     marked `self`. Rows are cleaned here: they come from a renderer. A
+     closed window's rows go with its entry. */
+  setAgents(winOrWc, rows) {
+    const entry = this._windows.get(this._wc(winOrWc));
+    if (!entry) return false;
+    entry.agents = cleanAgentRows(rows);
+    return true;
+  }
+
+  /** {windows, rows:[{windowId, windowNumber, self, tabId, agentId, name, state, since, title, color}]} */
+  agentRows(selfWc) {
+    const self = this._wc(selfWc);
+    const live = this.liveWindows();
+    const rows = [];
+    for (const e of live) {
+      for (const r of e.agents || []) rows.push({ ...r, windowId: e.id, windowNumber: e.number, self: e.wc === self });
+    }
+    return { windows: live.length, rows };
   }
 
   setWindowFactory(fn) { this._factory = fn; }

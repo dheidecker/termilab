@@ -138,7 +138,7 @@ export async function moveTabToWindow({ state, dispatch, groupId, target = 'new'
       sessionIds,
       tabs: members.map((t) => {
         // eslint-disable-next-line no-unused-vars
-        const { moving, notify, adopt, doneAt, ...rest } = t;
+        const { moving, notify, adopt, doneAt, doneKind, ...rest } = t;
         return { ...rest, adopt: screens[t.id] ? { ...screens[t.id] } : { data: '', connected: false } };
       }),
     };

@@ -441,6 +441,32 @@
   animation: pane-done-pulse 0.8s ease-in-out 2;
 }
 
+/* Waiting for the user (a permission prompt, a y/n question): the same
+   ring, always amber whatever the pane's colour, so "needs you" never reads
+   as "finished" */
+.pane-done-glow.blocked {
+  --done-color: var(--color-warning);
+}
+
+.pane-agent-dot {
+  margin-left: 6px;
+}
+
+/* On a header painted in the pane's colour the tints vanish: solid amber
+   with dark ink for "needs you", the header's ink for the spinner */
+.pane-header.has-color .agent-dot-blocked {
+  background: var(--color-warning);
+  box-shadow: 0 0 0 1.5px var(--pane-head-ink);
+  color: #101318;
+}
+
+/* On a header painted in the pane's colour the accent can vanish: its ink */
+.pane-header.has-color .agent-dot-working {
+  border-color: color-mix(in srgb, var(--pane-head-ink) 30%, transparent);
+  border-top-color: var(--pane-head-ink);
+  border-right-color: var(--pane-head-ink);
+}
+
 @keyframes pane-done-pulse {
   0%, 100% {
     box-shadow:

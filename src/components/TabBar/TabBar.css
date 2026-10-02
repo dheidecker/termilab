@@ -310,6 +310,18 @@
   width: 15px;
 }
 
+/* Waiting for the user (a permission prompt): the done badge in amber */
+.tab-done.tab-waiting {
+  background: color-mix(in srgb, var(--color-warning) 24%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-warning) 50%, transparent);
+  color: var(--color-warning);
+  font-weight: 800;
+}
+
+.tab-agent-dot {
+  margin: 0 1px;
+}
+
 @keyframes bell-pulse {
   0%, 100% { opacity: 1; box-shadow: 0 0 4px rgba(240, 136, 62, 0.5); }
   50% { opacity: 0.5; box-shadow: 0 0 10px rgba(240, 136, 62, 0.9); }

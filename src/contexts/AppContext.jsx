@@ -5,6 +5,7 @@ import * as Layout from '../components/SplitPane/layoutTree';
 import { connectTab, markAbandoned } from '../components/SplitPane/sessions';
 import { listenForAdoptions, listenForMoves, moveTabToWindow as moveTabToWindowImpl, windowInfo } from '../components/SplitPane/windowMove';
 import { FEATURES } from '../platform';
+import { localAgentRows } from '../components/Agents/agentRows';
 
 const AppContext = createContext(null);
 
@@ -154,6 +155,10 @@ const initialState = {
      `status` stays null while the first sync.status() is in flight so the UI
      can tell "not signed in" from "we don't know yet". */
   sync: { available: false, loading: true, status: null },
+  /* Agents panel (desktop): every window's terminals with an agent, as main
+     merged them. null until main has sent it (and always on Android / in the
+     browser, where the panel reads this window's tabs). */
+  agentsAll: null,
 };
 
 /* ── Reducer ── */
@@ -332,7 +337,7 @@ function baseReducer(state, action) {
           if (!members.includes(t.id)) return t;
           if (!t.notify && !(t.doneAt && t.id === seen)) return t;
           const n = { ...t, notify: false };
-          if (t.id === seen) delete n.doneAt;
+          if (t.id === seen) { delete n.doneAt; delete n.doneKind; }
           return n;
         }),
       };
@@ -341,19 +346,54 @@ function baseReducer(state, action) {
        the pane the user is looking at (the focused pane of the tab on screen,
        in a focused window), it is marked "done" until seen. doneAt is a fresh
        value each time, so the pane's glow pulses again on the next one. */
+    /* kind 'blocked': the agent is waiting for the user (a permission
+       prompt…): the same mark in amber (doneKind), until seen or until it
+       stops waiting (AGENT_STATE). */
     case 'PANE_DONE': {
-      const { id, windowFocused, at } = action.payload || {};
+      const { id, windowFocused, at, kind } = action.payload || {};
       const t = state.tabs.find(x => x.id === id);
       if (!t) return state;
       const g = Layout.groupOf(state, id);
       if (windowFocused && g && g === state.activeTabId && Layout.focusedPaneOf(state, g) === id) return state;
-      return { ...state, tabs: state.tabs.map(x => (x.id === id ? { ...x, doneAt: at || Date.now(), notify: false } : x)) };
+      return { ...state, tabs: state.tabs.map(x => {
+        if (x.id !== id) return x;
+        const n = { ...x, doneAt: at || Date.now(), notify: false };
+        if (kind === 'blocked') n.doneKind = 'blocked'; else delete n.doneKind;
+        return n;
+      }) };
+    }
+    /* Which agent CLI runs in a pane and what it is doing (TerminalView,
+       agentRules.js): {id, name, state: working|blocked|done|idle, since},
+       or null. Session only, never saved. */
+    case 'AGENT_STATE': {
+      const { id, agent } = action.payload || {};
+      const t = state.tabs.find(x => x.id === id);
+      if (!t) return state;
+      const next = agent && agent.id ? { id: agent.id, name: agent.name, state: agent.state, since: agent.since } : null;
+      const prev = t.agent || null;
+      const same = (!prev && !next) || (prev && next && prev.id === next.id && prev.state === next.state && prev.since === next.since);
+      /* It stopped waiting (answered, or went on by itself): the amber mark goes */
+      const dropAmber = t.doneKind === 'blocked' && (!next || next.state !== 'blocked');
+      if (same && !dropAmber) return state;
+      return { ...state, tabs: state.tabs.map(x => {
+        if (x.id !== id) return x;
+        const n = { ...x };
+        if (next) n.agent = next; else delete n.agent;
+        if (dropAmber) { delete n.doneAt; delete n.doneKind; }
+        return n;
+      }) };
+    }
+    /* Every window's agents, merged by main (desktop): {windows, rows:[{windowId, windowNumber, self, tabId, …}]} */
+    case 'SET_AGENTS_ALL': {
+      const p = action.payload;
+      if (!p || !Array.isArray(p.rows)) return state;
+      return { ...state, agentsAll: { windows: Number.isInteger(p.windows) && p.windows > 0 ? p.windows : 1, rows: p.rows } };
     }
     /* The pane was focused or typed in: its done mark (ring, badge) goes */
     case 'PANE_SEEN': {
       const t = state.tabs.find(x => x.id === action.payload);
       if (!t || !t.doneAt) return state;
-      return { ...state, tabs: state.tabs.map(x => { if (x.id !== t.id) return x; const n = { ...x }; delete n.doneAt; return n; }) };
+      return { ...state, tabs: state.tabs.map(x => { if (x.id !== t.id) return x; const n = { ...x }; delete n.doneAt; delete n.doneKind; return n; }) };
     }
     case 'TAB_NOTIFY':
       /* A pane of the tab on screen is visible: no bell mark */
@@ -391,7 +431,7 @@ function baseReducer(state, action) {
       const { groupId, paneId } = action.payload;
       const pane = state.tabs.find(t => t.id === paneId);
       const tabs = pane && pane.doneAt
-        ? state.tabs.map(t => { if (t.id !== paneId) return t; const n = { ...t }; delete n.doneAt; return n; })
+        ? state.tabs.map(t => { if (t.id !== paneId) return t; const n = { ...t }; delete n.doneAt; delete n.doneKind; return n; })
         : state.tabs;
       if (state.focusedPane[groupId] === paneId && tabs === state.tabs) return state;
       return { ...state, tabs, focusedPane: { ...state.focusedPane, [groupId]: paneId } };
@@ -943,6 +983,17 @@ export function AppProvider({ children }) {
       try { return (await window.electronAPI.window.list()) || []; } catch (_) { return []; }
     }, []),
     /* target: a window id, or 'new' (at screen point {x, y} if given) */
+    /* Agents panel row: a tab here opens (its pane focused); one of another
+       window: main focuses that window, which opens it (window:activate-tab) */
+    focusAgent: useCallback(async (row) => {
+      if (!row || !row.tabId) return false;
+      if (row.self !== false || !FEATURES.multiWindow) {
+        if (!stateRef.current.tabs.some(t => t.id === row.tabId)) return false;
+        dispatch({ type: 'SET_ACTIVE_TAB', payload: row.tabId });
+        return true;
+      }
+      try { return await window.electronAPI.window.focusAgent({ windowId: row.windowId, tabId: row.tabId }); } catch (_) { return false; }
+    }, []),
     moveTabToWindow: useCallback((groupId, target = 'new', opts = {}) => {
       if (!FEATURES.multiWindow) return Promise.reject(new Error('Not available'));
       return moveTabToWindowImpl({ state: stateRef.current, dispatch, groupId, target, ...opts });
@@ -1258,6 +1309,31 @@ export function AppProvider({ children }) {
     if (flash) flashedRef.current = latestDone;
     api.attention({ unseen: unseenPanes, flash }).catch(() => {});
   }, [unseenPanes, latestDone]);
+
+  /* ── Agents panel (desktop, several windows) ──
+     This window's terminals that run an agent go to main, which sends every
+     window the merged list. Only when the rows change (the key). */
+  const agentRows = localAgentRows(state);
+  const agentKey = JSON.stringify(agentRows);
+  const agentRowsRef = useRef(agentRows);
+  agentRowsRef.current = agentRows;
+  useEffect(() => {
+    if (!FEATURES.multiWindow) return;
+    window.electronAPI.window.reportAgents(agentRowsRef.current).catch(() => {});
+  }, [agentKey]);
+  useEffect(() => {
+    if (!FEATURES.multiWindow) return undefined;
+    const w = window.electronAPI.window;
+    let alive = true;
+    w.agents().then((p) => { if (alive) dispatch({ type: 'SET_AGENTS_ALL', payload: p }); }).catch(() => {});
+    const onAgents = w.onAgents((p) => dispatch({ type: 'SET_AGENTS_ALL', payload: p }));
+    const onActivate = w.onActivateTab((p) => {
+      if (p && typeof p.tabId === 'string' && stateRef.current.tabs.some(t => t.id === p.tabId)) {
+        dispatch({ type: 'SET_ACTIVE_TAB', payload: p.tabId });
+      }
+    });
+    return () => { alive = false; w.offEvents(onAgents); w.offEvents(onActivate); };
+  }, []);
 
   /* ── Several windows (desktop) ──
      Tabs moving in and out, and another window saving hosts/settings/…: the

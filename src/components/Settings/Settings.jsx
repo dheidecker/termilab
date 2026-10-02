@@ -380,10 +380,14 @@ export default function Settings({ fullPage = false, onBack }) {
             <div className="settings-field">
               <div className="settings-field-label">
                 <span>Agent Sound</span>
-                <small>Chime when Claude Code, Codex or another agent rings the terminal bell at the end of a turn</small>
+                <small>A chime when Claude Code, Codex or another agent finishes a turn, and a different, rising one when it stops to ask you something (a permission prompt, a yes/no question). Test plays both</small>
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <button className="settings-test-btn" onClick={() => import('../Terminal/agentChime').then(m => m.playChime())}>Test</button>
+                <button
+                  className="settings-test-btn"
+                  title="Finished, then needs your input"
+                  onClick={() => import('../Terminal/agentChime').then(m => { m.playChime(); setTimeout(() => m.playQuestionChime(), 750); })}
+                >Test</button>
                 <button
                   className={`settings-toggle ${settings.terminal?.agentSound !== false ? 'active' : ''}`}
                   onClick={() => update('terminal.agentSound', !(settings.terminal?.agentSound !== false))}
@@ -394,7 +398,7 @@ export default function Settings({ fullPage = false, onBack }) {
             <div className="settings-field">
               <div className="settings-field-label">
                 <span>Agent Notifications</span>
-                <small>Desktop notification when it happens while Termilab is in the background</small>
+                <small>Desktop notification when an agent finishes or needs your input while Termilab is in the background</small>
               </div>
               <button
                 className={`settings-toggle ${settings.terminal?.agentNotify !== false ? 'active' : ''}`}
@@ -405,7 +409,7 @@ export default function Settings({ fullPage = false, onBack }) {
             <div className="settings-field">
               <div className="settings-field-label">
                 <span>Visual Alerts</span>
-                <small>When an agent finishes in a terminal you are not looking at: the pane glows, its tab gets a done badge and the taskbar flashes. Muting a terminal silences only the sound; these still show</small>
+                <small>When an agent finishes in a terminal you are not looking at, the pane glows, its tab gets a done badge and the taskbar flashes; when it is waiting for your answer, the same in amber. Muting a terminal silences only the sound; these still show</small>
               </div>
               <button
                 className={`settings-toggle ${settings.terminal?.visualAlerts !== false ? 'active' : ''}`}

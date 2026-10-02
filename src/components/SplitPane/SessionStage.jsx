@@ -12,6 +12,7 @@ import { solidHeader } from '../../themes/tint';
 import InlineRename from './InlineRename';
 import { ColorPopover, anchorOf } from '../ColorPicker/ColorPicker';
 import { PaletteIcon } from '../Icons/icons';
+import AgentDot from '../Agents/AgentDot';
 import './SplitPane.css';
 
 /*
@@ -161,6 +162,7 @@ function PaneHeader({ tab, color, focused, renaming, onRename, onRenamed, onSpli
             ) : (tab.label || 'Terminal')}
           </span>
         )}
+        <AgentDot agent={tab.agent} className="pane-agent-dot" />
       </div>
       <div className="pane-header-actions">
         <ColorButton onColor={onColor} />
@@ -345,7 +347,7 @@ export default function SessionStage() {
                 pointer-events none, so nothing shifts and clicks go through;
                 keyed by doneAt so the next one pulses again. */}
             {shown && visualAlerts && tab.doneAt && (
-              <div key={tab.doneAt} className="pane-done-glow" aria-hidden="true" />
+              <div key={tab.doneAt} className={`pane-done-glow${tab.doneKind === 'blocked' ? ' blocked' : ''}`} aria-hidden="true" />
             )}
             {FEATURES.splitPanes && shown && (multi ? (
               <PaneHeader

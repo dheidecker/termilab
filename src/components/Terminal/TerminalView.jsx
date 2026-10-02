@@ -9,7 +9,7 @@ import { useApp } from '../../contexts/AppContext';
 import { getTheme } from '../../themes/terminal-themes';
 import { tintTheme } from '../../themes/tint';
 import { tabColor } from '../HostList/hostColor';
-import { paneTitle } from '../SplitPane/layoutTree';
+import { paneTitle, groupOf, focusedPaneOf } from '../SplitPane/layoutTree';
 import { IS_ANDROID } from '../../platform';
 import ExtraKeys, { useStickyModifiers } from './mobile/ExtraKeys';
 import SessionHeader from './mobile/SessionHeader';
@@ -19,7 +19,8 @@ import { readClipboard, writeClipboard } from './mobile/clipboard';
 import { sessionStatus } from '../Mobile/sessions';
 import { liveSessionId } from '../SplitPane/sessions';
 import { registerTerminal, adoptedReady } from '../SplitPane/windowMove';
-import { playChime, TYPING_QUIET_MS } from './agentChime';
+import { playChime, playQuestionChime, TYPING_QUIET_MS } from './agentChime';
+import { detectAgent, screenTail, createAgentTracker, NEEDS_YOU_TEXT } from './agentRules';
 import './TerminalView.css';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
@@ -73,6 +74,9 @@ export default function TerminalView({ tab }) {
   /* The tab as it is now (alias, mute), for listeners set up once */
   const tabLiveRef = useRef(tab);
   tabLiveRef.current = tab;
+  /* Is the user looking at this pane right now (for the "needs you" alert) */
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const lastSettingsFontRef = useRef(undefined);
 
   /* The scheme, with this terminal's colour (if any) mixed into its
@@ -164,26 +168,110 @@ export default function TerminalView({ tab }) {
       term.textarea.addEventListener('focus', seen);
       term.textarea.addEventListener('keydown', seen);
     }
-    const attention = (kind, message) => {
+    const paneLabel = (live) => (live.alias ? `${live.alias} · ${live.label || 'Terminal'}` : (live.label || 'Terminal'));
+    /* An agent finished: the pane glows, its tab gets the done badge, the
+       taskbar flashes (Settings → Terminal → Visual Alerts; a muted terminal
+       still shows them, muting is about sound). The reducer skips the pane
+       the user is looking at. Visual alerts off: the old bell mark. */
+    const finished = (message) => {
       const live = tabLiveRef.current || tab;
       const ts = termSettingsRef.current || {};
-      const complaint = kind === 'bell' && Date.now() - lastTyped < TYPING_QUIET_MS;
-      /* An agent finished: the pane glows, its tab gets the done badge, the
-         taskbar flashes (Settings → Terminal → Visual Alerts; a muted
-         terminal still shows them, muting is about sound). The reducer skips
-         the pane the user is looking at. A shell complaint, or visual alerts
-         off: the old bell mark, as before. */
-      if (!complaint && ts.visualAlerts !== false) {
+      if (ts.visualAlerts !== false) {
         dispatch({ type: 'PANE_DONE', payload: { id: live.id, windowFocused: document.hasFocus(), at: Date.now() } });
       } else if (live.id !== activeTabIdRef.current) {
         dispatch({ type: 'TAB_NOTIFY', payload: live.id });
       }
-      if (complaint) return;
       if (ts.agentSound !== false && !live.muted) playChime();
       if (ts.agentNotify !== false && !document.hasFocus() && typeof Notification !== 'undefined') {
-        const name = live.alias ? `${live.alias} · ${live.label || 'Terminal'}` : (live.label || 'Terminal');
-        try { new Notification(name, { body: message || 'Finished', silent: true }); } catch (_) { /* not allowed */ }
+        try { new Notification(paneLabel(live), { body: message || 'Finished', silent: true }); } catch (_) { /* not allowed */ }
       }
+    };
+
+    /* ─── Agent state: which agent CLI runs here and what it is doing ───
+       The bottom rows of the screen are read ~300 ms after output settles
+       (and every 1.5 s while it keeps flowing: a spinner never settles) and
+       matched against agentRules.js. Only changes are dispatched (the
+       tracker compares). working → idle prompt after >= 3 s is "finished",
+       for agents that ring no bell; a permission prompt or y/n question is
+       "needs you": amber instead of green, its own chime, its own notice. */
+    const tracker = createAgentTracker(tab.agent || null);
+    let lastKey = 0;
+    const onKey = () => { lastKey = Date.now(); };
+    const publish = (agent) => {
+      const live = tabLiveRef.current || tab;
+      dispatch({ type: 'AGENT_STATE', payload: { id: live.id, agent } });
+    };
+    /* The focused pane of the tab on screen, in a focused, visible window */
+    const lookingAt = () => {
+      if (!document.hasFocus() || document.visibilityState === 'hidden') return false;
+      const st = stateRef.current;
+      const id = (tabLiveRef.current || tab).id;
+      const g = groupOf(st, id);
+      return !!g && g === st.activeTabId && focusedPaneOf(st, g) === id;
+    };
+    const needsYou = (agent) => {
+      const live = tabLiveRef.current || tab;
+      const ts = termSettingsRef.current || {};
+      if (ts.visualAlerts !== false) {
+        dispatch({ type: 'PANE_DONE', payload: { id: live.id, windowFocused: document.hasFocus(), at: Date.now(), kind: 'blocked' } });
+      }
+      if (lookingAt()) return;
+      if (ts.agentSound !== false && !live.muted) playQuestionChime();
+      if (ts.agentNotify !== false && !document.hasFocus() && typeof Notification !== 'undefined') {
+        const who = agent && agent.name ? agent.name : 'The agent';
+        try { new Notification(`${paneLabel(live)} needs your input`, { body: `${who} is waiting for you`, silent: true }); } catch (_) { /* not allowed */ }
+      }
+    };
+    const runScan = () => {
+      if (disposed) return null;
+      const prev = tracker.get();
+      const r = tracker.scan(detectAgent(screenTail(term), prev && prev.id), Date.now(),
+        { typedRecently: Date.now() - lastKey < TYPING_QUIET_MS });
+      if (r.changed) publish(r.agent);
+      if (r.event === 'blocked') needsYou(r.agent);
+      else if (r.event === 'done') finished(`${r.agent.name} finished`);
+      return r;
+    };
+    if (term.textarea) term.textarea.addEventListener('keydown', onKey);
+    const SCAN_QUIET_MS = 300;
+    const SCAN_MAX_MS = 1500;
+    let scanTimer = null;
+    let pendingSince = 0;
+    term.onWriteParsed(() => {
+      const now = Date.now();
+      if (!pendingSince) pendingSince = now;
+      clearTimeout(scanTimer);
+      scanTimer = setTimeout(() => { pendingSince = 0; scanTimer = null; runScan(); },
+        Math.max(0, Math.min(SCAN_QUIET_MS, pendingSince + SCAN_MAX_MS - now)));
+    });
+
+    /* BEL / OSC notification. A plain BEL right after typing is the shell
+       complaining: only the bell mark. Otherwise the screen gets a moment to
+       settle (the notification often comes with the prompt it is about):
+       a permission prompt on screen, or a "needs your permission" text, is
+       "needs you"; anything else is "finished", the strongest signal. */
+    const attention = (kind, message) => {
+      const live = tabLiveRef.current || tab;
+      const complaint = kind === 'bell' && Date.now() - lastTyped < TYPING_QUIET_MS;
+      if (complaint) {
+        if (live.id !== activeTabIdRef.current) dispatch({ type: 'TAB_NOTIFY', payload: live.id });
+        return;
+      }
+      setTimeout(() => {
+        if (disposed) return;
+        const r = runScan();
+        if (r && r.event) return;   // that scan already announced it
+        const cur = tracker.get();
+        if ((cur && cur.state === 'blocked') || NEEDS_YOU_TEXT.test(message || '')) {
+          needsYou(cur);
+          return;
+        }
+        /* Announced a moment ago by the working → prompt transition */
+        if (cur && cur.state === 'done' && Date.now() - cur.since < 5000) return;
+        const d = tracker.oscDone(Date.now());
+        if (d.changed) publish(d.agent);
+        finished(message);
+      }, 150);
     };
     term.onBell(() => attention('bell'));
     const oscText = (data) => (data || '').slice(0, 200);
@@ -573,6 +661,8 @@ export default function TerminalView({ tab }) {
 
     return () => {
       disposed = true;
+      clearTimeout(scanTimer);
+      if (term.textarea) term.textarea.removeEventListener('keydown', onKey);
       unregister();
       mountedRef.current = false;
       initializedRef.current = false;  // Allow re-init on StrictMode remount
