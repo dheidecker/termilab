@@ -46,3 +46,14 @@ entregar.
   A propósito NO se parece al foco (outline cuadrado 1px sólido pegado al borde). Sin animación con
   `prefers-reduced-motion`. `.tab-done` / `.m-session-done`: `--color-success` al 22% + filo 35%.
   Capturas en `/tmp/claude-1000/-home-derek-Proyectos-terminal/visual-done/`.
+
+## Estado de agente (2026-10-02, lo anotó dev-frontend)
+
+- `src/components/Agents/Agents.css`: `.agent-dot` working = anillo 9px de 1.5px girando 0.9s en `--accent`
+  (quieto con reduced-motion); blocked = 13px `--color-warning` 24% + filo 55% con "?"; done = el check verde
+  del badge. Sobre cabecera de panel con color: blocked sólido ámbar con tinta `#101318`, spinner en la tinta.
+- "Needs you" = el mismo sistema que "terminó" en ámbar: `.tab-done.tab-waiting`, `.pane-done-glow.blocked`
+  (siempre `--color-warning`, ignora el color del panel para no leerse como "terminó"). Fila bloqueada del
+  panel: borde ámbar 45% + filo izquierdo 3px. Capturas dark/light en
+  `/tmp/claude-1000/-home-derek-Proyectos-terminal/agent-status/shots/`.
+- El anillo ámbar sobre un panel morado queda flojo una vez asentado (42%); el pulso inicial sí se ve.

@@ -522,3 +522,33 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   alterna, se queda un commit atrás). Usa `.stateNode.current` o mira el DOM. Y en headless el
   `term.write` sin callback puede no parsearse hasta el siguiente frame: `write(s, cb)` y espera.
   Script: `scratchpad/shots.mjs` de la sesión 7bc25c0b.
+
+## Estado de agente por terminal y panel Agents (rama `feat/agent-status`, 2026-10-02)
+
+- **Reglas en `src/components/Terminal/agentRules.js` (puro, sin React ni xterm)**: `detectAgent(lineas, prevId)`
+  → `{id, name, state: working|blocked|idle}` o null; `createAgentTracker()` deriva `done` (working >= 3 s y
+  luego el prompt, sin tecla en los últimos 2 s) y los eventos `done`/`blocked`. Desconocido = null: una regla
+  solo contesta con SU firma en pantalla; sin firma, solo el agente que ya estaba y solo por su prompt o spinner
+  (el texto "Do you want to proceed?" lo imprime también un shell). Blocked gana solo si está **debajo** del
+  prompt de entrada (el aviso sustituye a la caja; lo citado en la conversación queda encima).
+- Claude y Codex verificados en vivo (2.1.287 / 0.128.0) con pty de python + `@xterm/headless`: el Claude
+  actual **ya no muestra "esc to interrupt"** (spinner = glifo + verbo + "…"; "✻ Baked for 8s" sin "…" es el
+  fin); el selector por defecto del aviso de confianza es "No, exit". Codex: "Booting/Starting MCP server
+  (… esc to interrupt)" al arrancar NO es turno (si no, un arranque lento sonaba a "terminó"). Gemini,
+  opencode y Aider: de cadenas conocidas, sin ver en vivo. Grabaciones y fixtures:
+  `/tmp/claude-1000/-home-derek-Proyectos-terminal/agent-status/` (`obs/rec.py`, `obs/dump.cjs`,
+  `agent-rules.test.mjs`, 67 comprobaciones, incluye reproducir las grabaciones con el mismo debounce).
+- `screenTail` quita las filas en blanco de abajo antes de tomar 18: una pantalla a medio llenar (el aviso de
+  confianza de Claude arriba del todo) daba null.
+- TerminalView: escaneo en `term.onWriteParsed`, 300 ms de calma o 1,5 s como mucho (el spinner nunca calla).
+  `tab.agent` lo pone `AGENT_STATE` y solo cuando cambia. BEL/OSC esperan 150 ms y re-escanean: con un aviso
+  de permiso en pantalla (o texto "needs your permission") es "needs you", no "terminó"; un done anunciado por
+  la transición hace < 5 s no se repite. El "needs you" es `PANE_DONE` con `kind:'blocked'` →
+  `tab.doneKind = 'blocked'` (ámbar). Todo lo que borra `doneAt` borra también `doneKind`; `AGENT_STATE` quita
+  la marca ámbar en cuanto deja de esperar. `windowMove` no lleva `doneKind`; `agent` sí viaja (el tracker del
+  destino arranca de él).
+- Panel: `localAgentRows` (Agents/agentRows.js) → `window.reportAgents` cuando cambia la clave JSON; main manda
+  `{windows, rows}` a todas (`state.agentsAll`; null en Android/navegador, que leen sus pestañas). Clic: fila
+  propia → `SET_ACTIVE_TAB`; ajena → `window.focusAgent` y la otra ventana recibe `window:activate-tab`.
+- Capturas: `agent-status/shots.mjs` escribe las pantallas grabadas en los xterm reales del modo mock (el
+  estado lo decide el motor, no se inyecta), salvo la de dos ventanas (`SET_AGENTS_ALL` a mano).

@@ -592,3 +592,14 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
 - F4 (progreso de 50 MB por SFTP) salió rojo en esta máquina (3 de 3): "sin eventos intermedios
   (2 en total)", la subida local va tan rápido que el throttle no emite nada a mitad. Parece
   temporización (nada de esto toca transferencias), pero no se comprobó contra el árbol anterior.
+
+## Panel de agentes (2026-10-02, W14)
+
+- `window:agents-report` (filas de esa ventana) → `registry.setAgents` las **limpia** (estado en lista
+  blanca, `#rrggbb` o null, textos recortados, máx. 200) y `broadcastAgents()` manda a CADA ventana
+  `registry.agentRows(wc)` = `{windows, rows}` con `windowId/windowNumber/self`. `window:agents` = lo mismo
+  bajo demanda (ventana nueva). `window:focus-agent {windowId, tabId}` restaura/show/focus esa ventana y SOLO
+  a ella le manda `window:activate-tab`. El `closed` de `attachWindow` vuelve a difundir: sin eso las filas de
+  una ventana cerrada se quedan en las demás (control negativo: W14 rojo "cerrar B no quito sus filas de A").
+- Prefijo `window:` → omitido en el shim de Android; M1 verde sin tocarlo. `ventanaFalsa` del arnés tiene
+  ahora `focus/show/restore/isMinimized/minimizar` y `focos`.
