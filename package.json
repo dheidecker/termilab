@@ -2,7 +2,7 @@
   "name": "termilab",
   "private": true,
   "version": "1.16.1",
-  "description": "Termilab — A modern SSH client for managing your servers",
+  "description": "Termilab \u2014 A modern SSH client for managing your servers",
   "license": "MIT",
   "homepage": "https://github.com/dheidecker/termilab",
   "main": "electron/main.js",
@@ -16,11 +16,11 @@
     "preview": "vite preview",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "vite build && electron-builder",
-    "pack": "vite build && electron-builder --dir",
-    "dist": "vite build && electron-builder --linux deb AppImage pacman",
-    "dist:mac": "vite build && electron-builder --mac dmg",
-    "dist:mac:universal": "vite build && electron-builder --mac dmg --universal",
-    "dist:all": "vite build && electron-builder --linux --win --mac",
+    "pack": "umask 022 && vite build && electron-builder --dir",
+    "dist": "umask 022 && vite build && electron-builder --linux deb AppImage pacman",
+    "dist:mac": "umask 022 && vite build && electron-builder --mac dmg",
+    "dist:mac:universal": "umask 022 && vite build && electron-builder --mac dmg --universal",
+    "dist:all": "umask 022 && vite build && electron-builder --linux --win --mac",
     "mobile:web": "vite build -c vite.mobile.config.js",
     "mobile:node": "node scripts/build-mobile-node.js",
     "android:sync": "npm run mobile:web && npm run mobile:node && node scripts/fetch-libnode.js && cap sync android",
@@ -113,7 +113,7 @@
       ],
       "fpm": [
         "--description",
-        "Termilab — A modern SSH client for managing your servers"
+        "Termilab \u2014 A modern SSH client for managing your servers"
       ]
     },
     "mac": {
