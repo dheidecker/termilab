@@ -149,6 +149,11 @@ artifacts from `release/`. For Linux that is **four files**: `Termilab-<v>.AppIm
 packages; each install picks its own by extension). Leave one out and that format silently stops
 updating.
 
+**Before uploading, run `node scripts/check-package-perms.js`.** electron-builder copies file modes from
+disk, and a build under umask 077 shipped 1.16.1 with `app.asar` 0600 root: the installed app could not
+read itself and every user lost Termilab after updating. The build scripts force `umask 022`; the gate
+catches anything else.
+
 Each Linux package carries `resources/package-type` (`deb` / `pacman`; the AppImage has none), and
 that file alone decides which updater class runs: `DebUpdater` → `dpkg -i`, `PacmanUpdater` →
 `pacman -U`, both through a pkexec password prompt, then relaunch. **Keep the `.pacman` extension**:
