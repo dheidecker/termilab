@@ -312,22 +312,27 @@ export default function TerminalView({ tab }) {
     const doPaste = () => {
       readClipboard().then((text) => { if (text) term.paste(text); });
     };
-    /* Space is sent by us on keydown. xterm takes printable keys from the
-       textarea's input/composition events, and on Linux (IBus/fcitx, Spanish
-       layouts with dead keys) that path sometimes swallows the space after a
-       composition: letters keep arriving but spaces don't. Sending it here
-       and cancelling the default makes it independent of that state. Right
-       after a dead key (´ + space = ´) the default path is kept. */
+    /* Right after a dead key (´ + space = ´, ´ + a = á) the default path is
+       kept, so the composed character comes from the IME as usual. */
     let afterDeadKey = false;
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown') return true;
       if (ev.key === 'Dead') { afterDeadKey = true; return true; }
       const wasDead = afterDeadKey;
       afterDeadKey = false;
-      if (!IS_ANDROID && (ev.code === 'Space' || ev.key === ' ') && !ev.ctrlKey && !ev.altKey && !ev.metaKey
+      /* Printable keys (space, letters with or without Shift, digits,
+         symbols, AltGr characters) are sent by us on keydown. xterm takes
+         them from the textarea's input/composition events, and on Linux
+         with IBus that path breaks: spaces vanish, or a stuck preedit eats
+         Shift+letter and leaves xterm's composition box (a steady blue
+         block) where the cursor was. Real compositions (dead keys,
+         keyCode 229, CJK input) still take the default path. */
+      const altGr = ev.getModifierState && ev.getModifierState('AltGraph');
+      if (!IS_ANDROID && ev.key && [...ev.key].length === 1 && !ev.metaKey
+          && (!ev.ctrlKey || altGr) && (!ev.altKey || altGr)
           && !wasDead && !ev.isComposing && ev.keyCode !== 229) {
         ev.preventDefault();
-        term.input(' ', true);
+        term.input(ev.key, true);
         return false;
       }
       const ctrl = ev.ctrlKey || ev.metaKey;
