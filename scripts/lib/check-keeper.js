@@ -32,6 +32,18 @@
  *  KP13 `exit` en el shell → ssh:close 'exited', sin reconexion.
  *  KP14 GC: tras instalar se borran otras versiones que ningun demonio usa.
  *  KP15 opcion apagada (host) o purpose:'sftp' → nunca keeper.
+ *  KP16 tope de 20 sesiones (attach sale 103) → shell normal en la misma
+ *       pestana con la linea "Too many background sessions", sin cerrar.
+ *  KP17 binario borrado tras un prepare cacheado (attach sale 127) → shell
+ *       normal; la cache se invalida y la siguiente conexion reinstala.
+ *  KP18 el attach muere justo tras cada re-enganche → 3 ciclos y para con
+ *       "Connection keeps dropping", en vez de reconectar para siempre.
+ *  KP19 auto-reconexion / restauracion con la sesion enganchada en OTRO
+ *       dispositivo → no la roba (reason 'elsewhere', error al restaurar);
+ *       takeover manual si (newest wins). Nuestro propio attach viejo aun
+ *       enganchado (sshd congelado) NO cuenta como "otro dispositivo".
+ *  KP20 cerrar con solo el shell delante pero `sleep &` debajo → jobs
+ *       ['sleep'] y closePlan pregunta; sin trabajos, cierre silencioso.
  */
 const assert = require('assert');
 const crypto = require('crypto');
@@ -163,6 +175,7 @@ async function seccionKeeper({ check, ROOT }) {
     `  *sftp*) exec '${sftpServer}' ;;`,
     '  "") exec /bin/bash -l ;;',
     'esac',
+    'if [ -f "$CTL/attach-exit" ]; then case "$SSH_ORIGINAL_COMMAND" in *termilab-keeper-*" attach "*) exit "$(cat "$CTL/attach-exit")";; esac; fi',
     'if [ -f "$CTL/noexec" ]; then case "$SSH_ORIGINAL_COMMAND" in *termilab-keeper-*) echo "Permission denied" >&2; exit 126;; esac; fi',
     'exec /bin/sh -c "$SSH_ORIGINAL_COMMAND"',
     '',
@@ -470,6 +483,155 @@ async function seccionKeeper({ check, ROOT }) {
       const sf = await sshService.connect({ ...base(sshd), purpose: 'sftp', sessionKey: clave(15) });
       assert.ok(!sshService.sessions.get(sf).keeper && !sshService.sessions.get(sf).stream);
       await sshService.disconnect(sf);
+    });
+    await check('KP16 tope de 20 sesiones (exit 103) → shell normal en la misma pestana, linea "Too many background sessions", no se cierra', async () => {
+      const env = { ...process.env, HOME: home };
+      const creadas = [];
+      try {
+        for (let i = listaLocal().length; i < 20; i++) {
+          const id = `kpcap${String(i).padStart(4, '0')}${crypto.randomBytes(2).toString('hex')}`;
+          try { execFileSync(binPath, ['attach', id, '--create'], { env, input: '', timeout: 5000, stdio: ['pipe', 'ignore', 'ignore'] }); } catch (e) { if (e.status !== 77) throw e; }
+          creadas.push(id);
+        }
+        assert.ok(listaLocal().length >= 20, `solo hay ${listaLocal().length} sesiones`);
+        const k = clave(16);
+        const s = await conecta({ sessionKey: k });
+        assert.ok(await espera(() => texto(s).includes('Too many background sessions on this server (20): close some in Host → Background sessions; using a plain shell'), 8000),
+          `sin la linea: ${JSON.stringify(texto(s).slice(-300))}`);
+        assert.ok(await pidDe(s, 'PLAIN'), 'el shell normal no responde');
+        assert.strictEqual(cierres(s).length, 0, 'cerro la pestana');
+        assert.ok(!sshService.sessions.get(s).keeper, 'sigue marcada como keeper');
+        assert.ok(!keeper.isOwned(keeper.keeperIdFor(k)), 'quedo como propia una sesion que no se creo');
+        await sshService.disconnect(s);
+      } finally {
+        for (const id of creadas) { try { execFileSync(binPath, ['kill', id], { env, timeout: 5000 }); } catch (_) { /* ya */ } }
+      }
+    });
+
+    await check('KP17 binario borrado con el prepare en cache (exit 127) → shell normal; la siguiente conexion reinstala', async () => {
+      keeper.clearCache();
+      const s0 = await conecta({ sessionKey: clave(17) });
+      assert.ok(sshService.sessions.get(s0).keeper);
+      await sshService.keeperEnd(s0);
+      fs.unlinkSync(binPath);
+      const s = await conecta({ sessionKey: clave(17) });
+      assert.ok(await espera(() => /Session keeper not found on the server \(exit 127\): using a plain shell/.test(texto(s)), 8000), `sin la linea: ${JSON.stringify(texto(s).slice(-300))}`);
+      assert.ok(await pidDe(s, 'PLAIN'), 'el shell normal no responde');
+      assert.strictEqual(cierres(s).length, 0, 'cerro la pestana');
+      await sshService.disconnect(s);
+      const s2 = await conecta({ sessionKey: clave(17) });
+      assert.ok(sshService.sessions.get(s2).keeper?.installed === true, 'la cache no se invalido: no reinstalo');
+      assert.ok(await pidDe(s2, 'PID'));
+      await sshService.keeperEnd(s2);
+    });
+
+    await check('KP18 el attach muere tras cada re-enganche → 3 ciclos y para ("Connection keeps dropping"), sin bucle', async () => {
+      const marca = path.join(ctl, 'attach-exit');
+      fs.writeFileSync(marca, '77');
+      try {
+        const s = await conecta({ sessionKey: clave(18) });
+        assert.ok(await espera(() => cierres(s).length > 0, 15000), `no paro: ${pushes(s).join(',')}`);
+        assert.strictEqual(cierres(s)[0].reason, 'lost');
+        assert.ok(texto(s).includes('Connection keeps dropping: reconnect manually'), JSON.stringify(texto(s).slice(-300)));
+        assert.strictEqual(pushes(s).filter(x => x === 'reconnected').length, 3, `ciclos: ${pushes(s).join(',')}`);
+        const n = pushes(s).length;
+        await sleep(1200);
+        assert.strictEqual(pushes(s).length, n, 'siguio reconectando tras parar');
+        assert.ok(!sshService.isConnected(s));
+      } finally { fs.unlinkSync(marca); }
+    });
+
+    await check('KP19 auto-reconexion/restauracion no roban una sesion enganchada en otro dispositivo; takeover si; nuestro attach viejo no cuenta', async () => {
+      const { spawn } = require('child_process');
+      const env = { ...process.env, HOME: home };
+      const k = clave(19);
+      const id = keeper.keeperIdFor(k);
+      /* a) nuestro propio attach viejo sigue enganchado (sshd congelado): re-engancha */
+      const antes = new Set(hijosDe(sshd.pid));
+      let s = await conecta({ sessionKey: k });
+      const pid = await pidDe(s, 'PID');
+      assert.ok(await espera(() => typeof sshService.sessions.get(s).keeper?.lastAttach === 'number', 4000), 'no leyo lastAttach tras enganchar');
+      const congelados = sshdDeConexion(hijosDe(sshd.pid).filter(p => !antes.has(p)));
+      assert.ok(congelados.length, 'no encuentro el sshd de la conexion');
+      for (const p of congelados) process.kill(p, 'SIGSTOP');
+      try {
+        sshService.sessions.get(s).client._sock.destroy();
+        assert.ok(await espera(() => pushes(s).includes('reconnected') || cierres(s).length > 0, 10000), `no reconecto: ${pushes(s)}`);
+        assert.deepStrictEqual(cierres(s), [], 'tomo nuestro attach viejo por otro dispositivo');
+        assert.strictEqual(await pidDe(s, 'PIDB'), pid);
+      } finally { for (const p of congelados) { try { process.kill(p, 'SIGKILL'); } catch (_) { /* ya */ } } }
+      /* b) corte, y mientras tanto otro dispositivo engancha: la reconexion no lo echa */
+      await sleep(1100);   // lastAttach va en segundos
+      const delays0 = sshService.reconnectDelays;
+      sshService.reconnectDelays = [1500, 200];
+      let otro = null;
+      try {
+        const antes2 = new Set(hijosDe(sshd.pid));
+        const s0 = s;
+        s = await conecta({ sessionKey: k });   // engancha la misma (el anterior sale con 75)
+        assert.ok(await espera(() => cierres(s0).length > 0, 6000));
+        assert.strictEqual(await pidDe(s, 'PIDC'), pid);
+        assert.ok(await espera(() => typeof sshService.sessions.get(s).keeper?.lastAttach === 'number', 4000));
+        await sleep(1100);
+        for (const p of sshdDeConexion(hijosDe(sshd.pid).filter(p2 => !antes2.has(p2)))) { try { process.kill(p, 'SIGKILL'); } catch (_) { /* ya */ } }
+        assert.ok(await espera(() => pushes(s).includes('lost'), 5000), 'no noto el corte');
+        assert.ok(await espera(() => listaLocal().some(r => r.id === id && !r.attached), 3000), 'el attach viejo sigue enganchado');
+        otro = spawn(binPath, ['attach', id], { env, stdio: ['pipe', 'ignore', 'ignore'] });
+        assert.ok(await espera(() => listaLocal().some(r => r.id === id && r.attached), 3000), 'el otro dispositivo no engancho');
+        assert.ok(await espera(() => cierres(s).length > 0, 8000), `no paro: ${pushes(s)}`);
+        assert.strictEqual(cierres(s)[0].reason, 'elsewhere');
+        assert.ok(texto(s).includes('This session is open on another device'));
+        assert.ok(recibido.some(([c, p]) => c === 'ssh:reconnect' && p.sessionId === s && p.state === 'failed' && p.elsewhere === true), 'sin push failed/elsewhere');
+        assert.strictEqual(otro.exitCode, null, 'la reconexion echo al otro dispositivo');
+        /* c) restaurar tampoco la toma */
+        await assert.rejects(conecta({ sessionKey: k, restored: true }), /open on another device/);
+        assert.strictEqual(otro.exitCode, null, 'restaurar echo al otro dispositivo');
+        /* d) takeover manual (Attach here): newest wins */
+        const s3 = await conecta({ sessionKey: k, restored: true, takeover: true });
+        assert.strictEqual(await pidDe(s3, 'PIDT'), pid, 'takeover no engancho la misma');
+        assert.ok(await espera(() => otro.exitCode !== null, 4000), 'el otro no fue reemplazado');
+        assert.strictEqual(otro.exitCode, 75);
+        await sshService.keeperEnd(s3);
+      } finally {
+        sshService.reconnectDelays = delays0;
+        if (otro && otro.exitCode === null) otro.kill('SIGKILL');
+      }
+    });
+
+    await check('KP20 solo el shell delante pero `sleep &` debajo → jobs y closePlan pregunta; sin trabajos, silencioso', async () => {
+      const s = await conecta({ sessionKey: clave(20) });
+      await pidDe(s, 'PID');
+      const fg0 = await sshService.keeperForeground(s);
+      assert.ok(fg0.isShell && Array.isArray(fg0.jobs) && fg0.jobs.length === 0, `sin trabajos: ${JSON.stringify(fg0)}`);
+      sshService.sendData(s, 'sleep 700 &\r');
+      let fg = null;
+      for (let i = 0; i < 20 && !(fg && fg.jobs && fg.jobs.includes('sleep')); i++) { await sleep(100); fg = await sshService.keeperForeground(s); }
+      assert.ok(fg.isShell && fg.jobs.includes('sleep'), JSON.stringify(fg));
+      await sshService.keeperEnd(s);
+      /* closePlan (renderer) con esbuild y el dialogo stubeado */
+      const esbuild = require('esbuild');
+      const out = await esbuild.build({
+        entryPoints: [path.join(ROOT, 'src', 'components', 'Keeper', 'closePlan.js')],
+        bundle: true, format: 'cjs', platform: 'node', write: false, logLevel: 'silent',
+        plugins: [{ name: 'stub-dialog', setup(b) {
+          b.onResolve({ filter: /KeeperCloseDialog/ }, () => ({ path: 'dialog', namespace: 'stub' }));
+          b.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({ contents: 'export const askKeeperClose = (r) => globalThis.__kpAsk(r);', loader: 'js' }));
+        } }],
+      });
+      const m = new Module('closePlan-arnes');
+      m._compile(out.outputFiles[0].text, 'closePlan-arnes.js');
+      const infos = { a: { keeper: true, fgCommand: 'bash', isShell: true, jobs: [] }, b: { keeper: true, fgCommand: 'bash', isShell: true, jobs: ['sleep'] }, c: { keeper: true, fgCommand: 'bash', isShell: true, jobs: null } };
+      const prevWindow = global.window;
+      const preguntas = [];
+      global.window = { electronAPI: { ssh: { keeperForeground: async (sid) => infos[sid] } } };
+      global.__kpAsk = async (r) => { preguntas.push(r); return 'keep'; };
+      try {
+        const tabs = ['a', 'b', 'c'].map(x => ({ id: `t${x}`, type: 'terminal', sessionId: x, label: x }));
+        const plan = await m.exports.planKeeperClose(tabs);
+        assert.deepStrictEqual([...plan.end].sort(), ['ta', 'tc'], `end: ${[...plan.end]}`);
+        assert.strictEqual(preguntas.length, 1);
+        assert.deepStrictEqual(preguntas[0].map(r => [r.tab.id, r.fgCommand, r.background]), [['tb', 'sleep', true]]);
+      } finally { global.window = prevWindow; delete global.__kpAsk; }
     });
   } finally {
     for (const s of abiertas) { try { await sshService.disconnect(s); } catch (_) { /* ya */ } }

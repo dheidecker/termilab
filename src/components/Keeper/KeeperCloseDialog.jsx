@@ -21,6 +21,8 @@ function KeeperCloseDialog({ running, onAnswer }) {
   }, [onAnswer]);
   const commands = [...new Set(running.map(r => r.fgCommand).filter(Boolean))];
   const what = commands.length === 1 ? commands[0] : null;
+  /* Only background jobs (`cmd &`, nohup) under an idle shell */
+  const where = running.every(r => r.background) ? ' in the background' : '';
   const title = what
     ? `${what} is still running`
     : running.length > 1 ? `${running.length} sessions are still running` : 'The session is still running';
@@ -28,7 +30,7 @@ function KeeperCloseDialog({ running, onAnswer }) {
     <div className="keeper-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onAnswer(null); }}>
       <div className="keeper-modal" role="dialog" aria-modal="true" aria-labelledby="keeper-close-title" ref={ref}>
         <div className="keeper-modal-header">
-          <h3 id="keeper-close-title">{what ? <><span className="keeper-cmd">{what}</span> is still running</> : title}</h3>
+          <h3 id="keeper-close-title">{what ? <><span className="keeper-cmd">{what}</span> is still running{where}</> : title}</h3>
           <p>{running.map(r => r.label).filter(Boolean).join(', ')}</p>
         </div>
         <div className="keeper-modal-body">

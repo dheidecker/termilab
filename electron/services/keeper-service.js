@@ -37,6 +37,7 @@ const PROBE_TIMEOUT_MS = 5000;
 const STEP_TIMEOUT_MS = 15000;
 const LIST_TIMEOUT_MS = 2000;
 const KILL_TIMEOUT_MS = 6000;
+const JOBS_TIMEOUT_MS = 1500;
 const ID_RE = /^[a-z0-9]{8,40}$/;
 const ADOPTED_KEY_RE = /^keeper:([a-z0-9]{8,40})$/;
 const BIN_NAME_RE = /^termilab-keeper-(\d+)-([a-z0-9_]+)$/;
@@ -482,13 +483,26 @@ class KeeperService {
     return parseList(r.stdout.toString('utf-8'));
   }
 
-  /** {fgCommand, isShell} of session `id`, or null when it is not listed */
+  /** {fgCommand, isShell, shellPid} of session `id`, or null when it is not listed */
   async foreground(client, bin, id) {
     const rows = await this.list(client, bin);
     const row = rows.find(x => x.id === id);
     if (!row) return null;
     const fg = typeof row.fgCommand === 'string' ? row.fgCommand : '';
-    return { fgCommand: fg || null, isShell: isShellCommand(fg) };
+    const shellPid = Number.isInteger(row.shellPid) && row.shellPid > 1 ? row.shellPid : null;
+    return { fgCommand: fg || null, isShell: isShellCommand(fg), shellPid };
+  }
+
+  /**
+   * Names of `pid`'s child processes on the server (a shell's `cmd &` /
+   * nohup jobs), by procps `ps --ppid`, else `pgrep -P` (busybox). Throws
+   * when neither answers in time.
+   */
+  async children(client, pid) {
+    if (!Number.isInteger(pid) || pid <= 1) return [];
+    const cmd = `ps -o comm= --ppid ${pid} 2>/dev/null || pgrep -l -P ${pid} 2>/dev/null | sed 's/^[0-9]* //'`;
+    const r = await run(client, cmd, { timeout: JOBS_TIMEOUT_MS, maxOut: 16384 });
+    return r.stdout.toString('utf-8').split('\n').map(l => l.trim()).filter(Boolean);
   }
 
   async kill(client, bin, id) {

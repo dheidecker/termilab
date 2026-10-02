@@ -69,7 +69,10 @@ export async function connectTab({ tabId, host, config, ssh, dispatch }) {
     /* Closed while connecting and then it failed (or the prompt was refused): nothing to report */
     if (abandoned.delete(tabId)) return { tabId, sessionId: null, abandoned: true };
     console.error('SSH connection failed:', err);
-    dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, connecting: false, error: err.message } });
+    /* A restore found its keeper session held by another device: the error
+       view offers Attach here (AppContext takeOverSession) */
+    const elsewhere = /open on another device/.test(err.message || '');
+    dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, connecting: false, error: err.message, elsewhere } });
     throw err;
   }
 }

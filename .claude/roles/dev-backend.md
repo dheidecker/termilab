@@ -709,3 +709,18 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   sobrescribir el binario EN SITIO de ETXTBSY (la subida real usa tmp+rename, no le afecta).
 - Canales nuevos `ssh:keeper-foreground|end|list|kill` (con `ensureMayUse`), en preload y en el shim
   de Android; `mobile/node/main.js` envuelve tambien `ssh:keeper-end` para `native:sessions`.
+
+## Keeper: revisión 2026-10 (arnés KP16–KP20)
+
+- **"attached" en `list` no significa "otro dispositivo"** en una reconexión:
+  tras un corte de red real el sshd del servidor tarda minutos en enterarse y
+  nuestro attach viejo sigue enganchado. `_keeperElsewhere` lo distingue por
+  `lastAttach` (reloj del servidor, en segundos) leído **tras la primera
+  salida** del attach (`_noteAttach`; antes el demonio aún no lo ha
+  estampado). Restaurar no tiene ese dato: `attached` = ajeno. KP19a congela
+  el sshd con SIGSTOP para probar el caso propio.
+- Exits 103/104/126/127 del attach → shell normal en el mismo cliente
+  (`_keeperFallback`), no cierre. 103 de verdad: 20 sesiones creadas en local
+  con `attach --create` y stdin vacío (sale 77, la sesión queda suelta).
+- `N5` del arnés falla si la app Termilab instalada está abierta con
+  terminales locales: cuenta sus unidades `termilab-shell-*`. No es regresión.

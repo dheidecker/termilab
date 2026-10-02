@@ -112,6 +112,9 @@ function buildConnectConfig(host, extra = {}) {
     ...(extra.sessionKey ? { sessionKey: extra.sessionKey } : {}),
     ...(extra.restored ? { restored: true } : {}),
     ...(extra.adopted ? { adopted: true } : {}),
+    /* A manual Attach here on a tab whose session another device holds:
+       newest wins (restore/auto-reconnect never take it, see _openShell) */
+    ...(extra.takeover ? { takeover: true } : {}),
     host: host.hostname,
     port: host.port || 22,
     username: host.username,
@@ -964,6 +967,24 @@ export function AppProvider({ children }) {
         return { tabId, sessionId: null };
       }
       return connectTab({ tabId, host, config: buildConnectConfig(host, { sessionKey, adopted: true }), ssh: api().ssh, dispatch });
+    }, []),
+
+    /* "This session is open on another device" (a restore or an
+       auto-reconnect would not take it): Attach here in that same tab, with
+       the same keeper session (same flags as the automatic try) */
+    takeOverSession: useCallback(async (tabId) => {
+      const st = stateRef.current;
+      const tab = st.tabs.find(t => t.id === tabId);
+      if (!tab || !hasApi()) return null;
+      const host = st.hosts.find(h => h.id === tab.hostId) || tab.hostConfig;
+      if (!host) return null;
+      if (tab.sessionId) dispatch({ type: 'REMOVE_SESSION', payload: tab.sessionId });
+      dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, sessionId: null, connecting: true, error: null, elsewhere: false } });
+      const sessionKey = tab.sessionKey || tabId;
+      const flags = sessionKey.startsWith('keeper:') ? { adopted: true } : { restored: true };
+      try {
+        return await connectTab({ tabId, host, config: buildConnectConfig(host, { sessionKey, ...flags, takeover: true }), ssh: api().ssh, dispatch });
+      } catch (_) { return null; }
     }, []),
 
     /* A control connection to `host` for the Background sessions list (no

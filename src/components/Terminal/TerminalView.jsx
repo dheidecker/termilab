@@ -22,11 +22,12 @@ import { registerTerminal, adoptedReady } from '../SplitPane/windowMove';
 import { playChime, playQuestionChime, TYPING_QUIET_MS } from './agentChime';
 import { detectAgent, screenTail, createAgentTracker, NEEDS_YOU_TEXT } from './agentRules';
 import './TerminalView.css';
+import '../Keeper/Keeper.css';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 
 export default function TerminalView({ tab }) {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, actions } = useApp();
   const termRef = useRef(null);
   const containerRef = useRef(null);
   const fitAddonRef = useRef(null);
@@ -531,9 +532,15 @@ export default function TerminalView({ tab }) {
           }
         });
 
-        window.electronAPI.ssh.onClose((sid) => {
+        window.electronAPI.ssh.onClose((sid, info) => {
           if (mountedRef.current && sid === sessionIdRef.current) {
             setConnected(false);
+            /* Auto-reconnect found the keeper session held elsewhere: the
+               error view with Attach here instead of a dead terminal */
+            if (info && info.reason === 'elsewhere') {
+              dispatch({ type: 'UPDATE_TAB', payload: { id: tab.id, error: 'This session is open on another device', elsewhere: true } });
+              return;
+            }
             /* The Sessions screen shows it as disconnected */
             if (IS_ANDROID) dispatch({ type: 'UPDATE_TAB', payload: { id: tab.id, closed: true } });
             term.writeln('\r\n\x1b[90m[Connection closed]\x1b[0m');
@@ -827,8 +834,14 @@ export default function TerminalView({ tab }) {
             <line x1="15" y1="9" x2="9" y2="15"/>
             <line x1="9" y1="9" x2="15" y2="15"/>
           </svg>
-          <div style={{color: 'var(--color-danger)', fontWeight: 500}}>{tab.skipped ? 'Not reconnected' : 'Connection Failed'}</div>
+          <div style={{color: 'var(--color-danger)', fontWeight: 500}}>{tab.elsewhere ? 'Open on another device' : tab.skipped ? 'Not reconnected' : 'Connection Failed'}</div>
           <div className="terminal-connecting-host">{tab.error}</div>
+          {tab.elsewhere && (
+            <button type="button" className="keeper-btn keeper-btn-primary" onClick={() => actions.takeOverSession(tab.id)}
+              title="Attaching here detaches it from the other device">
+              Attach here
+            </button>
+          )}
         </div>
         <div className="terminal-status">
           <span className="terminal-status-dot disconnected" />
