@@ -603,3 +603,46 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   una ventana cerrada se quedan en las demás (control negativo: W14 rojo "cerrar B no quito sus filas de A").
 - Prefijo `window:` → omitido en el shim de Android; M1 verde sin tocarlo. `ventanaFalsa` del arnés tiene
   ahora `focus/show/restore/isMinimized/minimizar` y `focos`.
+
+## Restaurar al arrancar + reconexion automatica (rama `feat/session-restore`, 2026-10-02, arnes R1–R7, A1–A6)
+
+- **`workspace.json` es local y NO avisa a sync**: `store-service.saveWorkspace` no pasa por
+  `_writeCollection` (que llama a `onLocalChange` → `scheduleSoon`). Cada pestana abierta o ventana
+  movida lanzaria un sync. R1 lo mira. No lo metas en las colecciones de sync: es de un equipo.
+- `workspace-service.js` (sin `require('electron')` al cargar): `begin()` antes de crear ventanas
+  decide con `planLaunch` (puro); `assign(win, plan)` por ventana restaurada; el renderer pide
+  `window:workspace-take` (una vez) y reporta con `window:workspace-report`. Canales con prefijo
+  `window:` = omitidos en el shim Android, M1 verde sin tocarlo.
+- **Guarda del bucle**: `launch.state = 'restoring'` se escribe ANTES de abrir ventanas; pasa a `ok`
+  cuando TODAS las restauradas mandan `window:workspace-restored`, o al salir ordenadamente
+  (`quitFlush`). Encontrar `restoring` al arrancar = caida a mitad → limpio una vez (y el disco queda
+  limpio). Si quitas el `ok` de `quitFlush`, salir durante el escalonado haria arrancar limpio.
+- **La escritura es "1 s desde el PRIMER cambio", no debounce puro** (`schedule` conserva el plazo mas
+  temprano). Con debounce, los reportes de pestanas conectando una a una posponian el `ok` y la e2e
+  lo cazo leyendo `restoring` en disco.
+- Cerrar una de varias ventanas la QUITA del workspace (cierra sus pestanas); el cierre que sale de la
+  app (`quitting` o ultima ventana fuera de macOS) congela y la conserva. La ventana ya destruida no da
+  bounds: se guardan en su `'close'` (`_geometry`). En macOS cerrar la ultima ventana la quita (sus
+  sesiones mueren), asi que Cmd+Q despues no restaura nada: es coherente, no un bug.
+- **Reconexion (`ssh-service`)**: misma `sessionId`, mismo dueno, mismos listeners; solo cambia
+  `client`/`stream` de la entrada. `established` es LOCAL a cada `_connect` (antes se miraba
+  `this.sessions.has(id)`, que en una reconexion ya es true y mataba la sesion al fallar un intento).
+  Orden de ssh2 al caer el socket: `client 'close'` ANTES que el `close` de los canales (y `'end'`
+  no cierra canales). Por eso `stream 'close'` sin `lost` = el servidor cerro el shell = fin normal.
+- **No reconecta**: `disconnect()` (marca `userClosed`, cancela espera e intento), shell que salio
+  (`exit-status` llega como evento `exit` del stream → `exited`), conexiones `purpose:'sftp'`.
+  `exited` solo importa si el socket se va justo detras sin cerrar el canal: el sshd de juguete tiene
+  `exit-drop` para eso (con `exit` normal el control negativo NO se ponia rojo).
+- Errores permanentes (`PERMANENT_ERROR`: host key, autenticacion) cortan el calendario. Calendario
+  `reconnectDelays` (1,2,4,8,16,30,30,30 s ≈ 2 min) inyectable; el arnes lo encoge.
+- **Compresion**: ssh2 1.17 soporta `zlib@openssh.com`/`zlib`; se ofrece a terminales (`none` al
+  final), no a `purpose:'sftp'`. Con zlib, **escribir en un canal entre el `'end'` y el `'close'` del
+  socket LANZA sincrono** ("Invalid Zlib instance"): `Client.end()` y escrituras van en try/catch, y
+  el sshd de juguete envuelve sus escrituras tardias (`late`), o el arnes entero muere.
+- **Costura para un futuro "session keeper"**: `_openShell` es el UNICO sitio que abre un shell
+  (primera conexion y cada reconexion); `config.sessionKey` (estable por pestana, guardado en el
+  workspace) llega hasta ahi sin usarse. No hay nada mas implementado.
+- E2E en Electron real: `--inspect=PUERTO` y `Runtime.evaluate` con `includeCommandLineAPI: true`
+  para tener `require('electron').app.quit()` (sin eso `require` no existe y no pasa nada). Node
+  **espera a que se vaya el depurador** antes de salir: cierra el WebSocket enseguida y comprueba que
+  el proceso terminó, o el segundo arranque se engancha a las ventanas del primero y todo "pasa".

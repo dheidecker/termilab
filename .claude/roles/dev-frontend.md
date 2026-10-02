@@ -552,3 +552,26 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   propia → `SET_ACTIVE_TAB`; ajena → `window.focusAgent` y la otra ventana recibe `window:activate-tab`.
 - Capturas: `agent-status/shots.mjs` escribe las pantallas grabadas en los xterm reales del modo mock (el
   estado lo decide el motor, no se inyecta), salvo la de dos ventanas (`SET_AGENTS_ALL` a mano).
+
+## Restaurar pestanas al arrancar (rama `feat/session-restore`, 2026-10-02)
+
+- `src/components/SplitPane/workspace.js` (puro; el arnes lo empaqueta con esbuild, R5/R6):
+  `snapshotWindow(state)` → lo que se reporta; `restorePlan(saved, hosts)` → pestanas, layouts y orden
+  de reconexion; `runStaggered(ids, fn)` 150 ms entre conexiones. Los ids de pestana se REUSAN al
+  restaurar (los layouts guardados siguen valiendo tal cual).
+- **El reporte espera al `take`** (`workspaceReady`): una ventana vacia reportando antes pisaria lo
+  que esta a punto de restaurar. Una recarga del renderer recibe `null` y empieza vacia.
+- Host borrado → `removeTabs` (su split se cura como al cerrar). Quick connect → pestana con
+  `skipped: true` + `error` (TerminalView dice "Not reconnected"); `snapshotWindow` no la vuelve a
+  guardar. Local → shell nuevo. SFTP no se restaura. Activa `null` (Home) se queda en Home.
+- Una pestana restaurada de host lleva `hostConfig: host` en memoria (como `connectToHost`), con su
+  contrasena: es estado de React, nunca va a disco (R2 mira el archivo, no el plan).
+- `tab.sessionKey` (por defecto el id) viaja en `buildConnectConfig(host, {sessionKey})` → main lo
+  ignora hoy; es la costura de un futuro keeper.
+- Ajuste "Restore tabs on startup" = `settings.general.restoreTabs` (`!== false`; se oculta en
+  Android). Sustituye al "Auto-connect" que no hacia nada.
+- **Reconexion**: `ssh.onReconnect` (push `ssh:reconnect`) pone el punto en gris durante la
+  reconexion y al volver reenvia el tamano; las lineas "Reconnecting… (attempt n)" llegan como datos
+  normales. `preload` y el shim Android lo exponen ambos.
+- E2E: `scratchpad/restore-e2e.mjs` de la sesion 7bc25c0b (2 ventanas, split, alias, colores, mute,
+  bounds; salir por `before-quit` y relanzar).
