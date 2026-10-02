@@ -48,6 +48,25 @@ device through a small service you deploy yourself (`server/`).
 - Per-terminal alias and colour for the current session. A coloured terminal gets a solid header, a coloured tab and a tinted background, so several terminals of the same host stay distinguishable. Contrast of the terminal text is measured and preserved for every scheme.
 - Broadcast input: type once, send to every open terminal.
 - Local terminal tabs next to SSH sessions.
+- Several windows: detach a tab into its own window, move tabs between windows (drag or menu), Ctrl+Shift+N for a new window. Moving a tab keeps the same session and its scrollback.
+- Typing is sent straight to the terminal, independent of the system input method; on Linux Termilab uses GTK's simple input method instead of IBus, so dead-key accents work and keys are never swallowed.
+
+### Sessions that survive
+
+- **Keep sessions alive** (on by default, per-host override): shells run inside Termilab's own session keeper, a small static helper that Termilab installs in `~/.termilab` on each server, checks by SHA-256 and runs without depending on tmux, screen or anything else on the server. Closing Termilab, quitting it or losing the network leaves the session running; reconnecting returns to the same screen, full-screen programs included.
+- Local terminals on Linux are kept the same way, each session in its own systemd user service outside the app, so `snap` and `sudo` keep working.
+- Background sessions per host (and for the local machine): attach to a session that is still running, or end it. Closing a tab with a program still running asks whether to keep it in the background or end it.
+- Workspace restore: on launch every window comes back with its position, tabs, splits, aliases and colours, and each tab reconnects (or reattaches to its kept session).
+- Automatic reconnection with backoff when a connection drops, and SSH compression for terminals.
+- Servers where the keeper cannot run (non-Linux, read-only or noexec home) fall back to a plain shell with a one-line notice.
+
+### AI coding agents
+
+- Detects Claude Code, Codex, Gemini CLI, opencode and Aider in any terminal and shows whether each is working, waiting for you, or done, on its tab and pane.
+- A soft chime when an agent finishes and a different one when it needs your input (a permission or yes/no prompt), with desktop notifications when Termilab is in the background.
+- Visual alerts: the pane's border pulses and keeps a thin ring until you look at it, the tab shows a done or waiting badge, and the taskbar icon flashes with the number of unseen terminals.
+- Sessions panel: a dock next to the sidebar listing every open session across all windows, with agent state, alias and host. Click to jump to a session; right-click to rename, recolour, mute or close it.
+- Sound, notifications and visual alerts can each be turned off in Settings, and any terminal can be muted on its own.
 
 ### SFTP
 
@@ -137,7 +156,9 @@ npm run dev        # Vite serves the renderer and launches Electron, with hot re
 | `npm run dist:all` | Linux, Windows and macOS. |
 | `npm run android:debug` | Debug APK, installed on a connected device or emulator. |
 | `npm run android:apk` | Signed release APK and its update manifest, in `release/`. |
-| `node scripts/check-main.js` | Test harness for the main process: IPC, encryption, sync, pairing, host keys, port forwarding, SFTP. |
+| `npm run keeper:build` | Rebuild the session keeper binaries (C, cross-compiled with Zig to static Linux x86_64, aarch64, armv7l, riscv64). |
+| `node scripts/check-main.js` | Test harness for the main process: IPC, encryption, sync, pairing, host keys, port forwarding, SFTP, windows, workspace restore, the session keeper against a real OpenSSH server. |
+| `node scripts/check-package-perms.js` | Release gate: every file in the Linux packages must be world-readable. |
 | `node scripts/check-mobile.js` | Test harness for the Android adapter, including desktop to mobile interoperability. |
 
 ## Architecture
@@ -148,7 +169,8 @@ npm run dev        # Vite serves the renderer and launches Electron, with hot re
 | Interface | React 18 and Vite, shared by desktop and Android |
 | Terminal | xterm.js 5 |
 | SSH and SFTP | ssh2 |
-| Local shells | node-pty |
+| Local shells | node-pty (on Linux through systemd user services) |
+| Session keeper | C, static musl binaries built with Zig, in `electron/keeper/` |
 | Android | Capacitor 8 with nodejs-mobile, running the same main-process services as the desktop |
 | Storage | JSON files in the app's user data directory |
 | Sync service | Node and Postgres, in `server/` |
@@ -157,11 +179,14 @@ npm run dev        # Vite serves the renderer and launches Electron, with hot re
 ```
 termilab/
 ├── electron/            Main process: window, IPC registry, preload bridge
-│   └── services/        SSH, SFTP, transfers, local shells, port forwarding,
-│                        host keys, OS detection, storage, encryption, sync
+│   ├── services/        SSH, SFTP, transfers, local shells, port forwarding,
+│   │                    host keys, OS detection, storage, encryption, sync,
+│   │                    windows, workspace restore, session keeper
+│   └── keeper/          Session keeper: C sources, prebuilt binaries, manifest
 ├── src/                 Interface (React), shared with Android
 │   ├── components/      Hosts, terminal and split panes, SFTP, port forwarding,
-│   │                    keychain, known hosts, logs, snippets, sync, settings
+│   │                    keychain, known hosts, logs, snippets, sessions and
+│   │                    agents, sync, settings
 │   ├── contexts/        Application state
 │   └── themes/          Terminal colour schemes and tinting
 ├── mobile/              Android: Capacitor project, Node adapter, web entry
@@ -175,7 +200,8 @@ termilab/
 Bump `version` in `package.json`, build the desktop packages and the APK, and attach every file to
 one GitHub release: the AppImage, `.deb`, `.pacman`, `latest-linux.yml`, the Windows installer with
 its `.blockmap`, `latest.yml`, the APK and `latest-android.json`. A missing manifest silently stops
-updates for that platform. The details, including Android signing, are in
+updates for that platform. Build with `umask 022` and run `node scripts/check-package-perms.js` before
+uploading: a package with unreadable files installs an app that cannot start. The details, including Android signing, are in
 [`CLAUDE.md`](CLAUDE.md#releasing).
 
 ## License
