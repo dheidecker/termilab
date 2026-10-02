@@ -226,6 +226,17 @@ function setupAutoUpdater() {
     ipcMain.handle('updater:install', () => {
       // The updater drives its own quit; before-quit must not hold it.
       installingUpdate = true;
+      /* deb/pacman: electron-updater would relaunch through app.relaunch(),
+         and Chromium's relauncher starts the new Termilab with
+         no_new_privs set, which breaks snap/sudo in local terminals until
+         the user reopens the app by hand. Relaunch it ourselves instead,
+         from a detached waiter (through systemd --user when there is one, so
+         it never inherits our own no_new_privs either). */
+      const pkgType = linuxPackageType();
+      if (pkgType === 'deb' || pkgType === 'pacman') {
+        autoUpdater.autoRunAppAfterInstall = false;
+        app.once('will-quit', () => relaunchDetached());
+      }
       autoUpdater.quitAndInstall(false, true);
     });
 
@@ -251,6 +262,36 @@ function setupAutoUpdater() {
 function sendUpdateStatus(status, data = {}) {
   // Every window: each has its own Settings → About and update banner
   windowRegistry.broadcast('updater:status', { status, ...data });
+}
+
+// ─── Relaunch after a Linux package update ─────────────────
+
+/* `resources/package-type` decides electron-updater's Linux updater class:
+   'deb' / 'pacman'; the AppImage has none (and relaunches by spawning itself). */
+function linuxPackageType() {
+  if (process.platform !== 'linux') return null;
+  try {
+    return require('fs').readFileSync(require('path').join(process.resourcesPath, 'package-type'), 'utf-8').trim();
+  } catch (_) {
+    return null;
+  }
+}
+
+/* Waits for this process to exit, then starts Termilab again. */
+function relaunchDetached() {
+  try {
+    const script = 'while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; '
+      + 'state=$(systemctl --user is-system-running 2>/dev/null); '
+      + 'if command -v systemd-run >/dev/null 2>&1 && { [ "$state" = running ] || [ "$state" = degraded ]; }; then '
+      + 'exec systemd-run --user --collect --quiet -- "$0"; fi; exec "$0"';
+    const child = require('child_process').spawn('/bin/sh', ['-c', script, process.execPath, String(process.pid)], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+  } catch (err) {
+    console.error('[Updater] Could not schedule the relaunch:', err.message);
+  }
 }
 
 // ─── App Lifecycle ──────────────────────────────────────
