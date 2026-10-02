@@ -30,9 +30,25 @@ tuyos — corrige lo que compruebes que ya no es cierto.
   de Derek (el store migra y reescribe `settings.json` al leerlo).
 - **Cerrar la app:** un `pkill -f` mató al renderer pero el main sobrevivió y relanzó GPU y red.
   Comprueba con `pgrep` y, si hace falta, un segundo `kill` al pid del main.
-- **Tamaños y tiempos** (M-series, electron 33.4.11, builder 26.16.1): universal 1.15.0 = 186,9 MB
-  (178 MiB); 1.9.1 era 185,6 MB (los «177 MB» de antes eran MiB). ~1 min con Electron en caché.
-  `npm install` + rebuild: 5 s.
+- **Tamaños y tiempos** (M-series, electron 33.4.11, builder 26.16.1): dmg universal 1.15.3 =
+  186,9 MB (la cifra que se citaba como «1.15.0»; el dmg que hay en `release/` es el 1.15.3);
+  1.17.0 = 187,2 MB dmg + 180,7 MB zip (el keeper suma ~300 KB crudos al asar). dmg + zip
+  universal: ~2 min. `npm install` + rebuild: 5 s.
+- **Los targets en la CLI anulan `mac.target`** (`computeArchToTargetNamesMap` en
+  `app-builder-lib/out/targets/targetFactory.js`: si la CLI trae nombres, la config se ignora).
+  `--mac dmg` dejaba fuera el zip del actualizador; por eso `dist:mac*` usan `--mac` a secas.
+  Lo mismo vale para `dist` en Linux, que lista sus targets a propósito.
+- **El zip de builder conserva los symlinks del framework:** `ditto -x -k` del zip y `diff -rq`
+  contra `mac-universal/Termilab.app` sale idéntico; el dmg montado con `hdiutil attach -readonly
+  -nobrowse -mountpoint <tmp>`, también.
+- **Probar la terminal local de verdad sin pantalla:** lanzar el `.app` con `--user-data-dir=<tmp>
+  --remote-debugging-port=<p>`, y por CDP (`fetch /json` + `WebSocket` global de Node 24,
+  `Runtime.evaluate` con `awaitPromise`) llamar `window.electronAPI.localShell.spawn({sessionKey,
+  cols, rows})`, `onData`, `write(... 'echo $(uname -m)-$(sysctl -n sysctl.proc_translated)\r')`.
+  Recorre IPC + local-shell-service + node-pty reales. No necesita permiso de captura.
+- **Bajo Rosetta (`arch -x86_64 <.app>/Contents/MacOS/Termilab`) el primer arranque se queda
+  ~30-60 s en dyld, 0 % CPU y sin procesos hijos** (traducción AOT de oahd). No está colgado: no
+  lo mates; espera a que aparezcan los helpers (`pgrep -P <pid>`) antes de conectar por CDP.
 
 ## Linux (electron-builder 26, desde 2026-09-24)
 
@@ -82,9 +98,7 @@ tuyos — corrige lo que compruebes que ya no es cierto.
 ## Sin comprobar todavía
 
 - **Los builds de Linux con la exclusión de `sshcrypto.node`** (2026-09-25) no se han vuelto a
-  generar. Debería dar igual, porque allí tampoco cargaba, pero no está visto. Los dos ajustes
-  del universal quedaron sin commitear en `package.json` (rama `main`) y se entregaron al
-  orquestador para que decida.
+  generar. Debería dar igual, porque allí tampoco cargaba, pero no está visto.
 
 - **pacman en CachyOS real:** instalar con `pacman -U`, el diálogo de pkexec y la actualización
   de extremo a extremo no se han probado; solo se validó el paquete por dentro.
@@ -96,9 +110,10 @@ tuyos — corrige lo que compruebes que ya no es cierto.
   renderer, GPU y network vivos), no que se renderice bien: el permiso de
   captura de pantalla estaba denegado. `titleBarStyle: 'hidden'` en darwin es
   una ruta de código que nadie ha mirado con los ojos.
-- **electron-updater en macOS.** El canal apunta a GitHub Releases y ahí solo
-  hay artefactos de Linux. Un `latest-mac.yml` se genera en `release/` con cada
-  build, pero nunca se ha publicado ni probado una actualización en Mac.
+- **electron-updater en macOS.** El release v1.17.0 de GitHub existe sin
+  `latest-mac.yml`: el `.app` registra al arrancar «Cannot find latest-mac.yml ... 404» (no
+  rompe nada). `latest-mac.yml` ya lista el zip como `path`. Sin firma, Squirrel.Mac rechazará
+  instalar la actualización aunque se publiquen yml + zip: nunca probado de extremo a extremo.
 
 ## Android (fase 5, 2026-09-24)
 
@@ -144,9 +159,15 @@ tuyos — corrige lo que compruebes que ya no es cierto.
 - **`npm run android:debug` hace `adb install -r`** en el dispositivo que haya conectado. Para
   solo construir: `npm run android:sync` y luego `./gradlew assembleDebug -PtermilabAbis=...` en
   `mobile/android`.
+- **En macOS los binarios hacen falta: no los excluyas.** `keeper-service` los sube por SFTP a
+  los servidores Linux desde cualquier SO; solo `local-keeper` es Linux-only (guardas
+  `process.platform !== 'linux'` en `wanted/prepare/locate`, y `local-shell-service` lo vuelve a
+  comprobar). Comprobado en el universal 1.17.0: `@electron/universal` no protesta (son ELF
+  dentro del asar, idéntico en ambos builds → un solo `app.asar`), los cuatro sha256 leídos del
+  asar casan con el manifest en arm64 y en x86_64, y la terminal local sale `kept:false` sin aviso.
 - **Sin comprobar:** la extracción del keeper en un dispositivo real (se dedujo de
-  `CapacitorNodeJS.copyNodeProjectFromAPK` + el listado del APK), y los paquetes de mac/win con el
-  keeper dentro (solo se construyó `linux-unpacked`).
+  `CapacitorNodeJS.copyNodeProjectFromAPK` + el listado del APK), el paquete de Windows con el
+  keeper dentro, y una sesión SSH con keeper lanzada desde el Mac contra un servidor.
 
 ## Método de entrada en Linux: IBus fuera (2026-10-02)
 
