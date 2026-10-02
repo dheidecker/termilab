@@ -120,7 +120,8 @@ const units = (pattern) => {
   out.steps.killClosed = !!(await waitFor(() => closes.has(b), 5000));
   await sleep(1000);
   out.steps.unitAfterKill = units(`${escape.unitName(b)}*`);
-  out.steps.leftover = units(`${escape.UNIT_PREFIX}*`);
+  /* Only units this run created: a Termilab the user has open owns others */
+  out.steps.leftover = [...units(`${escape.unitName(a)}*`), ...units(`${escape.unitName(b)}*`)];
   out.runAfter = units('run-*.service');
 })()
   .catch((err) => { out.error = err.message; })
