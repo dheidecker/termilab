@@ -639,9 +639,8 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   final), no a `purpose:'sftp'`. Con zlib, **escribir en un canal entre el `'end'` y el `'close'` del
   socket LANZA sincrono** ("Invalid Zlib instance"): `Client.end()` y escrituras van en try/catch, y
   el sshd de juguete envuelve sus escrituras tardias (`late`), o el arnes entero muere.
-- **Costura para un futuro "session keeper"**: `_openShell` es el UNICO sitio que abre un shell
-  (primera conexion y cada reconexion); `config.sessionKey` (estable por pestana, guardado en el
-  workspace) llega hasta ahi sin usarse. No hay nada mas implementado.
+- **Costura del session keeper**: `_openShell` es el UNICO sitio que abre un shell (primera
+  conexion y cada reconexion); con `config.sessionKey` engancha al keeper (ver seccion de abajo).
 - E2E en Electron real: `--inspect=PUERTO` y `Runtime.evaluate` con `includeCommandLineAPI: true`
   para tener `require('electron').app.quit()` (sin eso `require` no existe y no pasa nada). Node
   **espera a que se vaya el depurador** antes de salir: cierra el WebSocket enseguida y comprueba que
@@ -669,3 +668,44 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   de que el login shell termine el perfil se pierde (esperar prompt + 500 ms de silencio) y
   `list-units` justo tras `spawn` aún no ve la unidad. `run-*` en `--user` lista también mounts: filtrar
   `run-*.service`. Si no hay systemd --user, N5 se marca OMITIDA (no falla).
+
+## Session keeper en el servidor (rama `feat/session-restore`, 2026-10-02, arnes KP1–KP15)
+
+- `keeper-service.js`: `prepare(client, config)` (sondeo `uname -sm; $HOME; id -u` 5 s, dirs
+  `~/.termilab{,/bin,/run}` 0700 propios y sin symlink, sha256 leyendo de vuelta, subida a
+  `.tmp-<rand>` + verificar + `posix-rename`, sin SFTP por `cat` en exec, `version` 126 = noexec).
+  Cache por `user@host:port|KV` para toda la ejecucion, fallos transitorios no se cachean. **Nunca
+  lanza**: todo es `{fallback, reason}` y ssh-service abre un shell normal con una linea tenue.
+  `_openShell` ademas corta el prepare a 25 s (`keeperPrepareCapMs`).
+- Binarios: resolvedor `binDirCandidates()` = `__dirname/../keeper/bin` (escritorio, dentro de asar:
+  solo `fs.readFileSync`) y `__dirname/keeper` (bundle Android, sin manifest: KV y arch salen del
+  nombre). Si hay manifest y el sha no casa, error. KP1 compila el modulo con filename falso.
+- Id = base32(sha256(sessionKey))[:26]; `keeper:<id>` = adoptada (Attach here): nunca `--create`,
+  nunca propia. `restored: true` con id que ESTE equipo no creo → otro id derivado con `deviceId`
+  (no roba sesiones). Estado local `<data>/keeper-state.json` {deviceId, owned, hosts:{avisos}}.
+- Codigos de `attach`: 0/75/76/102/1xx → `exited`, y `ssh:close` lleva ahora `{reason}`
+  (`exited|replaced|killed|gone|error|lost|closed`); 77 o señal con el transporte vivo = `_lost` →
+  reconecta y re-engancha. `disconnect()` = soltar (cierra el canal → 77 en el servidor): salir,
+  cerrar ventana y cortes NO matan la sesion. Solo `keeperEnd` (KILL) la acaba.
+- **Salida retenida hasta el primer `resize`** (3 s tope) en la primera conexion de una sesion
+  keeper: la respuesta del `ssh:connect` no esta ordenada con los `ssh:data`, y perder el principio
+  de la repeticion (`ESC c` + pantalla) es perder la pantalla. KP2b lo caza (control negativo rojo).
+  El harness tiene que llamar `sshService.resize()` tras conectar o espera 3 s cada vez.
+- Avisos (primera instalacion, linger) van DESPUES del `ESC c` de la repeticion: antes se borran.
+  Tras reconectar no se escribe `[Reconnected]` (caeria encima de la repeticion; por tiempos hoy cae
+  antes del `ESC c` y se borra, asi que ningun test lo distingue: es defensivo).
+- **zlib otra vez**: un canal exec terminado (`run()`) que muere con su transporte lo destruye ssh2
+  DESPUES de `proto.cleanup()` y su `close()` lanza "Invalid Zlib instance" en un nextTick: tumba
+  main. `run()` envuelve `stream.destroy` en try/catch por instancia. Lo destapo `keeperEnd`: el
+  attach sale con 76 mientras el `kill` aun corre en el mismo cliente, y el `close` del stream hacia
+  `client.end()` → 1 de cada 4 corridas. Ahora `s.ending` impide ese `end` y lo hace `keeperEnd`.
+- **sshd 9.x sin root: el que tiene el socket es un NIETO de sshd** (hijo = monitor). Matar al hijo
+  no corta nada; KP8 mata la cadena `sshd*` (`sshdDeConexion`).
+- Arnes KP: `real-sshd.js` admite `{forceCommand, noSftp}`. El envoltorio pone `HOME` en un temporal
+  (nada toca el ~ real), `SHELL=/bin/bash`, y con ficheros de control falsea `uname` o sale 126.
+  Con ForceCommand el subsistema llega como `$SSH_ORIGINAL_COMMAND` con la ruta del sftp-server.
+  `TERMILAB_CHECK_ONLY=KP node scripts/check-main.js` corre solo grafo + KP (~40 s). Al final mata
+  todos los demonios (`list` local con HOME del temporal + `kill`). Un demonio vivo hace que
+  sobrescribir el binario EN SITIO de ETXTBSY (la subida real usa tmp+rename, no le afecta).
+- Canales nuevos `ssh:keeper-foreground|end|list|kill` (con `ensureMayUse`), en preload y en el shim
+  de Android; `mobile/node/main.js` envuelve tambien `ssh:keeper-end` para `native:sessions`.

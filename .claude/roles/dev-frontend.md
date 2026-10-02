@@ -566,8 +566,8 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   guardar. Local → shell nuevo. SFTP no se restaura. Activa `null` (Home) se queda en Home.
 - Una pestana restaurada de host lleva `hostConfig: host` en memoria (como `connectToHost`), con su
   contrasena: es estado de React, nunca va a disco (R2 mira el archivo, no el plan).
-- `tab.sessionKey` (por defecto el id) viaja en `buildConnectConfig(host, {sessionKey})` → main lo
-  ignora hoy; es la costura de un futuro keeper.
+- `tab.sessionKey` (por defecto el id) viaja en `buildConnectConfig(host, {sessionKey})` → main
+  engancha al session keeper con el (ver seccion de abajo).
 - Ajuste "Restore tabs on startup" = `settings.general.restoreTabs` (`!== false`; se oculta en
   Android). Sustituye al "Auto-connect" que no hacia nada.
 - **Reconexion**: `ssh.onReconnect` (push `ssh:reconnect`) pone el punto en gris durante la
@@ -575,3 +575,26 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   normales. `preload` y el shim Android lo exponen ambos.
 - E2E: `scratchpad/restore-e2e.mjs` de la sesion 7bc25c0b (2 ventanas, split, alias, colores, mute,
   bounds; salir por `before-quit` y relanzar).
+
+## Session keeper: lo que toca al renderer (2026-10-02)
+
+- `buildConnectConfig(host, {sessionKey, restored, adopted})`: la restauracion manda `restored:true`
+  (main solo re-engancha claves creadas en este equipo); "Attach here" crea pestana con
+  `sessionKey: 'keeper:<id>'` + `adopted:true` (`actions.attachBackgroundSession`).
+- **Cerrar pestana**: `planKeeperClose(members)` (`src/components/Keeper/closePlan.js`, NO en
+  `sessions.js`: ese lo empaqueta el arnes W8 con esbuild y no debe arrastrar React/CSS) pregunta a
+  main el comando en primer plano. Solo el shell → End silencioso; otra cosa → dialogo imperativo
+  (`askKeeperClose`, raiz propia de React) "[Keep running in background] [End session]", Esc =
+  no cerrar. Devuelve `null` (cancelado) o `{end:Set}` para `endSessions(members, disconnect, plan)`.
+  Los TRES caminos de cerrar (TabBar, Ctrl+W en App, × de panel en SessionStage) lo llaman; uno
+  nuevo tiene que hacerlo tambien o mata/suelta sin preguntar.
+- `ssh.onClose(sid, info)` trae `info.reason`; los textos ("Session opened elsewhere", "ended on
+  the server") los escribe main como datos (sirve igual en Android). TerminalView sigue con
+  "[Connection closed]".
+- Ajuste `settings.terminal.keepSessions` (defecto on) y por host `host.keepSessions` `'on'|'off'|null`
+  (HostForm manda `null`, no `undefined`, por el puente JSON de Android). Main resuelve la opcion
+  leyendo el host del disco, no de lo que manda el renderer.
+- `BackgroundSessions` (menu contextual del host y boton en HostForm al editar) abre su propia
+  conexion `purpose:'sftp'` (sale en Logs como sftp) y la cierra al desmontar. Con StrictMode hay
+  generacion por montaje: sin ella la segunda conexion pisaba la primera y esta no se cerraba nunca.
+- Sin probar en Electron real: el dialogo de cierre y la lista (solo SSR + build).
