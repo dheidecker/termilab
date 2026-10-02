@@ -38,3 +38,11 @@ entregar.
 - Cabecera sólida: `solidHeader()` elige tinta blanca o `#101318`; con HOST_COLORS el peor es Pink
   a 4.51:1. Pestaña: `color-mix` 14% (inactiva, 20% hover) sobre `--bg-secondary`, 30% sobre
   `--bg-card-hover` (activa); texto-secundario en claro queda en 4.65:1: no bajes la tinta más.
+
+## "Terminó" (2026-10-02, lo anotó dev-frontend)
+
+- `.pane-done-glow` (SplitPane.css): anillo redondeado 7px, metido 3px, 1.5px al 42% del color del panel
+  (`--pane-color`, si no `--accent`) + halo interior 12% ; pulso 2×0.8s ease-in-out hasta 90%/38%.
+  A propósito NO se parece al foco (outline cuadrado 1px sólido pegado al borde). Sin animación con
+  `prefers-reduced-motion`. `.tab-done` / `.m-session-done`: `--color-success` al 22% + filo 35%.
+  Capturas en `/tmp/claude-1000/-home-derek-Proyectos-terminal/visual-done/`.

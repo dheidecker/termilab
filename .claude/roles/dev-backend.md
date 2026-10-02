@@ -525,3 +525,70 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   `src/components/HostList/hostColor.js`. No la dupliques "para validar mejor": entonces sí sería un
   par duplicado que se desincroniza.
 - `hostIsSealed` en ipc-handlers es compartido por OS y color. Estado de sync ilegible = sellado.
+
+## Varias ventanas (rama `feat/multi-window`, 2026-10-01, arnés W1–W6)
+
+- **`electron/window-registry.js` decide a qué ventana va cada push.** Los servicios siguen con
+  `setMainWindow(x)`, pero `registerIpcHandlers` les da sumideros del registro: `sessionSink`
+  (ssh, local-shell: enruta por `args[0]` o `args[0].sessionId` a la ventana dueña) y
+  `broadcastSink` (sync, port-forward, transferencias, edición SFTP). Un servicio nuevo que empuje
+  eventos por sesión tiene que ir por `sessionSink`, o le llega a la ventana equivocada.
+- **El dueño se reclama ANTES de enganchar listeners**: `sshService.connect(config, event.sender)`,
+  `localShellService.spawn(opts, event.sender)`. ssh2 puede emitir el primer `data` en el mismo
+  tick en que abre el shell, antes de que el `await` del handler vuelva. W1 se pone rojo sin el
+  `claim`. Sin dueño, cae a la primera ventana (lo que hacía la app de una ventana; Android).
+- **La respuesta de un `invoke` NO está ordenada con los `webContents.send`.** La primera e2e perdió
+  exactamente un trozo: el renderer hacía el snapshot al volver `moveBegin` y un `local:data`
+  enviado antes llegó después. Por eso `beginMove` empuja `window:move-mark` (mismo canal ordenado
+  que los datos) y el origen espera la marca. W2a mira que la marca va detrás de lo enviado.
+- `host-key-service`: `setRouter(registry)` (prompt a la ventana dueña de `sessionId`, si no la
+  enfocada; el cancel a la misma). `setMainWindow(w)` **quita el router** a propósito: el arnés K
+  apunta el servicio a una ventana falsa suya y luego a `null` ("sin ventana rechaza").
+- `registerIpcHandlers` se llama **una vez**; cada ventana nueva pasa por `attachWindow(win)`
+  (maximize por ventana, `closed` → cierra sus sesiones, temporales de edición y transferencias).
+  Los `window:*` actúan sobre `winOf(event)`, no sobre "la" ventana.
+- Cerrar ventana: confirmación nativa en `main.js` solo si hay otras ventanas y tiene sesiones; la
+  última se cierra como siempre. `setQuitting(true)` en `before-quit` y "última ventana en
+  Linux/Windows" hacen que `closed` no cierre nada: lo hace el teardown de siempre. En macOS la
+  última ventana SÍ cierra sus sesiones (antes quedaban vivas sin nadie que las viera).
+- Los guardados del almacén van envueltos en `changing(coleccion, fn)` → `window:store-changed`
+  a las OTRAS ventanas. `sync:now`/`setup-passphrase`/`unlock` también (`'all'`). En Android no hay
+  otras ventanas: no sale nada, comportamiento idéntico. Todo canal nuevo de ventanas va con prefijo
+  `window:` (omitido en el shim: M1 sigue verde sin tocarlo).
+- **Arnés W**: `server.close()` de ssh2 espera a que se vaya cada conexión. Una sesión que el
+  control negativo deja abierta **colgaba el arnés entero** (sin salida). Ahora hay tope
+  (`Promise.race`) y se cierran todas las abiertas en el `finally`.
+
+### Revisión de varias ventanas (W7–W12, 2026-10-01)
+
+- **Cerrar una ventana con un `ssh:connect` pendiente**: la sesión está reclamada pero aún no en
+  `sshService.sessions`. `endWindowSessions` llama `sshService.cancelPending(sid)` (corta el socket;
+  si aun así resuelve, `connect()` la desconecta y rechaza). `removeWindow` marca sus sesiones en
+  `_closedOwner`: sus eventos y avisos de host key **no van a ninguna ventana** (sin esa marca
+  caían a la primaria/enfocada). `release()`/`claim()` limpian la marca. W7.
+- **Mudanza todo o nada**: `commit()` solo marca `ready`; `_maybeDone` reasigna dueño y vuelca
+  búferes de TODAS las sesiones a la vez. Un `abort` nunca deja paneles repartidos. W10.
+- `abort()` quita la adopción encolada en el destino que aún carga, y `takeAdoptions` descarta
+  las de mudanzas que ya no están en `_moves`. W9.
+- **Aviso de host key compartido entre ventanas**: `rejectFor(wc)` pasa el aviso (mismo
+  `requestId`, timeout reiniciado) a la ventana de otro waiter vivo (`waiter.hooks.sessionId` →
+  `windowForSession`); solo sin nadie más se rechaza. Va DESPUÉS de `removeWindow` en `closed`,
+  para que los waiters de la ventana cerrada den `null`. W11.
+- **Llamadas por sesión con dueño**: `mayUse`/`ensureMayUse` en ipc-handlers (ssh:disconnect/
+  send-data/resize, local:kill/write/resize, sftp:* con sessionId, endpoints `src`/`dst` de
+  transfer-start) → `windowRegistry.mayUse`: dueño, o origen/destino de una mudanza en curso;
+  sesión sin dueño pasa (Android, arnés). `window:move-abort` solo desde from/to. Un canal nuevo
+  por sesión necesita el guard. El arnés ahora captura `ipcMain.on` en `onHandlers`. W12.
+
+## window:attention (2026-10-02, W13)
+
+- `{unseen, flash}` del renderer → `registry.setUnseen(wc, n)`; badge = `totalUnseen()` de las
+  ventanas vivas vía `app.setBadgeCount` (macOS, Linux con libunity; Windows la ignora; overlay icon
+  no se hizo). Flash solo con `flash && unseen>0 && !win.isFocused()`: `flashFrame(true)` (Win/Linux),
+  `app.dock.bounce('informational')` en macOS. `focus` de la ventana → `flashFrame(false)`; `closed`
+  → recalcula el badge. Shim Android: `window:` ya está omitido, M1 verde sin tocarlo.
+- Arnés: el stub de `electron.app` no trae `setBadgeCount`/`dock`; W13 los pone y los restaura (es el
+  mismo objeto que `ipc-handlers` desestructuró al cargar).
+- F4 (progreso de 50 MB por SFTP) salió rojo en esta máquina (3 de 3): "sin eventos intermedios
+  (2 en total)", la subida local va tan rápido que el throttle no emite nada a mitad. Parece
+  temporización (nada de esto toca transferencias), pero no se comprobó contra el árbol anterior.

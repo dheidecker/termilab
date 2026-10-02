@@ -459,3 +459,66 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
 - E2E: `scratchpad/alias/alias-e2e.mjs` (29 comprobaciones: mismo xterm tras swap/recolor/esquema,
   fondo del viewport = `tintTheme`); Android por SSR: `android-harness.jsx` (hay que copiar el bundle
   a `node_modules/` para que resuelva `react`, y entonces `import.meta.url` escribe allí: muévelo).
+
+## Varias ventanas (rama `feat/multi-window`, 2026-10-01)
+
+- **Mover una pestaña a otra ventana** = `SplitPane/windowMove.js`. El xterm no cruza: viaja su
+  pantalla serializada (`@xterm/addon-serialize`, scrollback + cursor + modos + pantalla alterna) en
+  `tab.adopt`, y el destino crea un xterm nuevo del mismo tamaño, escribe eso y **solo entonces**
+  llama `moveReady` (main le vuelca el búfer). Fit, ResizeObserver y el resize inicial esperan a
+  `restored`: un resize a mitad de la escritura reflowaría una pantalla a medias.
+- **El snapshot se toma al llegar `window:move-mark`, no al volver `moveBegin`** (la respuesta del
+  invoke adelanta a los push de datos; se perdió un trozo así). `term.write('', cb)` antes de
+  serializar: la cola de xterm es asíncrona.
+- El origen quita las pestañas con `REMOVE_TAB` **sin** `endSessions` al llegar `window:move-done`;
+  si llega `move-aborted` se quedan (`moving:false`). `ADOPT_GROUP` mete grupo + layout +
+  `activeSessions` + `focusedPane` en el destino. Pestaña conectando, SFTP o pty sin arrancar no se
+  mueven (`cannotMove`).
+- **Pestañas, layouts y broadcast son por ventana**; hosts/settings/… se recargan con
+  `reloadStore` al recibir `window:store-changed` (debounce 150 ms). Todo gateado con
+  `FEATURES.multiWindow` (Android: el shim no tiene `window`).
+- Arrastre entre ventanas: el payload de `DRAG_MIME` lleva `windowId`. `isLocalDrag()` se pone
+  **síncrono** en `beginDrag` (el almacén espera un tick): así un `dragover` a nivel de documento
+  distingue "mío" de "de otra ventana". El destino acepta en todo el documento y pide la mudanza
+  (`window:request-move` → el origen mueve). `dragend` con `dropEffect 'none'` pregunta a main
+  dónde está el puntero (`dropTarget`: fuera → ventana nueva ahí; otra ventana → esa).
+  **Sin probar con un arrastre real del SO** (xvfb no lo hace): la e2e usa `DragEvent` sintéticos.
+  Cancelar con Esc fuera de la ventana también separa la pestaña (no se distingue de soltar).
+- Ctrl+Shift+N: `App` abre ventana; `attachCustomKeyEventHandler` devuelve false para que xterm no
+  mande ^N al shell. En macOS está además en el menú (Cmd+Shift+N).
+- E2E: `scratchpad/multiwin/multiwin-e2e.mjs` (sesión del 01-10; 27 comprobaciones). Para leer el
+  buffer de un xterm en escritorio sin tocar código: fibra de React desde `.terminal-wrapper`
+  hacia arriba hasta el primer hook cuyo `.current.buffer` exista (TerminalView: `termRef` es su
+  primer hook). `Browser.setWindowBounds` por CDP no mueve la ventana en Electron;
+  `window.moveTo/resizeTo` desde la página sí. Ojo al esperar un texto que también está en la línea
+  de comando tecleada (`echo END`): espera `^END$`.
+
+### Revisión de varias ventanas (2026-10-01)
+
+- **Una pestaña cuya sesión presta a un panel SFTP de su ventana no se mueve**: `FilePane` llama
+  `borrowSession(sid)` (windowMove.js) mientras `conn` está listo y `!conn.owned`; `cannotMove`
+  lo dice ("An SFTP pane in this window is using this connection"). Main manda `ssh:close` solo a
+  la dueña, así que un préstamo entre ventanas quedaría sordo. W8 empaqueta `windowMove.js` con
+  esbuild y lo prueba de verdad.
+- `window:move-aborted` ya no trae `committed`: la mudanza es todo o nada en main.
+
+## "Terminó" visual: brillo de panel, insignia, barra de tareas (2026-10-02)
+
+- Mismo disparador que el chime (`attention()` en TerminalView). `tab.doneAt` (solo sesión, se quita
+  al mudar de ventana en `windowMove.js`) = "un agente terminó aquí y nadie miró". `PANE_DONE` lo pone
+  salvo en el panel enfocado de la pestaña activa **con la ventana enfocada** (el reductor decide;
+  `windowFocused` = `document.hasFocus()` en el payload). Lo quitan: `PANE_SEEN` (focus/keydown del
+  textarea, mousedown en panel único), `PANE_FOCUS` y `SET_ACTIVE_TAB` (solo el panel que recibe el
+  teclado; los demás del grupo siguen marcados: "por panel"). La campana vieja (`notify`) queda solo
+  para el BEL de queja (<2 s tras teclear) y para Visual Alerts apagado.
+- **No limpies con `term.onData`**: xterm emite onData solo (informes de foco `\e[I`/`\e[O`, respuestas
+  DSR/DA cuando un TUI redibuja) y borraría la marca de un panel que nadie miró. Ojo: `lastTyped` (la
+  regla de la queja) sí sale de onData, así que un informe de foco cuenta como "tecleó" (heredado).
+- Visual Alerts (`settings.terminal.visualAlerts`, por defecto on) gatea las tres cosas en el render
+  (SessionStage, TabBar, SessionsScreen y el efecto de AppContext), no el estado.
+- Taskbar: efecto en AppContext manda `window.attention({unseen, flash})`; `flash` solo si hay un
+  `doneAt` más nuevo que el último enviado. main decide si la ventana no tiene foco.
+- **Capturas por CDP: leer el estado desde `rootEl.__reactContainer$…` miente** (es una fibra
+  alterna, se queda un commit atrás). Usa `.stateNode.current` o mira el DOM. Y en headless el
+  `term.write` sin callback puede no parsearse hasta el siguiente frame: `write(s, cb)` y espera.
+  Script: `scratchpad/shots.mjs` de la sesión 7bc25c0b.
