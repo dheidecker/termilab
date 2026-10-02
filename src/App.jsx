@@ -17,7 +17,7 @@ import PortForwarding from './components/PortForwarding/PortForwarding';
 import Settings from './components/Settings/Settings';
 import KnownHosts from './components/KnownHosts/KnownHosts';
 import Logs from './components/Logs/Logs';
-import AgentsPanel from './components/Agents/AgentsPanel';
+import AgentsDock from './components/Agents/AgentsDock';
 import HostKeyPrompt from './components/HostKeyPrompt/HostKeyPrompt';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
 import { FEATURES, IS_ANDROID } from './platform';
@@ -30,6 +30,23 @@ import './App.css';
 
 const SIDEBAR_KEY = 'termilab.sidebar.collapsed';
 const SESSION_SIDEBAR_KEY = 'termilab.sidebar.overSessions';
+const AGENTS_DOCK_KEY = 'termilab.agentsDock.open';
+
+/* The Agents dock is open or closed per window: sessionStorage is per
+   BrowserWindow and survives a renderer reload. A new window starts as the
+   last one toggled (localStorage). */
+function readAgentsDock() {
+  try {
+    const own = window.sessionStorage.getItem(AGENTS_DOCK_KEY);
+    if (own !== null) return own === '1';
+  } catch { /* storage blocked */ }
+  try { return window.localStorage.getItem(AGENTS_DOCK_KEY) === '1'; } catch { return false; }
+}
+function saveAgentsDock(open) {
+  const v = open ? '1' : '0';
+  try { window.sessionStorage.setItem(AGENTS_DOCK_KEY, v); } catch { /* storage blocked */ }
+  try { window.localStorage.setItem(AGENTS_DOCK_KEY, v); } catch { /* storage blocked */ }
+}
 
 /* On a phone the full-width sidebar eats half the screen: start collapsed
    there unless the user expanded it before. Desktop default unchanged. */
@@ -46,6 +63,9 @@ function AppContent() {
   const { openLocalTerminal, setActiveTab, removeTab, disconnectSession, goHome, setActiveSection, newWindow } = actions;
   const { layouts } = state;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+  const [agentsDock, setAgentsDock] = useState(() => !IS_ANDROID && readAgentsDock());
+  const toggleAgentsDock = () => setAgentsDock(prev => { saveAgentsDock(!prev); return !prev; });
+  const closeAgentsDock = () => { saveAgentsDock(false); setAgentsDock(false); };
 
   /* No session tab selected → the home tab (sidebar + section) is showing */
   const homeActive = !tabs.some(t => t.id === activeTabId);
@@ -141,7 +161,6 @@ function AppContent() {
       case 'snippets': return <div className="app-section-column"><Snippets /></div>;
       case 'known-hosts': return <KnownHosts />;
       case 'logs': return <Logs />;
-      case 'agents': return <AgentsPanel />;
       case 'settings': return <Settings fullPage />;
       case 'hosts':
       default: return <HostList />;
@@ -223,7 +242,11 @@ function AppContent() {
         onToggleSidebar={toggleSidebar}
       />
       <div className="app-body">
-        {(homeActive || sessionSidebar) && <Sidebar collapsed={sidebarCollapsed} />}
+        {(homeActive || sessionSidebar) && (
+          <Sidebar collapsed={sidebarCollapsed} agentsOpen={agentsDock} onToggleAgents={toggleAgentsDock} />
+        )}
+        {/* Beside the sidebar, or alone at the left edge when it is hidden over sessions */}
+        {agentsDock && <AgentsDock onClose={closeAgentsDock} />}
         <div className="app-home" style={{ display: homeActive ? 'flex' : 'none' }}>
           <main className="app-section">{renderSection()}</main>
         </div>

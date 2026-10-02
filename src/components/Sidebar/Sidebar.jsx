@@ -14,8 +14,9 @@ import '../Agents/Agents.css';
 const sections = [
   { id: 'hosts', label: 'Hosts', Icon: VaultIcon },
   { id: 'sftp', label: 'SFTP', Icon: FolderIcon, available: FEATURES.sftp, opensTab: true },
-  /* Agent CLIs in every window's terminals (Android: the Sessions screen shows them) */
-  { id: 'agents', label: 'Agents', Icon: AgentIcon, available: !IS_ANDROID },
+  /* Not a section: toggles the Agents dock, which stays open over any view
+     (Android: the Sessions screen shows them) */
+  { id: 'agents', label: 'Agents', Icon: AgentIcon, available: !IS_ANDROID, toggle: true },
   { id: 'keychain', label: 'Keychain', Icon: KeyIcon },
   { id: 'port-forwarding', label: 'Port Forwarding', Icon: ForwardIcon, available: FEATURES.portForwarding },
   { id: 'snippets', label: 'Snippets', Icon: SnippetIcon },
@@ -25,7 +26,7 @@ const sections = [
 
 const settingsItem = { id: 'settings', label: 'Settings', Icon: SettingsIcon };
 
-export default function Sidebar({ collapsed = false, onNavigate }) {
+export default function Sidebar({ collapsed = false, onNavigate, agentsOpen = false, onToggleAgents }) {
   const { state, actions } = useApp();
   const { setActiveSection, openSFTP, goHome } = actions;
   /* Over a session tab no section is on screen: nothing is highlighted, and
@@ -34,18 +35,21 @@ export default function Sidebar({ collapsed = false, onNavigate }) {
   /* Agents waiting for the user, in any window */
   const waiting = panelAgentRows(state).rows.filter(r => r.state === 'blocked').length;
 
-  const renderItem = ({ id, label, Icon, opensTab }) => {
-    const active = homeActive && !opensTab && state.activeSection === id;
+  const renderItem = ({ id, label, Icon, opensTab, toggle }) => {
+    const active = homeActive && !opensTab && !toggle && state.activeSection === id;
+    const toggled = toggle && agentsOpen;
     return (
       <button
         key={id}
-        className={`sidebar-item ${active ? 'active' : ''}`}
+        className={`sidebar-item ${active ? 'active' : ''}${toggled ? ' toggled' : ''}`}
         onClick={() => {
+          if (toggle) { onToggleAgents?.(); return; }
           if (opensTab) openSFTP();
           else { setActiveSection(id); if (!homeActive) goHome(); }
           onNavigate?.();
         }}
         aria-current={active ? 'page' : undefined}
+        aria-pressed={toggle ? agentsOpen : undefined}
         aria-label={label}
         title={collapsed ? label : undefined}
       >

@@ -598,3 +598,23 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   conexion `purpose:'sftp'` (sale en Logs como sftp) y la cierra al desmontar. Con StrictMode hay
   generacion por montaje: sin ella la segunda conexion pisaba la primera y esta no se cerraba nunca.
 - Sin probar en Electron real: el dialogo de cierre y la lista (solo SSR + build).
+
+## Agents dock (2026-10-02)
+
+- **Agents ya no es una sección**: el item del sidebar (`toggle: true`) abre/cierra `AgentsDock`, columna
+  en `.app-body` entre el sidebar y la vista (sola al borde izquierdo si el sidebar está oculto sobre
+  sesiones). No toca `activeSection` ni `activeTabId`; su "pulsado" es `.sidebar-item.toggled` +
+  `aria-pressed`, aparte del `.active` de sección. La página completa (`AgentsPanel`) se borró.
+- Abierto/cerrado **por ventana** = `sessionStorage` (por BrowserWindow, sobrevive a recargar); una
+  ventana nueva arranca como la última que se tocó (`localStorage`). Ancho 200–420 en
+  `termilab.agentsDock.width`.
+- Refit: el dock cambia el ancho de `.app-view` → `ResizeObserver` del stage → `measure` → los rects de
+  la capa → el RO de cada TerminalView. Medido por CDP: 63→48 cols al abrir, 38 a 420 px, 74 al cerrar.
+- **`focus()` sin `preventScroll` en el textarea de xterm desplaza `.terminal-wrapper`** (overflow
+  hidden, `scrollLeft` 104): la pantalla sale cortada por la izquierda y nadie lo devuelve. Cualquier
+  refoco a `.xterm-helper-textarea` va con `{ preventScroll: true }` (como en SessionStage).
+- Arrastre del borde: el `mouseup` puede llegar antes de que React pinte el último `mousemove`; el ancho
+  a guardar se lleva en una variable del cierre, no en un ref actualizado en render. Mientras arrastra,
+  `body.agents-dock-resizing` quita `pointer-events` a `.app-view` (si no, xterm se queda el ratón).
+- Capturas/e2e: `/tmp/claude-1000/agents-dock/dock-shots.mjs` (dist/ + Chrome headless; abre, clic en
+  filas, arrastra, oculta sidebar, cierra, con geometría y cols de cada panel).
