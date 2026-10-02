@@ -320,12 +320,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     list: () => invoke('window:list'),
     /* {unseen, flash}: done-but-unseen panes here (badge = app total); flash a new one if unfocused */
     attention: (spec) => invoke('window:attention', spec || {}),
-    /* Agents panel: report this window's [{tabId, agentId, name, state, since,
-       title, color}]; agents() = {windows, rows} of every window (own rows
+    /* Sessions panel (the channel names predate it: it listed only agents):
+       report this window's terminals [{tabId, groupId, kind, connected, muted,
+       alias, host, title, color, agentId, name, state, since}] (agent fields
+       null without one); agents() = {windows, rows} of every window (own rows
        self:true); focusAgent({windowId, tabId}) focuses that window and tab */
     reportAgents: (rows) => invoke('window:agents-report', rows || []),
     agents: () => invoke('window:agents'),
     focusAgent: (spec) => invoke('window:focus-agent', spec || {}),
+    /* sessionAction({windowId, tabId, action, value}): a terminal of another
+       window, from the Sessions panel: action rename|color|mute|close */
+    sessionAction: (spec) => invoke('window:session-action', spec || {}),
     /* Workspace restore on launch: workspaceTake() = what this window should
        recreate ({tabs, layouts, activeTabId, focusedPane}, once; null when
        nothing); workspaceReport(snapshot) = its tabs now; workspaceRestored()
@@ -389,6 +394,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('window:activate-tab', listener);
       return listener;
     },
+    /* {tabId, action, value}: another window's Sessions panel acted on this terminal */
+    onSessionRequest: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('window:session-request', listener);
+      return listener;
+    },
     /* {collection} saved by another window (or 'all' after a sync there) */
     onStoreChanged: (cb) => {
       const listener = (event, payload) => cb(payload);
@@ -405,6 +416,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('window:store-changed', listener);
       ipcRenderer.removeListener('window:agents', listener);
       ipcRenderer.removeListener('window:activate-tab', listener);
+      ipcRenderer.removeListener('window:session-request', listener);
     },
   },
 

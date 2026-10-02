@@ -5,7 +5,7 @@ import * as Layout from '../components/SplitPane/layoutTree';
 import { connectTab, markAbandoned } from '../components/SplitPane/sessions';
 import { listenForAdoptions, listenForMoves, moveTabToWindow as moveTabToWindowImpl, windowInfo } from '../components/SplitPane/windowMove';
 import { FEATURES } from '../platform';
-import { localAgentRows } from '../components/Agents/agentRows';
+import { localSessionRows } from '../components/Agents/sessionRows';
 import { snapshotWindow, restorePlan, runStaggered } from '../components/SplitPane/workspace';
 
 const AppContext = createContext(null);
@@ -394,7 +394,7 @@ function baseReducer(state, action) {
         return n;
       }) };
     }
-    /* Every window's agents, merged by main (desktop): {windows, rows:[{windowId, windowNumber, self, tabId, …}]} */
+    /* Every window's terminals (Sessions dock), merged by main (desktop): {windows, rows:[{windowId, windowNumber, self, tabId, …}]} */
     case 'SET_AGENTS_ALL': {
       const p = action.payload;
       if (!p || !Array.isArray(p.rows)) return state;
@@ -1060,9 +1060,9 @@ export function AppProvider({ children }) {
       try { return (await window.electronAPI.window.list()) || []; } catch (_) { return []; }
     }, []),
     /* target: a window id, or 'new' (at screen point {x, y} if given) */
-    /* Agents panel row: a tab here opens (its pane focused); one of another
+    /* Sessions dock row: a tab here opens (its pane focused); one of another
        window: main focuses that window, which opens it (window:activate-tab) */
-    focusAgent: useCallback(async (row) => {
+    focusSession: useCallback(async (row) => {
       if (!row || !row.tabId) return false;
       if (row.self !== false || !FEATURES.multiWindow) {
         if (!stateRef.current.tabs.some(t => t.id === row.tabId)) return false;
@@ -1387,17 +1387,17 @@ export function AppProvider({ children }) {
     api.attention({ unseen: unseenPanes, flash }).catch(() => {});
   }, [unseenPanes, latestDone]);
 
-  /* ── Agents panel (desktop, several windows) ──
-     This window's terminals that run an agent go to main, which sends every
-     window the merged list. Only when the rows change (the key). */
-  const agentRows = localAgentRows(state);
-  const agentKey = JSON.stringify(agentRows);
-  const agentRowsRef = useRef(agentRows);
-  agentRowsRef.current = agentRows;
+  /* ── Sessions dock (desktop, several windows) ──
+     This window's terminals (with their agent state) go to main, which sends
+     every window the merged list. Only when the rows change (the key). */
+  const sessionRows = localSessionRows(state);
+  const sessionRowsKey = JSON.stringify(sessionRows);
+  const sessionRowsRef = useRef(sessionRows);
+  sessionRowsRef.current = sessionRows;
   useEffect(() => {
     if (!FEATURES.multiWindow) return;
-    window.electronAPI.window.reportAgents(agentRowsRef.current).catch(() => {});
-  }, [agentKey]);
+    window.electronAPI.window.reportAgents(sessionRowsRef.current).catch(() => {});
+  }, [sessionRowsKey]);
   useEffect(() => {
     if (!FEATURES.multiWindow) return undefined;
     const w = window.electronAPI.window;

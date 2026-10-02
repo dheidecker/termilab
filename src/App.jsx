@@ -18,6 +18,7 @@ import Settings from './components/Settings/Settings';
 import KnownHosts from './components/KnownHosts/KnownHosts';
 import Logs from './components/Logs/Logs';
 import AgentsDock from './components/Agents/AgentsDock';
+import { useSessionRequests } from './components/Agents/sessionActions';
 import HostKeyPrompt from './components/HostKeyPrompt/HostKeyPrompt';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
 import { FEATURES, IS_ANDROID } from './platform';
@@ -32,7 +33,7 @@ const SIDEBAR_KEY = 'termilab.sidebar.collapsed';
 const SESSION_SIDEBAR_KEY = 'termilab.sidebar.overSessions';
 const AGENTS_DOCK_KEY = 'termilab.agentsDock.open';
 
-/* The Agents dock is open or closed per window: sessionStorage is per
+/* The Sessions dock (AgentsDock; the keys predate the name) is open or closed per window: sessionStorage is per
    BrowserWindow and survives a renderer reload. A new window starts as the
    last one toggled (localStorage). */
 function readAgentsDock() {
@@ -66,6 +67,8 @@ function AppContent() {
   const [agentsDock, setAgentsDock] = useState(() => !IS_ANDROID && readAgentsDock());
   const toggleAgentsDock = () => setAgentsDock(prev => { saveAgentsDock(!prev); return !prev; });
   const closeAgentsDock = () => { saveAgentsDock(false); setAgentsDock(false); };
+  /* Another window's Sessions dock renaming/colouring/closing a terminal here */
+  useSessionRequests();
 
   /* No session tab selected → the home tab (sidebar + section) is showing */
   const homeActive = !tabs.some(t => t.id === activeTabId);

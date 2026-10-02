@@ -4,7 +4,7 @@ import {
   VaultIcon, KeyIcon, ForwardIcon, SnippetIcon, FingerprintIcon, ClockIcon, SettingsIcon, FolderIcon, AgentIcon,
 } from '../Icons/icons';
 import { FEATURES, IS_ANDROID } from '../../platform';
-import { panelAgentRows } from '../Agents/agentRows';
+import { panelSessionRows, isWaiting } from '../Agents/sessionRows';
 import './Sidebar.css';
 import '../Agents/Agents.css';
 
@@ -14,9 +14,9 @@ import '../Agents/Agents.css';
 const sections = [
   { id: 'hosts', label: 'Hosts', Icon: VaultIcon },
   { id: 'sftp', label: 'SFTP', Icon: FolderIcon, available: FEATURES.sftp, opensTab: true },
-  /* Not a section: toggles the Agents dock, which stays open over any view
-     (Android: the Sessions screen shows them) */
-  { id: 'agents', label: 'Agents', Icon: AgentIcon, available: !IS_ANDROID, toggle: true },
+  /* Not a section: toggles the Sessions dock, which stays open over any view
+     (Android: the Sessions screen) */
+  { id: 'sessions-dock', label: 'Sessions', Icon: AgentIcon, available: !IS_ANDROID, toggle: true },
   { id: 'keychain', label: 'Keychain', Icon: KeyIcon },
   { id: 'port-forwarding', label: 'Port Forwarding', Icon: ForwardIcon, available: FEATURES.portForwarding },
   { id: 'snippets', label: 'Snippets', Icon: SnippetIcon },
@@ -33,7 +33,7 @@ export default function Sidebar({ collapsed = false, onNavigate, agentsOpen = fa
      picking one goes back to the home tab with it */
   const homeActive = !state.tabs.some(t => t.id === state.activeTabId);
   /* Agents waiting for the user, in any window */
-  const waiting = panelAgentRows(state).rows.filter(r => r.state === 'blocked').length;
+  const waiting = panelSessionRows(state).rows.filter(isWaiting).length;
 
   const renderItem = ({ id, label, Icon, opensTab, toggle }) => {
     const active = homeActive && !opensTab && !toggle && state.activeSection === id;
@@ -55,7 +55,7 @@ export default function Sidebar({ collapsed = false, onNavigate, agentsOpen = fa
       >
         <Icon className="sidebar-item-icon" />
         {!collapsed && <span className="sidebar-item-label">{label}</span>}
-        {id === 'agents' && waiting > 0 && (
+        {toggle && waiting > 0 && (
           <span className="sidebar-badge" title={`${waiting} waiting for your input`}>{waiting}</span>
         )}
       </button>

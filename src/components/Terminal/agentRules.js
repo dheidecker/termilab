@@ -304,11 +304,9 @@ export function createAgentTracker(initial = null) {
   };
 }
 
-/* ─── Shared by the tab, pane header and Agents panel ─── */
+/* ─── Shared by the tab, pane header and Sessions dock ─── */
 
 export const AGENT_STATE_LABEL = { working: 'working', blocked: 'needs input', done: 'done', idle: 'idle' };
-/* Agents panel order: what needs the user first */
-export const AGENT_STATE_ORDER = { blocked: 0, done: 1, working: 2, idle: 3 };
 
 /** "12s", "2m", "1h 5m" since `since` */
 export function agentElapsed(since, now = Date.now()) {

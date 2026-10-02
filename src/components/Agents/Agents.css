@@ -236,13 +236,16 @@
 
 .agents-dock-row-blocked .agents-dock-time { color: var(--color-warning); font-weight: 600; }
 
-.agents-dock-window {
-  padding: 0 4px;
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+.agents-dock-group {
+  padding: 8px 8px 2px;
   font-size: 10px;
-  color: var(--text-secondary);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
 }
+
+.agents-dock-group:first-child { padding-top: 2px; }
 
 /* Drag the right edge: 6 px grab area centred on the border */
 .agents-dock-resize {
@@ -303,4 +306,14 @@ body.agents-dock-resizing .app-view { pointer-events: none; }
   min-width: 14px;
   height: 14px;
   padding: 0 3px;
+}
+
+/* Renaming a row (right-click → Rename…): the row is not clickable meanwhile */
+.agents-dock-row.editing { cursor: default; }
+.inline-rename.agents-dock-rename {
+  flex: none;
+  width: 100%;
+  box-sizing: border-box;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
 }

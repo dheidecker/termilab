@@ -25,11 +25,12 @@
  *      solo si la ventana no tiene el foco, se apaga al enfocarla; el badge
  *      es el total de paneles sin ver de TODAS las ventanas, baja al verlos y
  *      al cerrar una ventana.
- *  W14 panel de agentes: lo que reporta cada ventana (window:agents-report)
- *      se junta y llega a TODAS (cada una con sus filas `self`), la basura se
- *      descarta, cerrar una ventana quita sus filas de las demas, y pedir el
- *      foco de una fila enfoca la ventana duena y SOLO a ella le dice que
- *      pestana abrir.
+ *  W14 panel de sesiones: lo que reporta cada ventana (window:agents-report,
+ *      todas sus terminales, con o sin agente) se junta en orden de ventana y
+ *      llega a TODAS (cada una con sus filas `self`), la basura se descarta,
+ *      cerrar una ventana quita sus filas de las demas, pedir el foco de una
+ *      fila enfoca la ventana duena y SOLO a ella le dice que pestana abrir, y
+ *      window:session-action (rename/color/mute/close) llega limpia SOLO a la duena.
  *
  * Usa el singleton del registro, que ya tiene la ventana falsa del arnes
  * (registerIpcHandlers): por eso las ventanas de aqui nunca son la primaria.
@@ -157,8 +158,8 @@ async function seccionVentanas({ check, ROOT, handlers, onHandlers }) {
     }
   });
 
-  // ── W14 panel de agentes (todas las ventanas) ────────────
-  await check('W14 agentes: los reportes por ventana se juntan; cerrar una quita sus filas; el foco va a la ventana duena', async () => {
+  // ── W14 panel de sesiones (todas las ventanas) ────────────
+  await check('W14 sesiones: los reportes por ventana se juntan en orden (con y sin agente); acciones a la ventana duena; cerrar una quita sus filas', async () => {
     const A = ventanaFalsa('A14', { focused: true });
     const B = ventanaFalsa('B14');
     const call = (canal, V, ...args) => handlers.get(canal)({ sender: V.wc }, ...args).then(r => {
@@ -170,26 +171,28 @@ async function seccionVentanas({ check, ROOT, handlers, onHandlers }) {
       assert.ok(l.length > 0, `${V.wc.nombre} no recibio window:agents`);
       return l[l.length - 1][1];
     };
-    const ids = (lista) => lista.rows.map(r => r.tabId).sort();
+    const ids = (lista) => lista.rows.map(r => r.tabId);
     try {
       ipc.attachWindow(A.win);
       ipc.attachWindow(B.win);
       const eA = registry.entryOf(A.wc);
       const eB = registry.entryOf(B.wc);
       await call('window:agents-report', A, [
-        { tabId: 'a1', agentId: 'claude', name: 'Claude Code', state: 'working', since: 1000, title: 'api · Bastion', color: '#58a6ff' },
-        { tabId: 'a2', agentId: 'codex', name: 'Codex', state: 'blocked', since: 2000, title: 'Local Terminal' },
+        { tabId: 'a1', agentId: 'claude', name: 'Claude Code', state: 'working', since: 1000, title: 'api · Bastion', alias: 'api', host: 'Bastion', color: '#58a6ff' },
+        { tabId: 'a2', agentId: 'codex', name: 'Codex', state: 'blocked', since: 2000, title: 'Local Terminal', kind: 'local', connected: true },
+        { tabId: 'a3', groupId: 'a1', kind: 'ssh', connected: true, muted: true, title: 'Bastion', host: 'Bastion', name: 'no-soy-agente' },
       ]);
       await call('window:agents-report', B, [
         { tabId: 'b1', agentId: 'claude', name: 'Claude Code', state: 'done', since: 3000, title: 'web' },
-        { tabId: 'mala', state: 'exploto' }, 'basura', null, { state: 'idle' },
+        { tabId: 'mala', state: 'exploto' }, 'basura', null, { state: 'idle' }, { tabId: '' },
         { tabId: 'b2', agentId: 'aider', name: 'Aider', state: 'idle', since: 'ayer', color: 'javascript:alert(1)', title: 'x'.repeat(500) },
       ]);
       /* Las dos ventanas reciben la lista entera, juntada */
       let a = ultimo(A);
       let b = ultimo(B);
-      assert.deepStrictEqual(ids(a), ['a1', 'a2', 'b1', 'b2'], 'A no ve las filas de las dos ventanas');
-      assert.deepStrictEqual(ids(b), ['a1', 'a2', 'b1', 'b2'], 'B no ve las filas de las dos ventanas');
+      /* En el orden de cada barra de pestanas, ventana por ventana (no por estado) */
+      assert.deepStrictEqual(ids(a), ['a1', 'a2', 'a3', 'b1', 'mala', 'b2'], 'A no ve las filas de las dos ventanas en orden');
+      assert.deepStrictEqual(ids(b), ['a1', 'a2', 'a3', 'b1', 'mala', 'b2'], 'B no ve las filas de las dos ventanas en orden');
       assert.ok(a.windows >= 2, 'el recuento de ventanas no incluye A y B');
       /* Cada una marca las suyas */
       const fila = (lista, id) => lista.rows.find(r => r.tabId === id);
@@ -203,7 +206,17 @@ async function seccionVentanas({ check, ROOT, handlers, onHandlers }) {
       assert.strictEqual(fila(a, 'b2').color, null, 'un color que no es #rrggbb paso');
       assert.strictEqual(fila(a, 'b2').since, null, 'un since que no es numero paso');
       assert.ok(fila(a, 'b2').title.length <= 120, 'el titulo no se recorto');
+      assert.strictEqual(fila(a, 'a1').alias, 'api', 'el alias no llego');
+      assert.strictEqual(fila(a, 'a1').host, 'Bastion', 'el host no llego');
+      assert.strictEqual(fila(a, 'b1').alias, null, 'sin alias no dio null');
       assert.strictEqual(fila(a, 'a1').color, '#58a6ff');
+      /* Sin agente: sesion igual, con los campos de agente a null */
+      const a3 = fila(a, 'a3');
+      assert.deepStrictEqual([a3.state, a3.name, a3.agentId, a3.since], [null, null, null, null], 'una sesion sin agente trae campos de agente');
+      assert.deepStrictEqual([a3.groupId, a3.kind, a3.connected, a3.muted], ['a1', 'ssh', true, true]);
+      assert.strictEqual(fila(a, 'mala').state, null, 'un estado desconocido paso');
+      assert.strictEqual(fila(a, 'a2').kind, 'local');
+      assert.strictEqual(fila(a, 'a1').groupId, 'a1', 'sin groupId no es el propio tabId');
       /* Pedirla (ventana nueva) da lo mismo que el push */
       assert.deepStrictEqual(await call('window:agents', A), a, 'window:agents no coincide con el ultimo push');
       /* Clic en una fila de B desde A: B se enfoca y solo B abre la pestana */
@@ -215,11 +228,34 @@ async function seccionVentanas({ check, ROOT, handlers, onHandlers }) {
       assert.deepStrictEqual(A.focos, [], 'A se enfoco');
       assert.strictEqual(await call('window:focus-agent', A, { windowId: 'no-existe', tabId: 'b1' }), false, 'una ventana desconocida dio true');
       assert.strictEqual(await call('window:focus-agent', A, { windowId: eB.id }), false, 'sin tabId dio true');
+      /* Acciones sobre una fila de B desde A: solo B las recibe; rename/color/mute sin enfocarla */
+      const focosB = B.focos.length;
+      const act = (spec) => call('window:session-action', A, { windowId: eB.id, tabId: 'b1', ...spec });
+      assert.strictEqual(await act({ action: 'rename', value: 'logs' }), true);
+      assert.strictEqual(await act({ action: 'rename', value: 7 }), true);
+      assert.strictEqual(await act({ action: 'color', value: '#ff0000' }), true);
+      assert.strictEqual(await act({ action: 'color', value: 'red' }), true);
+      assert.strictEqual(await act({ action: 'mute', value: 'si' }), true);
+      assert.strictEqual(B.focos.length, focosB, 'rename/color/mute enfocaron B');
+      assert.strictEqual(await act({ action: 'close' }), true);
+      assert.ok(B.focos.length > focosB, 'close no enfoco B (alli se pregunta)');
+      assert.deepStrictEqual(B.de('window:session-request').map(x => x[1]), [
+        { tabId: 'b1', action: 'rename', value: 'logs' },
+        { tabId: 'b1', action: 'rename', value: null },
+        { tabId: 'b1', action: 'color', value: '#ff0000' },
+        { tabId: 'b1', action: 'color', value: null },
+        { tabId: 'b1', action: 'mute', value: false },
+        { tabId: 'b1', action: 'close', value: null },
+      ], 'B no recibio las acciones limpias');
+      assert.deepStrictEqual(A.de('window:session-request'), [], 'A recibio acciones que eran de B');
+      assert.strictEqual(await act({ action: 'rm -rf' }), false, 'una accion desconocida dio true');
+      assert.strictEqual(await call('window:session-action', A, { windowId: 'no-existe', tabId: 'b1', action: 'rename', value: 'x' }), false, 'ventana desconocida dio true');
       /* Cerrar B: sus filas se van de A */
       B.win.cerrar();
       a = ultimo(A);
-      assert.deepStrictEqual(ids(a), ['a1', 'a2'], 'cerrar B no quito sus filas de A');
+      assert.deepStrictEqual(ids(a), ['a1', 'a2', 'a3'], 'cerrar B no quito sus filas de A');
       assert.strictEqual(await call('window:focus-agent', A, { windowId: eB.id, tabId: 'b1' }), false, 'enfocar una ventana cerrada dio true');
+      assert.strictEqual(await call('window:session-action', A, { windowId: eB.id, tabId: 'b1', action: 'rename', value: 'x' }), false, 'actuar en una ventana cerrada dio true');
       /* A sin agentes: lista vacia */
       await call('window:agents-report', A, []);
       assert.deepStrictEqual(ultimo(A).rows, []);

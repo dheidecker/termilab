@@ -167,8 +167,8 @@ function attention(event, spec) {
   return { total: setBadge(), flashed };
 }
 
-/* ─── Agents panel (window:agents*) ───
-   Each window reports its terminals running an agent CLI; every window gets
+/* ─── Sessions panel (window:agents*, window:session-*) ───
+   Each window reports its terminals (agent state included); every window gets
    the merged list (its own rows marked self). A click on a row of another
    window focuses that BrowserWindow and tells its renderer which tab. */
 function broadcastAgents() {
@@ -187,6 +187,29 @@ function focusAgent(event, spec) {
     if (win && typeof win.focus === 'function') win.focus();
   } catch (_) { /* gone meanwhile */ }
   return windowRegistry.sendTo(entry.wc, 'window:activate-tab', { tabId });
+}
+/* Sessions panel, for a row of another window: that window owns the tab, so
+   it applies the action. rename (value: alias, '' = none), color (#rrggbb or
+   null), mute (bool), close (the window is focused first: it may ask). */
+const SESSION_ACTIONS = new Set(['rename', 'color', 'mute', 'close']);
+function sessionAction(event, spec) {
+  const entry = spec && spec.windowId != null ? windowRegistry.byId(spec.windowId) : null;
+  const tabId = spec && typeof spec.tabId === 'string' ? spec.tabId : null;
+  const action = spec && SESSION_ACTIONS.has(spec.action) ? spec.action : null;
+  if (!entry || !tabId || !action || !windowRegistry.liveWindows().includes(entry)) return false;
+  let value = null;
+  if (action === 'rename') value = typeof spec.value === 'string' ? spec.value.slice(0, 200) : null;
+  else if (action === 'color') value = typeof spec.value === 'string' && /^#[0-9a-fA-F]{6}$/.test(spec.value) ? spec.value : null;
+  else if (action === 'mute') value = spec.value === true;
+  if (action === 'close') {
+    const win = entry.win;
+    try {
+      if (win && typeof win.isMinimized === 'function' && win.isMinimized()) win.restore();
+      if (win && typeof win.show === 'function') win.show();
+      if (win && typeof win.focus === 'function') win.focus();
+    } catch (_) { /* gone meanwhile */ }
+  }
+  return windowRegistry.sendTo(entry.wc, 'window:session-request', { tabId, action, value });
 }
 
 /**
@@ -742,6 +765,8 @@ function registerIpcHandlers(mainWindow) {
   ipcMain.handle('window:agents', wrapHandler(async (event) => windowRegistry.agentRows(event.sender)));
   /* {windowId, tabId}: focus that window, which then opens that tab/pane */
   ipcMain.handle('window:focus-agent', wrapHandler(async (event, spec = {}) => focusAgent(event, spec)));
+  /* {windowId, tabId, action, value}: that window renames/colours/mutes/closes that terminal */
+  ipcMain.handle('window:session-action', wrapHandler(async (event, spec = {}) => sessionAction(event, spec)));
 
   /* Workspace restore (desktop; window:* is omitted on Android). take: what
      this window should recreate, once (null after, or when nothing is being
@@ -951,7 +976,7 @@ function removeIpcHandlers() {
     'window:info', 'window:list', 'window:attention', 'window:new', 'window:move-begin', 'window:move-transfer',
     'window:take-adoptions', 'window:move-adopted', 'window:move-ready', 'window:move-abort',
     'window:request-move', 'window:drop-target',
-    'window:agents-report', 'window:agents', 'window:focus-agent',
+    'window:agents-report', 'window:agents', 'window:focus-agent', 'window:session-action',
     'window:workspace-take', 'window:workspace-report', 'window:workspace-restored',
     'system:info',
     'sync:status', 'sync:login', 'sync:logout', 'sync:now',

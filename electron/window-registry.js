@@ -44,22 +44,34 @@ const crypto = require('crypto');
 const MOVE_TIMEOUT_MS = 15000;
 
 const AGENT_STATES = new Set(['working', 'blocked', 'done', 'idle']);
-const MAX_AGENT_ROWS = 200;
+const MAX_SESSION_ROWS = 200;
 const text = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
-function cleanAgentRows(rows) {
+const hexColor = (v) => (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v : null);
+/* Sessions panel rows: every terminal (pane) of a window, in tab-bar order.
+   The agent fields are there only when an agent CLI was recognised in it
+   (state null otherwise). */
+function cleanSessionRows(rows) {
   if (!Array.isArray(rows)) return [];
   const out = [];
-  for (const r of rows.slice(0, MAX_AGENT_ROWS)) {
+  for (const r of rows.slice(0, MAX_SESSION_ROWS)) {
     if (!r || typeof r !== 'object' || typeof r.tabId !== 'string' || !r.tabId) continue;
-    if (!AGENT_STATES.has(r.state)) continue;
+    const agent = AGENT_STATES.has(r.state);
     out.push({
       tabId: r.tabId.slice(0, 80),
-      agentId: text(r.agentId, 32),
-      name: text(r.name, 40) || 'Agent',
-      state: r.state,
-      since: Number.isFinite(r.since) ? r.since : null,
+      groupId: typeof r.groupId === 'string' && r.groupId ? r.groupId.slice(0, 80) : r.tabId.slice(0, 80),
+      kind: r.kind === 'local' ? 'local' : 'ssh',
+      connected: r.connected === true,
+      muted: r.muted === true,
+      agentId: agent ? text(r.agentId, 32) : null,
+      name: agent ? (text(r.name, 40) || 'Agent') : null,
+      state: agent ? r.state : null,
+      since: agent && Number.isFinite(r.since) ? r.since : null,
       title: text(r.title, 120),
-      color: typeof r.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(r.color) ? r.color : null,
+      /* The session alias ("logs") and the host label ("Mi Pc"), apart: the
+         panel names the row after the alias and puts the host under it */
+      alias: text(r.alias, 40) || null,
+      host: text(r.host, 80),
+      color: hexColor(r.color),
     });
   }
   return out;
@@ -227,21 +239,22 @@ class WindowRegistry {
     return this.liveWindows().reduce((sum, e) => sum + (e.unseen || 0), 0);
   }
 
-  /* Agents panel: each window reports its terminals that run an agent CLI
-     (window:agents-report); every window gets the merged list, its own rows
-     marked `self`. Rows are cleaned here: they come from a renderer. A
-     closed window's rows go with its entry. */
+  /* Sessions panel: each window reports its terminals, in tab-bar order
+     (window:agents-report); every window gets the merged list, grouped by
+     window number, its own rows marked `self`. Rows are cleaned here: they
+     come from a renderer. A closed window's rows go with its entry. */
   setAgents(winOrWc, rows) {
     const entry = this._windows.get(this._wc(winOrWc));
     if (!entry) return false;
-    entry.agents = cleanAgentRows(rows);
+    entry.agents = cleanSessionRows(rows);
     return true;
   }
 
-  /** {windows, rows:[{windowId, windowNumber, self, tabId, agentId, name, state, since, title, color}]} */
+  /** {windows, rows:[{windowId, windowNumber, self, tabId, groupId, kind, connected, muted,
+      agentId, name, state, since, title, alias, host, color}]} */
   agentRows(selfWc) {
     const self = this._wc(selfWc);
-    const live = this.liveWindows();
+    const live = [...this.liveWindows()].sort((x, y) => (x.number || 0) - (y.number || 0));
     const rows = [];
     for (const e of live) {
       for (const r of e.agents || []) rows.push({ ...r, windowId: e.id, windowNumber: e.number, self: e.wc === self });

@@ -618,3 +618,17 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   `body.agents-dock-resizing` quita `pointer-events` a `.app-view` (si no, xterm se queda el ratón).
 - Capturas/e2e: `/tmp/claude-1000/agents-dock/dock-shots.mjs` (dist/ + Chrome headless; abre, clic en
   filas, arrastra, oculta sidebar, cierra, con geometría y cols de cada panel).
+
+## Sessions dock (rama `fix/agents-dock-ux`, 2026-10-02)
+
+- El dock de Agents es ahora **Sessions**: todas las terminales (cada panel, SSH y local) en orden de la
+  barra de pestañas, ventana por ventana (main ordena por número). `Agents/sessionRows.js`
+  (`localSessionRows`/`panelSessionRows`) sustituye a `agentRows.js`; los campos de agente van a null sin
+  agente. Los canales siguen llamándose `window:agents-report`/`window:agents` (protocolo, no renombrar a medias).
+- Menú contextual de fila (Rename…, Color…, Mute, Move to New Window solo pestaña suelta propia, Close):
+  `Agents/sessionActions.js`. Fila de otra ventana → `window:session-action` → main la manda a la dueña
+  como `window:session-request`; la escucha `useSessionRequests()` en App. Close enfoca antes esa ventana
+  (allí salen sus diálogos). W14 de `check-windows.js` cubre filas sin agente y las acciones.
+- Rename en la fila: mientras edita la fila es `div`, no `button` (input dentro de button falla). El
+  doble rAF de `open()` que da el teclado a xterm se salta si hay rename en curso.
+- Capturas: `/tmp/claude-1000/agents-ux/shots.mjs` (dist/ + CDP; clic derecho con `Input.dispatchMouseEvent`).
