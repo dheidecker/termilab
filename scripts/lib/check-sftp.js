@@ -279,12 +279,20 @@ async function seccionSftp({ check, ROOT, getBridge }) {
       assert.ok(sid, 'sin sesion');
       writeRandom(big, 50 * 1024 * 1024);
       progress.length = 0;
+      // progressMs = 0: un push por trozo. Con el throttle real (120 ms) los 50 MB
+      // por localhost tardan ~120-140 ms, asi que salian 0 o 1 intermedios segun la
+      // maquina. El throttle se comprueba aparte, con tiempo de verdad (F4b).
+      transferService.progressMs = 0;
       const t0 = Date.now();
-      await transferService.start('t-50', { src: L, srcPath: big, dst: { ...R, sessionId: sid }, dstDir: remoteDir });
+      try {
+        await transferService.start('t-50', { src: L, srcPath: big, dst: { ...R, sessionId: sid }, dstDir: remoteDir });
+      } finally {
+        transferService.progressMs = 120;
+      }
       const ms = Date.now() - t0;
       const ev = progress.filter(p => p.id === 't-50');
       const intermedios = ev.filter(e => e.transferred > 0 && e.transferred < e.total);
-      assert.ok(intermedios.length >= 1, `sin eventos intermedios (${ev.length} en total)`);
+      assert.ok(intermedios.length >= 10, `sin eventos intermedios (${ev.length} en total)`);
       for (let i = 1; i < ev.length; i++) assert.ok(ev[i].transferred >= ev[i - 1].transferred, 'el progreso retrocedio');
       assert.strictEqual(ev[ev.length - 1].transferred, 50 * 1024 * 1024);
       assert.strictEqual(ev[0].total, 50 * 1024 * 1024);
@@ -308,6 +316,23 @@ async function seccionSftp({ check, ROOT, getBridge }) {
       assert.ok(!fs.existsSync(path.join(base, 'bajada-cancelada.bin')));
       assert.deepStrictEqual(partsIn(base), []);
     });
+    await check('F4b throttle de progreso: como mucho un push cada progressMs, y el forzado (inicio/fin) siempre sale', async () => {
+      const realNow = Date.now;
+      let t = 1000;
+      Date.now = () => t;
+      progress.length = 0;
+      try {
+        assert.strictEqual(transferService.progressMs, 120);
+        const job = { id: 't-thr', lastSent: 0, transferred: 0, total: 100, files: 1, filesDone: 0, current: 'x' };
+        const at = (ms, force) => { t = ms; job.transferred++; transferService._progress(job, force); };
+        at(1000, true); at(1001); at(1119); at(1120); at(1200); at(1239); at(1240, false); at(1241, true);
+      } finally {
+        Date.now = realNow;
+      }
+      const ev = progress.filter(p => p.id === 't-thr').map(e => e.transferred);
+      assert.deepStrictEqual(ev, [1, 4, 7, 8], `throttle mal: ${JSON.stringify(ev)}`);
+    });
+
     await check('F5 sobrescribir y cancelar a mitad: el fichero original sigue intacto', async () => {
       assert.ok(sid, 'sin sesion');
       const target = path.join(remoteDir, 'original.txt');
