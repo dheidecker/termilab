@@ -182,6 +182,7 @@ class StoreService {
         compression: false,
       },
       general: {
+        restoreTabs: true,     // reopen windows, tabs and splits on launch (desktop)
         startMinimized: false,
         minimizeToTray: false,
         checkUpdates: true,
@@ -722,6 +723,49 @@ class StoreService {
     } finally {
       this._releaseLock(collection);
     }
+  }
+
+  // ─── Workspace (local only, never synced) ───────────────
+  // The windows, tabs and split layouts to reopen on the next launch
+  // (workspace-service.js). One computer's arrangement, so it is not a sync
+  // collection, and its writes do NOT notify onLocalChange: they happen every
+  // time a tab opens, closes or a window moves, and must not start a sync.
+
+  /** The saved workspace, or null when there is none or it is unreadable. */
+  async getWorkspace() {
+    await this._ensureDataDir();
+    try {
+      const parsed = JSON.parse(await fsp.readFile(this._getFilePath('workspace'), 'utf-8'));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch (err) {
+      if (err.code !== 'ENOENT') console.error('[StoreService] Unreadable workspace, starting clean:', err.message);
+      return null;
+    }
+  }
+
+  async saveWorkspace(workspace) {
+    await this._ensureDataDir();
+    await this._acquireLock('workspace');
+    const filePath = this._getFilePath('workspace');
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(3).toString('hex')}.tmp`;
+    try {
+      await fsp.writeFile(tempPath, JSON.stringify(workspace, null, 2), 'utf-8');
+      await fsp.rename(tempPath, filePath);
+    } catch (err) {
+      try { await fsp.unlink(tempPath); } catch (_) { /* ignore */ }
+      throw err;
+    } finally {
+      this._releaseLock('workspace');
+    }
+  }
+
+  /** Last resort on quit (an update install does not wait): no lock, unique temp. */
+  saveWorkspaceSync(workspace) {
+    fs.mkdirSync(this.dataDir, { recursive: true });
+    const filePath = this._getFilePath('workspace');
+    const tempPath = `${filePath}.${process.pid}.quit.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(workspace, null, 2), 'utf-8');
+    fs.renameSync(tempPath, filePath);
   }
 
   // ─── Settings ───────────────────────────────────────────

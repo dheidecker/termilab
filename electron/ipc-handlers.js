@@ -16,6 +16,7 @@ const hostKeyService = require('./services/host-key-service');
 const connectionLogService = require('./services/connection-log-service');
 const { parseKnownHosts } = require('./services/known-hosts');
 const windowRegistry = require('./window-registry');
+const workspaceService = require('./services/workspace-service');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -77,6 +78,8 @@ windowRegistry.onOrphaned = (ids) => { endWindowSessions(ids); };
 function attachWindow(win) {
   const entry = windowRegistry.addWindow(win);
   const wc = entry.wc;
+  /* Its bounds and tabs go into the workspace restored on the next launch */
+  workspaceService.attach(win);
   win.on('maximize', () => windowRegistry.sendTo(wc, 'window:maximize-change', true));
   win.on('unmaximize', () => windowRegistry.sendTo(wc, 'window:maximize-change', false));
   /* Looking at it again: the taskbar stops asking for attention */
@@ -95,6 +98,9 @@ function attachWindow(win) {
     /* Quitting, or the last window going on Linux/Windows (quit follows):
        before-quit tears everything down, as it always did. */
     const lastAndQuitting = windowRegistry.liveWindows().length === 0 && process.platform !== 'darwin';
+    /* Closing one window of several ends its tabs: it leaves the workspace.
+       The close that quits the app keeps it (that is what is restored). */
+    workspaceService.windowClosed(wc, { keep: quitting || lastAndQuitting });
     if (quitting || lastAndQuitting) return;
     for (const id of transfers) { try { transferService.cancel(id); } catch (_) { /* done already */ } }
     for (const owner of edits) sftpEditService.cleanup(owner).catch(() => {});
@@ -689,6 +695,14 @@ function registerIpcHandlers(mainWindow) {
   /* {windowId, tabId}: focus that window, which then opens that tab/pane */
   ipcMain.handle('window:focus-agent', wrapHandler(async (event, spec = {}) => focusAgent(event, spec)));
 
+  /* Workspace restore (desktop; window:* is omitted on Android). take: what
+     this window should recreate, once (null after, or when nothing is being
+     restored). report: its tabs/layouts now. restored: tabs recreated and
+     reconnects started (clears the restore-loop guard once all windows did). */
+  ipcMain.handle('window:workspace-take', wrapHandler(async (event) => workspaceService.take(event.sender)));
+  ipcMain.handle('window:workspace-report', wrapHandler(async (event, snapshot) => workspaceService.report(event.sender, snapshot)));
+  ipcMain.handle('window:workspace-restored', wrapHandler(async (event) => workspaceService.restored(event.sender)));
+
   /* A new empty window: offset from the one asking, or at {x, y} */
   ipcMain.handle('window:new', wrapHandler(async (event, opts) => {
     const e = windowRegistry.createWindow(placeNear(event, opts));
@@ -889,6 +903,7 @@ function removeIpcHandlers() {
     'window:take-adoptions', 'window:move-adopted', 'window:move-ready', 'window:move-abort',
     'window:request-move', 'window:drop-target',
     'window:agents-report', 'window:agents', 'window:focus-agent',
+    'window:workspace-take', 'window:workspace-report', 'window:workspace-restored',
     'system:info',
     'sync:status', 'sync:login', 'sync:logout', 'sync:now',
     'sync:devices', 'sync:revoke-device',

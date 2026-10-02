@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef, useState, useMemo } from 'react';
 import { normalizeSyncStatus } from '../components/Sync/helpers';
 import { mockConnect } from '../components/SFTP/fsApi';
 import * as Layout from '../components/SplitPane/layoutTree';
@@ -6,6 +6,7 @@ import { connectTab, markAbandoned } from '../components/SplitPane/sessions';
 import { listenForAdoptions, listenForMoves, moveTabToWindow as moveTabToWindowImpl, windowInfo } from '../components/SplitPane/windowMove';
 import { FEATURES } from '../platform';
 import { localAgentRows } from '../components/Agents/agentRows';
+import { snapshotWindow, restorePlan, runStaggered } from '../components/SplitPane/workspace';
 
 const AppContext = createContext(null);
 
@@ -92,7 +93,7 @@ const MOCK_SETTINGS = {
   terminal: { fontSize: 14, fontFamily: 'JetBrains Mono', cursorStyle: 'block', scrollback: 5000 },
   appearance: { theme: 'dark', accentColor: '#58a6ff' },
   ssh: { defaultPort: 22, keepAliveInterval: 30 },
-  general: { autoConnect: false, restoreTabs: false },
+  general: { restoreTabs: true },
 };
 
 /* ── Helper to check Electron API ── */
@@ -102,8 +103,11 @@ const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 /* What ssh:connect gets for a saved host: the same for a terminal and for an
    SFTP pane's own connection. main resolves keyId to the private key and runs
    the same host-key verification either way. */
-function buildConnectConfig(host) {
+function buildConnectConfig(host, extra = {}) {
   const config = {
+    /* Stable per tab across restarts (workspace): opaque to main today, the
+       seam a future session keeper would attach by (ssh-service _openShell) */
+    ...(extra.sessionKey ? { sessionKey: extra.sessionKey } : {}),
     host: host.hostname,
     port: host.port || 22,
     username: host.username,
@@ -467,6 +471,24 @@ function baseReducer(state, action) {
         focusedPane: focusedPane ? { ...state.focusedPane, [groupId]: focusedPane } : state.focusedPane,
         activeSessions: { ...state.activeSessions, ...(sessions || {}) },
         activeTabId: groupId,
+      };
+    }
+
+    /* A window's saved tabs, recreated on launch (SplitPane/workspace.js
+       restorePlan): appended, with their layouts; SSH ones are `connecting`
+       and get connected one by one afterwards. */
+    case 'RESTORE_WORKSPACE': {
+      const p = action.payload;
+      if (!p || !Array.isArray(p.tabs) || !p.tabs.length) return state;
+      const have = new Set(state.tabs.map(t => t.id));
+      const fresh = p.tabs.filter(t => !have.has(t.id));
+      if (!fresh.length) return state;
+      return {
+        ...state,
+        tabs: [...state.tabs, ...fresh],
+        layouts: { ...state.layouts, ...(p.layouts || {}) },
+        focusedPane: { ...state.focusedPane, ...(p.focusedPane || {}) },
+        activeTabId: p.activeTabId !== undefined && p.activeTabId !== null ? p.activeTabId : state.activeTabId,
       };
     }
 
@@ -914,7 +936,7 @@ export function AppProvider({ children }) {
 
       if (hasApi()) {
         /* A tab closed before this resolves gets its session disconnected, not added */
-        return connectTab({ tabId, host, config: buildConnectConfig(host), ssh: api().ssh, dispatch });
+        return connectTab({ tabId, host, config: buildConnectConfig(host, { sessionKey: tabId }), ssh: api().ssh, dispatch });
       } else {
         /* Mock – open a demo terminal tab */
         const sessionId = `mock-${tabId}`;
@@ -1368,6 +1390,60 @@ export function AppProvider({ children }) {
       w.offEvents(request);
     };
   }, [reloadStore]);
+
+  /* ── Workspace restore (desktop) ──
+     Once the store has loaded: ask main what this window should recreate
+     (only windows of a restored launch get anything, and only once), rebuild
+     those tabs and splits, and reconnect each saved host through the normal
+     path (connectTab: host-key prompt, password…), RECONNECT_STAGGER_MS
+     apart. Then tell main the restore got this far (restore-loop guard), and
+     from then on report this window's tabs whenever they change. Reporting
+     waits for the take: an empty window reporting first would overwrite what
+     is about to be restored. */
+  const [workspaceReady, setWorkspaceReady] = useState(false);
+  const restoreStarted = useRef(false);
+  useEffect(() => {
+    if (state.loading || restoreStarted.current) return;
+    const w = FEATURES.multiWindow ? window.electronAPI.window : null;
+    if (!w || typeof w.workspaceTake !== 'function') return;
+    restoreStarted.current = true;
+    (async () => {
+      let saved = null;
+      try { saved = await w.workspaceTake(); } catch (_) { saved = null; }
+      if (!saved) { setWorkspaceReady(true); return; }
+      const plan = restorePlan(saved, stateRef.current.hosts);
+      dispatch({ type: 'RESTORE_WORKSPACE', payload: plan });
+      setWorkspaceReady(true);
+      await runStaggered(plan.connect, (tabId) => {
+        const st = stateRef.current;
+        const tab = st.tabs.find(t => t.id === tabId);
+        if (!tab || !tab.connecting) return null;   // closed before its turn
+        const host = st.hosts.find(h => h.id === tab.hostId);
+        if (!host) {
+          dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, connecting: false, error: 'This host was deleted.' } });
+          return null;
+        }
+        return connectTab({ tabId, host, config: buildConnectConfig(host, { sessionKey: tab.sessionKey || tabId }), ssh: api().ssh, dispatch });
+      });
+      w.workspaceRestored().catch(() => {});
+    })();
+  }, [state.loading]);
+
+  const workspaceKey = useMemo(() => {
+    if (!workspaceReady) return '';
+    return JSON.stringify(snapshotWindow({
+      tabs: state.tabs, layouts: state.layouts, activeTabId: state.activeTabId,
+      focusedPane: state.focusedPane, hosts: state.hosts,
+    }));
+  }, [workspaceReady, state.tabs, state.layouts, state.activeTabId, state.focusedPane, state.hosts]);
+  useEffect(() => {
+    if (!workspaceKey || !FEATURES.multiWindow) return undefined;
+    /* Short debounce here (a drag fires several changes); main debounces the disk write */
+    const t = setTimeout(() => {
+      window.electronAPI.window.workspaceReport?.(JSON.parse(workspaceKey))?.catch?.(() => {});
+    }, 250);
+    return () => clearTimeout(t);
+  }, [workspaceKey]);
 
   /* A rule deleted elsewhere (a sync pull rewrites the collection) while it
      runs here would keep its tunnel open with no card left to stop it. */

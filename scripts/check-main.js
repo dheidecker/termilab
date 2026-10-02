@@ -22,6 +22,8 @@
  *     userData, su llavero y su almacen; ver `usarDispositivo`).
  *  6. VARIAS VENTANAS (W*, scripts/lib/check-windows.js): eventos por sesion
  *     solo a su ventana, mudanza con bufer sin perder ni repetir, cierre.
+ *  7. RESTAURAR al arrancar (R*) y RECONEXION automatica (A*),
+ *     scripts/lib/check-workspace.js.
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -1359,6 +1361,10 @@ async function main() {
 
   // ── W. Varias ventanas: enrutado por sesion, mudanzas con bufer, cierre ──
   await require('./lib/check-windows').seccionVentanas({ check, ROOT, handlers, onHandlers });
+
+  // ── R/A. Restaurar el espacio de trabajo; reconexion automatica ──
+  await require('./lib/check-workspace').seccionWorkspace({ check, ROOT });
+  await require('./lib/check-workspace').seccionReconexion({ check, ROOT });
 
   const cryptoService = require(path.join(ROOT, 'electron', 'services', 'crypto-service.js'));
   const storeService = require(path.join(ROOT, 'electron', 'services', 'store-service.js'));

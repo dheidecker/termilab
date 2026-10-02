@@ -12,6 +12,7 @@ const localShellService = require('./services/local-shell-service');
 const syncService = require('./services/sync-service');
 const hostKeyService = require('./services/host-key-service');
 const connectionLogService = require('./services/connection-log-service');
+const workspaceService = require('./services/workspace-service');
 
 // Every open window (keeps them from being garbage collected). Several since
 // multi-window; what goes to which one is electron/window-registry.js.
@@ -28,7 +29,7 @@ const closeConfirmed = new WeakSet();
  * A full Termilab window (tab bar, Hosts, sidebar). `bounds` places it: a tab
  * dropped outside a window opens one where it was dropped.
  */
-function createWindow(bounds = {}) {
+function createWindow(bounds = {}, { maximized = false } = {}) {
   const preloadPath = path.join(__dirname, 'preload.js');
   const first = windows.size === 0;
 
@@ -70,6 +71,7 @@ function createWindow(bounds = {}) {
 
   // Show window once content is ready to avoid white flash
   win.once('ready-to-show', () => {
+    if (maximized) win.maximize();
     win.show();
   });
 
@@ -253,9 +255,24 @@ function sendUpdateStatus(status, data = {}) {
 
 // ─── App Lifecycle ──────────────────────────────────────
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   setupMenu();
-  createWindow();
+  /* The windows of the last run (workspace-service.js), each where it was and
+     with its tabs to recreate; or one fresh window. Never blocks the launch. */
+  let plan = null;
+  try {
+    plan = await workspaceService.begin();
+  } catch (err) {
+    console.error('[Main] Could not read the saved workspace:', err.message);
+  }
+  if (plan && plan.windows.length) {
+    for (const w of plan.windows) {
+      const win = createWindow(w.bounds || {}, { maximized: w.maximized });
+      workspaceService.assign(win, w);
+    }
+  } else {
+    createWindow();
+  }
   setupAutoUpdater();
 
   // Back to the window: pick up what other devices changed meanwhile.
@@ -291,11 +308,16 @@ app.on('before-quit', async (event) => {
   setQuitting(true);
   if (installingUpdate) {
     connectionLogService.closeAllSync();
+    try { workspaceService.quitFlushSync(); } catch (err) { console.error('[Main] Could not save the workspace:', err.message); }
   } else {
     event.preventDefault();
     let timer;
     Promise.race([
-      connectionLogService.closeAllForQuit(QUIT_LOG_TIMEOUT_MS),
+      Promise.all([
+        connectionLogService.closeAllForQuit(QUIT_LOG_TIMEOUT_MS),
+        /* Windows, tabs and splits for the next launch, before anything closes */
+        workspaceService.quitFlush().catch(err => console.error('[Main] Could not save the workspace:', err.message)),
+      ]),
       new Promise(r => { timer = setTimeout(r, QUIT_LOG_TIMEOUT_MS + 500); }),
     ]).catch(err => console.error('[Main] Could not close history on quit:', err.message))
       .finally(() => { clearTimeout(timer); app.quit(); });

@@ -96,6 +96,8 @@ export default function TerminalView({ tab }) {
     mountedRef.current = true;
     /* This run's cleanup happened (pane closed, or StrictMode's remount) */
     let disposed = false;
+    /* ssh:reconnect listener of this run (SSH tabs), removed on cleanup */
+    let reconnectListener = null;
     /* Moved in from another window: its screen (serialized there), written
        into this new xterm before anything else; then main is told to hand the
        session's output over (windowMove.js). Same geometry as the source until
@@ -544,6 +546,19 @@ export default function TerminalView({ tab }) {
           }
         });
 
+        /* The link dropped and main is redialling (same session id; the
+           "Reconnecting… (attempt n)" lines arrive as ordinary data). The
+           dot goes grey meanwhile; once back, the new shell gets our size. */
+        reconnectListener = window.electronAPI.ssh.onReconnect?.((p) => {
+          if (!mountedRef.current || !p || p.sessionId !== sessionIdRef.current) return;
+          if (p.state === 'reconnected') {
+            setConnected(true);
+            try { window.electronAPI.ssh.resize(sessionIdRef.current, term.cols, term.rows); } catch (_) { /* gone */ }
+          } else if (p.state === 'lost' || p.state === 'reconnecting') {
+            setConnected(false);
+          }
+        }) || null;
+
         /* Terminal -> SSH */
         term.onData((raw) => {
           const data = filterInput(raw);
@@ -661,6 +676,7 @@ export default function TerminalView({ tab }) {
 
     return () => {
       disposed = true;
+      if (reconnectListener) window.electronAPI?.ssh?.removeReconnectListener?.(reconnectListener);
       clearTimeout(scanTimer);
       if (term.textarea) term.textarea.removeEventListener('keydown', onKey);
       unregister();
@@ -811,12 +827,12 @@ export default function TerminalView({ tab }) {
             <line x1="15" y1="9" x2="9" y2="15"/>
             <line x1="9" y1="9" x2="15" y2="15"/>
           </svg>
-          <div style={{color: 'var(--color-danger)', fontWeight: 500}}>Connection Failed</div>
+          <div style={{color: 'var(--color-danger)', fontWeight: 500}}>{tab.skipped ? 'Not reconnected' : 'Connection Failed'}</div>
           <div className="terminal-connecting-host">{tab.error}</div>
         </div>
         <div className="terminal-status">
           <span className="terminal-status-dot disconnected" />
-          <span>{tab.alias ? paneTitle(tab) : (tab.label || 'SSH')} — Failed</span>
+          <span>{tab.alias ? paneTitle(tab) : (tab.label || 'SSH')} — {tab.skipped ? 'Not reconnected' : 'Failed'}</span>
         </div>
       </div>
     );

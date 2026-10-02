@@ -8,7 +8,9 @@
  *     (the Android emulator reaches the host as 10.0.2.2)
  *
  * Built-in commands besides sh: `burst N` writes N one-byte packets and then
- * "burst-done" (to measure the bridge's ssh:data batching).
+ * "burst-done" (to measure the bridge's ssh:data batching); `exit-drop` sends
+ * the exit status and then ends the whole connection without closing the
+ * channel first (a shell that exited as the link went: must not reconnect).
  */
 const fs = require('fs');
 const os = require('os');
@@ -22,7 +24,13 @@ function hostKey(file) {
   return fs.readFileSync(out);
 }
 
-function runShell(stream) {
+/* A write that lands after the client went away: with compression ssh2 throws
+   synchronously ("Invalid Zlib instance") between the socket's 'end' and its
+   'close' (the channels are still open, the zlib stream is not). A test that
+   cuts the socket on purpose must not take the whole harness down with it. */
+const late = (fn) => { try { fn(); } catch (_) { /* the client is gone */ } };
+
+function runShell(stream, conn) {
   let line = '';
   const prompt = () => stream.write('$ ');
   stream.write('termilab test sshd\r\n');
@@ -35,6 +43,7 @@ function runShell(stream) {
         line = '';
         if (!cmd) { prompt(); continue; }
         if (cmd === 'exit') { stream.exit(0); stream.end(); return; }
+        if (cmd === 'exit-drop' && conn && conn._sock) { stream.exit(0); conn._sock.end(); return; }
         const burst = cmd.match(/^burst (\d+)$/);
         if (burst) {
           for (let i = 0; i < Number(burst[1]); i++) stream.write('.');
@@ -42,11 +51,11 @@ function runShell(stream) {
           prompt();
           continue;
         }
-        exec(cmd, { timeout: 10000, shell: '/bin/sh' }, (err, stdout, stderr) => {
+        exec(cmd, { timeout: 10000, shell: '/bin/sh' }, (err, stdout, stderr) => late(() => {
           const text = `${stdout || ''}${stderr || ''}`.replace(/\r?\n/g, '\r\n');
           if (text) stream.write(text);
           prompt();
-        });
+        }));
       } else if (ch === '\x7f' || ch === '\b') {
         if (line) { line = line.slice(0, -1); stream.write('\b \b'); }
       } else if (ch === '\x03') {
@@ -79,15 +88,15 @@ function startSshTestServer({ host = '127.0.0.1', port = 0, user = null, passwor
         session.on('pty', (ok) => ok && ok());
         session.on('window-change', (ok) => ok && ok());
         session.on('env', (ok) => ok && ok());
-        session.on('shell', (ok) => runShell(ok()));
+        session.on('shell', (ok) => runShell(ok(), client));
         session.on('exec', (ok, _reject, info) => {
           const stream = ok();
-          exec(info.command, { timeout: 10000 }, (err, stdout, stderr) => {
+          exec(info.command, { timeout: 10000 }, (err, stdout, stderr) => late(() => {
             stream.write(stdout || '');
             stream.stderr.write(stderr || '');
             stream.exit(err ? 1 : 0);
             stream.end();
-          });
+          }));
         });
       });
     });

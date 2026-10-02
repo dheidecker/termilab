@@ -221,16 +221,22 @@ export default function Settings({ fullPage = false, onBack }) {
                 />
               </div>
 
-              <div className="settings-field">
-                <div className="settings-field-label">
-                  <span>Auto-connect</span>
-                  <small>Reconnect sessions on startup</small>
+              {/* Desktop only: Android does not restore tabs (yet). Default on:
+                  a settings.json from before this option has no key. */}
+              {!IS_ANDROID && (
+                <div className="settings-field">
+                  <div className="settings-field-label">
+                    <span>Restore tabs on startup</span>
+                    <small>Reopen your windows, tabs and splits, and reconnect saved hosts. Screen contents are not kept.</small>
+                  </div>
+                  <button
+                    className={`settings-toggle ${settings.general?.restoreTabs !== false ? 'active' : ''}`}
+                    onClick={() => update('general.restoreTabs', settings.general?.restoreTabs === false)}
+                    aria-pressed={settings.general?.restoreTabs !== false}
+                    aria-label="Restore tabs on startup"
+                  />
                 </div>
-                <button
-                  className={`settings-toggle ${settings.general?.autoConnect ? 'active' : ''}`}
-                  onClick={() => update('general.autoConnect', !settings.general?.autoConnect)}
-                />
-              </div>
+              )}
             </div>
 
             <div className="settings-section">

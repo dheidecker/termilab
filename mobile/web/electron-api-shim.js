@@ -209,6 +209,15 @@ export function createElectronAPI(transport, options = {}) {
         ipc.removeListener('ssh:host-key-prompt-cancel', listener);
       },
       respondHostKey: (requestId, accept) => invoke('ssh:host-key-response', { requestId, accept: accept === true }),
+      /* Auto-reconnect pushes: same main code as desktop (ssh-service) */
+      onReconnect: (callback) => {
+        const listener = (event, payload) => callback(payload);
+        ipc.on('ssh:reconnect', listener);
+        return listener;
+      },
+      removeReconnectListener: (listener) => {
+        if (listener) ipc.removeListener('ssh:reconnect', listener);
+      },
       removeAllListeners: () => {
         ipc.removeAllListeners('ssh:data');
         ipc.removeAllListeners('ssh:close');

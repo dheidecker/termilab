@@ -78,6 +78,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('ssh:host-key-prompt-cancel', listener);
     },
     respondHostKey: (requestId, accept) => invoke('ssh:host-key-response', { requestId, accept: accept === true }),
+    /* Auto-reconnect after a drop: {sessionId, state: 'lost'|'reconnecting'|
+       'reconnected'|'failed', attempt, delayMs?, error?}. The session id does
+       not change; 'failed' is followed by the usual ssh:close. One per
+       terminal; removeReconnectListener(listener) detaches it. */
+    onReconnect: (callback) => {
+      const listener = (event, payload) => callback(payload);
+      ipcRenderer.on('ssh:reconnect', listener);
+      return listener;
+    },
+    removeReconnectListener: (listener) => {
+      if (listener) ipcRenderer.removeListener('ssh:reconnect', listener);
+    },
     removeAllListeners: () => {
       ipcRenderer.removeAllListeners('ssh:data');
       ipcRenderer.removeAllListeners('ssh:close');
@@ -305,6 +317,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     reportAgents: (rows) => invoke('window:agents-report', rows || []),
     agents: () => invoke('window:agents'),
     focusAgent: (spec) => invoke('window:focus-agent', spec || {}),
+    /* Workspace restore on launch: workspaceTake() = what this window should
+       recreate ({tabs, layouts, activeTabId, focusedPane}, once; null when
+       nothing); workspaceReport(snapshot) = its tabs now; workspaceRestored()
+       = recreated, reconnects started. See electron/services/workspace-service.js */
+    workspaceTake: () => invoke('window:workspace-take'),
+    workspaceReport: (snapshot) => invoke('window:workspace-report', snapshot || {}),
+    workspaceRestored: () => invoke('window:workspace-restored'),
     /* A new, empty window: {x, y} = screen point to open at (optional) */
     create: (opts) => invoke('window:new', opts || {}),
     /* Moving a tab: see electron/window-registry.js. begin() makes main buffer
