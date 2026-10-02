@@ -131,3 +131,29 @@ tuyos — corrige lo que compruebes que ya no es cierto.
 - **Sin comprobar:** la extracción del keeper en un dispositivo real (se dedujo de
   `CapacitorNodeJS.copyNodeProjectFromAPK` + el listado del APK), y los paquetes de mac/win con el
   keeper dentro (solo se construyó `linux-unpacked`).
+
+## Método de entrada en Linux: IBus fuera (2026-10-02)
+
+- **Quién elige el módulo IM:** GTK3 dentro del proceso main, al **primer foco de un campo de
+  texto** (no al arrancar). Por eso `process.env.GTK_IM_MODULE = ...` arriba de `main.js` basta y
+  cubre todas las rutas de arranque: no hace falta tocar el `.desktop` ni el AppRun. `XMODIFIERS`
+  no influye en esa elección (solo lo usa el módulo `xim`). Medido con `/proc/<pid>/maps`:
+  `im-ibus.so` + `libibus-1.0.so` cargados sin el cambio, nada con él.
+- **`--disable-gtk-ime` existe en Electron 33 pero NO sirve:** quita también las teclas muertas
+  (´ + a da «a»). `gtk-im-context-simple` sí las compone.
+- **`/proc/<pid>/environ` no refleja las asignaciones a `process.env`** (es el entorno inicial):
+  no lo uses como prueba de que la variable llegó; usa `maps`.
+- **Banco de prueba que funciona:** `xvfb-run` + `setxkbmap latam` + `xdotool` real
+  (`apt-get download xdotool libxdo3` y `dpkg-deb -x`, `LD_LIBRARY_PATH` a su lib) +
+  `--remote-debugging-port` solo para enfocar el input y leer su valor. CDP
+  `Input.dispatchKeyEvent` no sirve para esto: entra directo al renderer y se salta el IME del
+  proceso main. Sin `ibus-daemon` en el Xvfb, `im-ibus.so` se carga igual (y cae a simple).
+- **`pgrep -f <patrón>` dentro de `xvfb-run` casa con el argv del propio xvfb-run** si le pasas el
+  patrón como argumento, y el `pkill` se lo lleva. Ánclalo: `"^[^ ]*linux-unpacked/termilab --no-sandbox"`.
+- **Un worktree creado con umask 077 tiene las fuentes en 0600**, y el `umask 022` de los scripts
+  no lo arregla: electron-builder copia el modo del icono y el `.deb` sale con
+  `hicolor/512x512/apps/termilab.png` 0600 (`check-package-perms.js` lo caza). Antes de empaquetar
+  en un worktree: `git ls-files -z | xargs -0 chmod a+r`.
+- **Sin comprobar:** Wayland nativo (`--ozone-platform=wayland`; Electron 33 arranca en X11 por
+  defecto), y que las apps abiertas con `shell.openPath` (editor de sftp-edit) heredan
+  `GTK_IM_MODULE=gtk-im-context-simple`; la terminal local no, `local-shell-service` lo borra.

@@ -1,3 +1,15 @@
+/* Linux: type through GTK's built-in input method, not IBus. IBus on X11
+   intermittently stops delivering keys to Chromium (spaces vanish, Shift+letter
+   stuck in a preedit, inputs stop typing). gtk-im-context-simple still does
+   dead keys (´ ¨ ^ `) and Compose; CJK IMEs are lost. GTK reads the variable
+   lazily, the first time a text field takes focus, so setting it here works for
+   every launch path (deb, pacman, AppImage, updater relaunch, npm run dev).
+   Not `--disable-gtk-ime`: that drops dead keys too (´ a gives "a").
+   Opt out with TERMILAB_USE_SYSTEM_IME=1. */
+if (process.platform === 'linux' && process.env.TERMILAB_USE_SYSTEM_IME !== '1') {
+  process.env.GTK_IM_MODULE = 'gtk-im-context-simple';
+}
+
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 
@@ -330,10 +342,14 @@ function linuxPackageType() {
 /* Waits for this process to exit, then starts Termilab again. */
 function relaunchDetached() {
   try {
+    /* systemd-run starts the new instance with the user manager's env, not
+       ours: carry the IME opt-out across (GTK_IM_MODULE itself is re-set by
+       the top of this file on every start). */
+    const keepEnv = process.env.TERMILAB_USE_SYSTEM_IME ? '-E TERMILAB_USE_SYSTEM_IME ' : '';
     const script = 'while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; '
       + 'state=$(systemctl --user is-system-running 2>/dev/null); '
       + 'if command -v systemd-run >/dev/null 2>&1 && { [ "$state" = running ] || [ "$state" = degraded ]; }; then '
-      + 'exec systemd-run --user --collect --quiet -- "$0"; fi; exec "$0"';
+      + `exec systemd-run --user --collect --quiet ${keepEnv}-- "$0"; fi; exec "$0"`;
     const child = require('child_process').spawn('/bin/sh', ['-c', script, process.execPath, String(process.pid)], {
       detached: true,
       stdio: 'ignore',
