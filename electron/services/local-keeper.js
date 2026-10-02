@@ -294,7 +294,14 @@ class LocalKeeper {
     const args = buildCreateArgs({ bin: prep.bin, id, cols, rows, setenv });
     let r = await run(prep.systemdRun, args, { timeout: CREATE_TIMEOUT_MS, cwd });
     if (r.code !== 0 && /already (loaded|exists)|fragment/i.test(r.stderr)) {
-      /* A unit of that name left over (session gone, unit not collected yet) */
+      /* A unit of that name exists. If it is running, the session is alive
+         (a slow or failed `list` made it look absent: several tabs restoring
+         at once, a stopped daemon holding the lock): attach to it, never stop
+         it — stopping would kill whatever runs in that shell. Only a unit
+         left over from a dead session (not active, not yet collected) is
+         cleared and recreated. */
+      const active = await run('systemctl', ['--user', 'is-active', `${keepUnitName(id)}.service`], { timeout: 5000 });
+      if (active.code === 0 || /^(active|activating|reloading)\b/.test(String(active.stdout || '').trim())) return { ok: true };
       await run('systemctl', ['--user', 'stop', `${keepUnitName(id)}.service`], { timeout: 5000 });
       await run('systemctl', ['--user', 'reset-failed', `${keepUnitName(id)}.service`], { timeout: 5000 });
       r = await run(prep.systemdRun, args, { timeout: CREATE_TIMEOUT_MS, cwd });

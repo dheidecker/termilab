@@ -37,7 +37,7 @@ export async function planKeeperClose(members) {
     const jobs = info.isShell && Array.isArray(info.jobs) ? [...new Set(info.jobs)] : [];
     if (info.isShell && !jobs.length) end.add(t.id);
     else if (info.isShell) running.push({ tab: t, label: t.alias || t.label, fgCommand: jobs.join(', '), background: true });
-    else running.push({ tab: t, label: t.alias || t.label, fgCommand: info.fgCommand });
+    else running.push({ tab: t, label: t.alias || t.label, fgCommand: info.fgCommand || 'A program' });
   }
   if (!running.length) return { end };
   const answer = await askKeeperClose(running);
