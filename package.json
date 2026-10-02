@@ -1,8 +1,8 @@
 {
   "name": "termilab",
   "private": true,
-  "version": "1.16.1",
-  "description": "Termilab \u2014 A modern SSH client for managing your servers",
+  "version": "1.16.2",
+  "description": "Termilab — A modern SSH client for managing your servers",
   "license": "MIT",
   "homepage": "https://github.com/dheidecker/termilab",
   "main": "electron/main.js",
@@ -113,7 +113,7 @@
       ],
       "fpm": [
         "--description",
-        "Termilab \u2014 A modern SSH client for managing your servers"
+        "Termilab — A modern SSH client for managing your servers"
       ]
     },
     "mac": {
