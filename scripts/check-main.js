@@ -24,6 +24,9 @@
  *     solo a su ventana, mudanza con bufer sin perder ni repetir, cierre.
  *  7. RESTAURAR al arrancar (R*) y RECONEXION automatica (A*),
  *     scripts/lib/check-workspace.js.
+ *  8. TERMINAL LOCAL con no_new_privs (N*, scripts/lib/check-local-shell.js):
+ *     shell fuera del arbol de procesos via systemd-run --user, de verdad si
+ *     aqui hay gestor de usuario.
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -1355,6 +1358,9 @@ async function main() {
 
   // ── P. Port forwarding ────────────────────────────────────
   await seccionPortForward();
+
+  // ── N. Terminal local con no_new_privs: shell via systemd-run (Linux) ──
+  await require('./lib/check-local-shell').seccionLocalShell({ check, ROOT });
 
   // ── L/F. SFTP de dos paneles: local-fs, sshd real, transferencias ──
   await require('./lib/check-sftp').seccionSftp({ check, ROOT, getBridge: () => bridge });

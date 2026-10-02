@@ -646,3 +646,26 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   para tener `require('electron').app.quit()` (sin eso `require` no existe y no pasa nada). Node
   **espera a que se vaya el depurador** antes de salir: cierra el WebSocket enseguida y comprueba que
   el proceso terminó, o el segundo arranque se engancha a las ventanas del primero y todo "pasa".
+## Terminal local con no_new_privs (2026-10-02, N1–N5)
+
+- **Quien pone NNP=1 no es Electron al arrancar**: un Electron lanzado desde un padre NNP=0 sigue en
+  0 (comprobado). Lo pone **`app.relaunch()`** — el que llama electron-updater tras `dpkg -i`/`pacman -U`
+  en `quitAndInstall`: el relauncher de Chromium sale de `base::LaunchProcess`, que hace
+  `PR_SET_NO_NEW_PRIVS` salvo `allow_new_privs`. Termilab relanzado = NNP=1 hasta que el usuario lo
+  cierre y lo abra desde el dock. Con NNP no hay file caps ni setuid: snap-confine, sudo, pkexec, ping.
+- Arreglo: `local-shell-escape.js`. Si Linux + NNP=1 + `systemd-run` + bus + `systemctl --user
+  is-system-running` imprime running/degraded (sale ≠0 en degraded: se mira lo impreso), el shell lo
+  arranca el gestor de usuario: `systemd-run --user --pty --quiet --collect --wait --same-dir
+  --unit=termilab-shell-<sid> --setenv=… -- <shell> --login`. Decisión cacheada por proceso.
+  `TERMILAB_DIRECT_PTY=1` fuerza el camino viejo. macOS/Windows/Android: intacto.
+- El entorno base de la unidad es el del gestor (el mismo que recibe gnome-terminal); solo cruza una
+  lista blanca (`filterEnv`) + lo que pone el servicio. Nada de ELECTRON_/CHROME_/GOOGLE_/tokens.
+- `ptyProcess.pid` pasa a ser el de systemd-run, no el del shell (hoy nadie lo usa). Un `nohup x &`
+  muere al cerrar la pestaña (la unidad se para entera). `^]` tres veces en 1 s desconecta (ptyfwd).
+- `kill()` manda SIGHUP a systemd-run → cierra su maestro → el shell recibe SIGHUP y la unidad acaba;
+  `systemctl --user stop --no-block` queda de red. `exit 7` → onExit con 7 (systemd-run --wait lo propaga).
+- Arnés N5: node-pty está compilado para el ABI de Electron, así que corre en un hijo
+  `ELECTRON_RUN_AS_NODE=1` (`scripts/lib/local-shell-driver.js`). Dos carreras ya vistas: escribir antes
+  de que el login shell termine el perfil se pierde (esperar prompt + 500 ms de silencio) y
+  `list-units` justo tras `spawn` aún no ve la unidad. `run-*` en `--user` lista también mounts: filtrar
+  `run-*.service`. Si no hay systemd --user, N5 se marca OMITIDA (no falla).

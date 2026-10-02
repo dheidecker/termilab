@@ -2,6 +2,7 @@ const os = require('os');
 const crypto = require('crypto');
 const connectionLogService = require('./connection-log-service');
 const windowRegistry = require('../window-registry');
+const ptyEscape = require('./local-shell-escape');
 
 let pty;
 try {
@@ -16,6 +17,8 @@ class LocalShellService {
   constructor() {
     /** @type {Map<string, import('node-pty').IPty>} */
     this.shells = new Map();
+    /** sessionId -> systemd unit name, only for shells started via systemd-run */
+    this.units = new Map();
     /** sessionId -> connection-log entry id */
     this.logIds = new Map();
     /** @type {import('electron').BrowserWindow | null} */
@@ -92,16 +95,34 @@ class LocalShellService {
     try {
       const shellArgs = process.platform === 'win32' ? [] : ['--login'];
 
-      const ptyProcess = pty.spawn(shell, shellArgs, {
+      /* Linux with no_new_privs (Termilab relaunched by the updater): the
+         shell is started by the user's systemd instead, so snap, sudo and
+         friends work. See local-shell-escape.js. */
+      const decision = process.platform === 'linux'
+        ? await ptyEscape.launchDecision()
+        : { mode: 'direct' };
+      let file = shell;
+      let args = shellArgs;
+      let spawnEnv = env;
+      let unit = null;
+      if (decision.mode === 'systemd-run') {
+        unit = ptyEscape.unitName(sessionId);
+        spawnEnv = ptyEscape.filterEnv(process.env, { ...(options.env || {}), TERM: 'xterm-256color', COLORTERM: 'truecolor' });
+        file = decision.systemdRun;
+        args = ptyEscape.buildSystemdRunArgs({ unit, shell, shellArgs, setenv: spawnEnv });
+      }
+
+      const ptyProcess = pty.spawn(file, args, {
         name: 'xterm-256color',
         cols,
         rows,
         cwd,
-        env,
+        env: spawnEnv,
         useConpty: process.platform === 'win32',
       });
 
       this.shells.set(sessionId, ptyProcess);
+      if (unit) this.units.set(sessionId, unit);
       /* Logs section: start/end only, never what was typed or printed */
       const logId = connectionLogService.start({ type: 'local' });
       this.logIds.set(sessionId, logId);
@@ -113,6 +134,7 @@ class LocalShellService {
       ptyProcess.onExit(({ exitCode, signal }) => {
         this._send('local:close', sessionId, exitCode, signal);
         this.shells.delete(sessionId);
+        this.units.delete(sessionId);
         this._endLog(sessionId);
         windowRegistry.release(sessionId);
       });
@@ -172,6 +194,9 @@ class LocalShellService {
       console.error(`[LocalShellService] Error killing session ${sessionId}:`, err.message);
     } finally {
       this.shells.delete(sessionId);
+      /* SIGHUP to systemd-run already ends the unit; this is the safety net */
+      const unit = this.units.get(sessionId);
+      if (unit) { this.units.delete(sessionId); ptyEscape.stopUnit(unit); }
       this._endLog(sessionId);
     }
   }
