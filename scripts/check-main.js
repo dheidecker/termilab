@@ -31,6 +31,8 @@
  *     aqui hay gestor de usuario.
  *  8b. KEEPER LOCAL (LK*, scripts/lib/check-local-keeper.js): terminales
  *     locales guardadas; de verdad, matando el arbol entero de "Termilab".
+ *  8c. BACKGROUND (BG*, scripts/lib/check-background.js): la lista de sesiones
+ *     guardadas que este equipo mando al fondo (registro, quitar, persistir).
  *  9. BINARIOS DEL KEEPER (KB*, scripts/lib/check-keeper-files.js): manifest,
  *     sha256, ELF estatico por arquitectura, Zig fijado.
  *
@@ -1365,9 +1367,17 @@ async function main() {
     process.exit(failures ? 1 : 0);
   }
 
+  // TERMILAB_CHECK_ONLY=BG: solo el grafo + la lista Background del dock de Sessions
+  if (process.env.TERMILAB_CHECK_ONLY === 'BG') {
+    await require('./lib/check-background').seccionBackground({ check, ROOT, handlers });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo BG)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // TERMILAB_CHECK_ONLY=KP: solo el grafo + la seccion KP (iterar sobre el keeper)
   if (process.env.TERMILAB_CHECK_ONLY === 'KP') {
-    await require('./lib/check-keeper').seccionKeeper({ check, ROOT });
+    await require('./lib/check-keeper').seccionKeeper({ check, ROOT, handlers });
     console.log(results.join('\n'));
     console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo KP)');
     process.exit(failures ? 1 : 0);
@@ -1391,13 +1401,15 @@ async function main() {
 
   // ── W. Varias ventanas: enrutado por sesion, mudanzas con bufer, cierre ──
   await require('./lib/check-windows').seccionVentanas({ check, ROOT, handlers, onHandlers });
+  // ── BG. Sessions → Background: sesiones guardadas que este equipo solto ──
+  await require('./lib/check-background').seccionBackground({ check, ROOT, handlers });
 
   // ── R/A. Restaurar el espacio de trabajo; reconexion automatica ──
   await require('./lib/check-workspace').seccionWorkspace({ check, ROOT });
   await require('./lib/check-workspace').seccionReconexion({ check, ROOT });
 
   // ── KP. Session keeper contra un sshd de OpenSSH de verdad ──
-  await require('./lib/check-keeper').seccionKeeper({ check, ROOT });
+  await require('./lib/check-keeper').seccionKeeper({ check, ROOT, handlers });
   // KB: binarios de termilab-keeper que viajan en los paquetes.
   await require('./lib/check-keeper-files').seccionKeeperFiles({ check, ROOT });
   await require('./lib/check-main-lifecycle').seccionCicloVida({ check, ROOT });

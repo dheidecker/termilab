@@ -5,6 +5,7 @@ const hostKeyService = require('./host-key-service');
 const connectionLogService = require('./connection-log-service');
 const windowRegistry = require('../window-registry');
 const keeperService = require('./keeper-service');
+const backgroundSessions = require('./background-sessions');
 
 /*
  * Auto-reconnect: when a terminal's connection drops without the user asking
@@ -490,6 +491,8 @@ class SSHService {
     const current = () => this.sessions.get(sessionId)?.stream === stream;
     const s0 = this.sessions.get(sessionId);
     const keeper = stream._termilabKeeper || null;
+    /* Attached into a tab again: no longer a Background session */
+    if (keeper && keeper.session) backgroundSessions.remove(keeper.session.id);
     if (s0) {
       s0.keeper = keeper;
       s0.exitCode = null;

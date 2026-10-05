@@ -10,6 +10,7 @@ import { ColorPopover, anchorOf } from '../ColorPicker/ColorPicker';
 import { panelSessionRows, isWaiting } from './sessionRows';
 import { runSessionAction } from './sessionActions';
 import AgentDot from './AgentDot';
+import { showToast } from '../Keeper/toast';
 import './Agents.css';
 /* The row menu uses the tab/pane context menu look */
 import '../TabBar/TabBar.css';
@@ -23,7 +24,15 @@ import '../TabBar/TabBar.css';
  * one) and the dock stays. Right-click: Rename… (the session alias, as in the
  * pane header), Color, Mute, Move to New Window, Close; for another window's
  * row main hands the action to that window. Width: drag the right edge.
+ *
+ * Under them, "Background": kept sessions this device sent to the background
+ * (a tab or window closed with "Keep running"), the same list in every window
+ * (main's background-sessions.json). Click reopens one as a tab here and
+ * reattaches; right-click: Open here, Rename…, End session, Remove from list.
+ * Local ones are re-checked with the keeper's list when the dock opens and
+ * every 30 s; SSH ones only on click (no connection just to list).
  */
+const BG_REFRESH_MS = 30000;
 const WIDTH_KEY = 'termilab.agentsDock.width';
 export const DOCK_MIN = 200;
 export const DOCK_MAX = 420;
@@ -48,6 +57,17 @@ export default function AgentsDock({ onClose }) {
     const id = setInterval(() => setNow(Date.now()), 5000);
     return () => clearInterval(id);
   }, []);
+
+  /* ─── Background: kept sessions with no tab ─── */
+  const bg = state.backgroundSessions || [];
+  const hasLocalBg = bg.some(r => r.kind === 'local');
+  const { refreshLocalBackground } = actions;
+  useEffect(() => {
+    if (!hasLocalBg) return undefined;
+    refreshLocalBackground();
+    const id = setInterval(() => refreshLocalBackground(), BG_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [hasLocalBg, refreshLocalBackground]);
 
   /* ─── Width: drag the right edge ─── */
   const [width, setWidth] = useState(readWidth);
@@ -104,6 +124,9 @@ export default function AgentsDock({ onClose }) {
   const [menu, setMenu] = useState(null);         // { x, y, key }
   const [renaming, setRenaming] = useState(null); // row key
   const [picker, setPicker] = useState(null);     // { key, anchor, el }
+  const [bgMenu, setBgMenu] = useState(null);     // { x, y, keeperId }
+  const [bgRenaming, setBgRenaming] = useState(null); // keeperId
+  const [bgBusy, setBgBusy] = useState(null);     // keeperId being opened/ended
   const renamingRef = useRef(null);
   renamingRef.current = renaming;
   const byKey = (key) => rows.find(r => rowKey(r) === key) || null;
@@ -113,6 +136,23 @@ export default function AgentsDock({ onClose }) {
   useEffect(() => { if (menu && !menuRow) setMenu(null); }, [menu, menuRow]);
   useEffect(() => { if (picker && !pickerRow) setPicker(null); }, [picker, pickerRow]);
   useEffect(() => { if (renaming && !byKey(renaming)) setRenaming(null); });
+  const bgByKey = (id) => bg.find(r => r.keeperId === id) || null;
+  const bgMenuRow = bgMenu ? bgByKey(bgMenu.keeperId) : null;
+  useEffect(() => { if (bgMenu && !bgMenuRow) setBgMenu(null); }, [bgMenu, bgMenuRow]);
+  useEffect(() => { if (bgRenaming && !bgByKey(bgRenaming)) setBgRenaming(null); });
+  useEffect(() => {
+    if (!bgMenu) return undefined;
+    const close = () => setBgMenu(null);
+    const esc = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('click', close);
+    document.addEventListener('keydown', esc);
+    window.addEventListener('blur', close);
+    return () => {
+      document.removeEventListener('click', close);
+      document.removeEventListener('keydown', esc);
+      window.removeEventListener('blur', close);
+    };
+  }, [bgMenu]);
   useEffect(() => {
     if (!menu) return undefined;
     const close = () => setMenu(null);
@@ -224,6 +264,7 @@ export default function AgentsDock({ onClose }) {
             onContextMenu={(e) => {
               e.preventDefault();
               setPicker(null);
+              setBgMenu(null);
               setMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: Math.min(e.clientY, window.innerHeight - 190), key });
             }}
             aria-current={current ? 'true' : undefined}
@@ -240,6 +281,92 @@ export default function AgentsDock({ onClose }) {
       </li>
     );
   };
+
+  /* ─── Background rows ─── */
+  const reopenBg = async (rec) => {
+    if (bgBusy) return;
+    setBgBusy(rec.keeperId);
+    try {
+      const r = await actions.reopenBackgroundSession(rec);
+      if (r && r.gone) showToast('That session has ended');
+      else if (r && r.noHost) showToast('Its host is no longer saved here');
+    } catch (err) {
+      /* The tab shows why (connection refused, auth…); the row stays */
+      console.error('[sessions] reopen failed:', err && err.message);
+    } finally { setBgBusy(null); }
+  };
+  const endBg = async (rec) => {
+    setBgMenu(null);
+    const what = rec.agent ? `${rec.agent.name} in ` : '';
+    if (!window.confirm(`End "${rec.alias || rec.label}"? ${what ? `${what}it and every` : 'Every'} process in that session will be stopped.`)) return;
+    setBgBusy(rec.keeperId);
+    try { await actions.endBackgroundSession(rec); } catch (err) {
+      window.alert(`Could not end the session: ${err.message}`);
+    } finally { setBgBusy(null); }
+  };
+  const endBgRename = (rec, text, how) => {
+    setBgRenaming(null);
+    if (text !== null) actions.renameBackgroundSession(rec, text).catch(() => {});
+    if (how === 'key') requestAnimationFrame(() => rowEl(`bg:${rec.keeperId}`)?.focus({ preventScroll: true }));
+  };
+  const renderBgRow = (rec) => {
+    const key = `bg:${rec.keeperId}`;
+    const editing = bgRenaming === rec.keeperId;
+    const rowClass = `agents-dock-row agents-dock-row-bg${editing ? ' editing' : ''}${bgBusy === rec.keeperId ? ' busy' : ''}`;
+    const dot = <span className="agents-dock-dot"><span className="agents-dock-bg-dot" aria-hidden="true" /></span>;
+    const under = (
+      <span className="agents-dock-where">
+        {rec.color && <span className="agents-dock-color" style={{ background: rec.color }} aria-hidden="true" />}
+        <span className="agents-dock-where-text">{`${rec.agent ? rec.agent.name : 'Shell'} · in background ${agentElapsed(rec.detachedAt, now)}`}</span>
+      </span>
+    );
+    const where = rec.kind === 'local' ? 'this computer' : rec.label;
+    return (
+      <li key={key}>
+        {editing ? (
+          <div className={rowClass} data-row-key={key}>
+            {dot}
+            <span className="agents-dock-main">
+              <InlineRename
+                className="agents-dock-rename"
+                value={rec.alias || ''}
+                placeholder={rec.label}
+                ariaLabel={`Name for this ${rec.label} session`}
+                onDone={(text, how) => endBgRename(rec, text, how)}
+              />
+              {under}
+            </span>
+          </div>
+        ) : (
+          <button
+            className={rowClass}
+            data-row-key={key}
+            onClick={() => reopenBg(rec)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMenu(null);
+              setPicker(null);
+              setBgMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: Math.min(e.clientY, window.innerHeight - 170), keeperId: rec.keeperId });
+            }}
+            disabled={bgBusy === rec.keeperId}
+            title={`${rec.alias ? `${rec.alias} — ` : ''}${rec.label}: still running on ${where}. Click to reopen it here.`}
+          >
+            {dot}
+            <span className="agents-dock-main">
+              <span className="agents-dock-name">{rec.alias || rec.label}</span>
+              {under}
+            </span>
+          </button>
+        )}
+      </li>
+    );
+  };
+  const bgGroup = bg.length > 0 && (
+    <>
+      <li className="agents-dock-group agents-dock-group-bg" aria-hidden="true">Background</li>
+      {bg.map(renderBgRow)}
+    </>
+  );
 
   /* Window by window when there are several (main sends them in order) */
   const groups = [];
@@ -269,10 +396,11 @@ export default function AgentsDock({ onClose }) {
           <CloseIcon />
         </button>
       </div>
-      {rows.length === 0 ? (
+      {rows.length === 0 && bg.length === 0 ? (
         <div className="agents-dock-empty">No open sessions</div>
       ) : (
-        <ul className="agents-dock-list" aria-label="Open sessions">
+        <ul className="agents-dock-list" aria-label="Sessions">
+          {rows.length === 0 && <li className="agents-dock-empty agents-dock-empty-inline">No open sessions</li>}
           {windows > 1 ? groups.map(g => (
             <React.Fragment key={`g${g.windowNumber}`}>
               <li className="agents-dock-group" aria-hidden="true">
@@ -281,7 +409,18 @@ export default function AgentsDock({ onClose }) {
               {g.rows.map(renderRow)}
             </React.Fragment>
           )) : rows.map(renderRow)}
+          {bgGroup}
         </ul>
+      )}
+      {bgMenuRow && (
+        <div className="tab-context-menu agents-dock-menu" style={{ top: bgMenu.y, left: bgMenu.x }}>
+          <button className="tab-context-menu-item" onClick={() => { setBgMenu(null); reopenBg(bgMenuRow); }}>Open here</button>
+          <button className="tab-context-menu-item" onClick={(e) => { e.stopPropagation(); setBgMenu(null); setBgRenaming(bgMenuRow.keeperId); }}>Rename…</button>
+          <div className="tab-context-menu-sep" />
+          <button className="tab-context-menu-item danger" onClick={(e) => { e.stopPropagation(); endBg(bgMenuRow); }}>End session</button>
+          <button className="tab-context-menu-item" onClick={() => { setBgMenu(null); actions.forgetBackgroundSession(bgMenuRow).catch(() => {}); }}
+            title="Forget it here; the session keeps running">Remove from list</button>
+        </div>
       )}
       {menuRow && (() => {
         const why = moveWhy(menuRow);

@@ -317,3 +317,28 @@ body.agents-dock-resizing .app-view { pointer-events: none; }
   font-size: var(--font-size-sm);
   font-weight: 600;
 }
+
+/* ─── Background: kept sessions with no tab (muted, one hollow dot) ─── */
+.agents-dock-group-bg {
+  margin-top: 6px;
+  border-top: 1px solid var(--border-primary);
+  padding-top: 10px;
+}
+.agents-dock-group-bg:first-child { margin-top: 0; border-top: 0; padding-top: 2px; }
+
+.agents-dock-row-bg { color: var(--text-secondary); }
+.agents-dock-row-bg .agents-dock-name { font-weight: 500; }
+.agents-dock-row-bg .agents-dock-where { color: var(--text-tertiary); }
+.agents-dock-row-bg:hover { color: var(--text-primary); }
+.agents-dock-row-bg:hover .agents-dock-where { color: var(--text-secondary); }
+.agents-dock-row-bg.busy { cursor: progress; opacity: 0.7; }
+
+.agents-dock-bg-dot {
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 1.5px dashed var(--text-tertiary);
+}
+
+.agents-dock-empty-inline { padding: 8px 8px 4px; }

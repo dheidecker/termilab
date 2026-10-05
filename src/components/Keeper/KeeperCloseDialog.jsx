@@ -5,7 +5,8 @@ import './Keeper.css';
 /*
  * Closing a tab whose session the keeper holds on the server, with something
  * other than the shell in the foreground:
- *   [Keep running in background]  → just detach (the default)
+ *   [Keep running in background]  → just detach (the default); main lists
+ *                                   it in the Sessions dock → Background
  *   [End session]                 → KILL the kept session
  * Escape / backdrop = do not close the tab at all.
  * Mounted on its own root (imperative), so every close path (tab bar, Ctrl+W,
@@ -35,8 +36,8 @@ function KeeperCloseDialog({ running, onAnswer }) {
         </div>
         <div className="keeper-modal-body">
           <p>
-            Keep it running on the server and reattach later from the host's
-            Background sessions, or end the session and stop {commands.length > 1 ? `${commands.join(', ')}` : 'it'}.
+            Keep running — find it under <strong>Sessions → Background</strong> to
+            reopen it later. Or end the session and stop {commands.length > 1 ? `${commands.join(', ')}` : 'it'}.
           </p>
         </div>
         <div className="keeper-modal-footer">

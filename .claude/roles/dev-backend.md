@@ -758,3 +758,28 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   lee `server/api/src/server.js` al cargar).
 - Hueco conocido: una restauración local no comprueba si la sesión ya está enganchada en otro sitio
   (otra instalación de Termilab con el mismo HOME): gana la más nueva (75 en la otra).
+
+## Sessions → Background (rama `feat/background-in-sessions`, 2026-10-05, arnés BG1–BG7, KP21)
+
+- Registro en `<data>/background-sessions.json` (`services/background-sessions.js`), **aparte** de
+  `keeper-state.json`: escritura **síncrona** tmp único + rename, 0600, porque se escribe desde el
+  `closed` de una ventana y desde `before-quit`. Solo campos limpiados (`cleanRecord`): nunca se lee
+  el `config` de la conexión entero; BG1/BG5 buscan contraseña/clave/host/usuario en el archivo.
+- **Dónde se apunta un "soltar"**: `ssh:disconnect`, `local:kill`, `endWindowSessions` (rama no-End,
+  incluye `onOrphaned` = renderer recargado). **No** en `sshService.disconnect()`: `before-quit` usa
+  `disconnectAll` y con "Restore tabs" encendido esas sesiones vuelven como pestañas y no deben salir
+  en Background. Salir con él apagado: `captureKeptForQuit()` **síncrono antes** de `disconnectAll`
+  y `noteKeptOnQuit` decide tras leer settings (va en el `Promise.all` que retiene el quit).
+- **Dónde se quita**: por `keeperId`. `keeperService.forget(id)` (ya lo llamaban exit 0/76/102, kill y
+  End) y `localKeeper.kill`; `onExit` local con 0/76/102; re-enganche en `_wireStream` (remoto) y
+  `_launch` (local). Reconciliar: `ssh:keeper-list` (solo ese `hostId`, solo con `installed:true`) y
+  `local:keeper-list`.
+- Alias/color/agente salen de las filas del dock (`window:agents-report`), que ahora llevan
+  `sessionId`. Hay caché `_meta` por sid porque en el `closed` de una ventana `removeWindow` borra sus
+  filas **antes** de `endWindowSessions`: sin caché, cerrar ventana con Keep perdía el alias.
+- Canales `window:background-sessions|forget|rename` + push `window:background-sessions` (prefijo
+  `window:` = omitido en el shim Android, M1 verde sin tocarlo). En Android `enabled=false`: no hay dock.
+- ML3 (check-main-lifecycle) exige "Sessions → Background" en el detalle del diálogo de cerrar ventana.
+- `TERMILAB_CHECK_ONLY=BG` (segundos). KP21 = lo mismo con sshd real (soltar/adoptar/reconciliar/End).
+  Control negativo hecho en copia: sin `noteBackground` → BG1/BG3 rojos; sin el `remove` de
+  `_wireStream` → BG4; sin `onChange` → BG7.

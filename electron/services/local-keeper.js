@@ -238,6 +238,8 @@ class LocalKeeper {
     if (!keeper.ID_RE.test(String(id))) throw new Error('bad keeper id');
     const r = await run(bin, ['kill', id], { timeout: 6000 });
     if (r.code !== 0 && r.code !== 102) throw new Error(`could not end the session (exit ${r.code}${r.stderr ? `: ${r.stderr.trim().slice(0, 200)}` : ''})`);
+    /* Ended: also off the Sessions dock's Background list */
+    require('./background-sessions').remove(id);
     return true;
   }
 

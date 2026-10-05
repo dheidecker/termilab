@@ -270,7 +270,10 @@ class KeeperService {
     this._save();
   }
 
+  /* The session ended (exit, killed, gone, End): also off the Sessions
+     dock's Background list, owned or adopted */
   forget(id) {
+    require('./background-sessions').remove(id);
     const s = this._load();
     const i = s.owned.indexOf(id);
     if (i === -1) return;

@@ -4,6 +4,7 @@ const connectionLogService = require('./connection-log-service');
 const windowRegistry = require('../window-registry');
 const ptyEscape = require('./local-shell-escape');
 const localKeeper = require('./local-keeper');
+const backgroundSessions = require('./background-sessions');
 
 /* What a kept session's attach exit means (keeper README), said in the tab */
 const KEPT_EXIT_LINES = {
@@ -153,7 +154,7 @@ class LocalShellService {
       }
 
       const spec = { file, args, cwd, env: spawnEnv, cols, rows };
-      this._launch(sessionId, spec, kept ? { ...kept, spec, reattaches: [] } : null);
+      this._launch(sessionId, spec, kept ? { ...kept, spec, reattaches: [], sessionKey: String(options.sessionKey) } : null);
       if (unit) this.units.set(sessionId, unit);
       this.infos.set(sessionId, { kept: !!kept, notice });
       /* Logs section: start/end only, never what was typed or printed */
@@ -183,6 +184,8 @@ class LocalShellService {
     });
     const ent = { pty: ptyProcess, kept, closing: false };
     this.ents.set(sessionId, ent);
+    /* Attached into a tab again: no longer a Background session */
+    if (kept) backgroundSessions.remove(kept.id);
     this.shells.set(sessionId, ptyProcess);
 
     ptyProcess.onData((data) => {
@@ -194,6 +197,8 @@ class LocalShellService {
       if (this.ents.get(sessionId) !== ent) return;
       if (kept && !ent.closing && this._reattach(sessionId, ent, exitCode, signal)) return;
       if (kept && !ent.closing) {
+        /* 0 the shell exited, 76 killed/expired, 102 no such session: it is over */
+        if (exitCode === 0 || exitCode === 76 || exitCode === 102) backgroundSessions.remove(kept.id);
         const line = KEPT_EXIT_LINES[exitCode];
         if (line) this._send('local:data', sessionId, line);
       }
@@ -318,6 +323,13 @@ class LocalShellService {
   }
 
   /* ── Session keeper, for local terminals (local-keeper.js) ── */
+
+  /** {id, sessionKey} of the kept session behind this tab's pty, or null */
+  keptInfo(sessionId) {
+    if (!this.isKept(sessionId)) return null;
+    const k = this.ents.get(sessionId).kept;
+    return { id: k.id, sessionKey: k.sessionKey || null };
+  }
 
   /** Is this tab's pty an attach client of a kept session? */
   isKept(sessionId) {

@@ -23,6 +23,7 @@ import { playChime, playQuestionChime, TYPING_QUIET_MS } from './agentChime';
 import { detectAgent, screenTail, createAgentTracker, NEEDS_YOU_TEXT } from './agentRules';
 import './TerminalView.css';
 import '../Keeper/Keeper.css';
+import { showToast } from '../Keeper/toast';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 
@@ -53,6 +54,12 @@ export default function TerminalView({ tab }) {
   const inputFilterRef = useRef(null);
   const bypassRef = useRef(false);
   const [hasSelection, setHasSelection] = useState(false);
+  /* A tab reopened from Sessions → Background whose session turned out to
+     be gone: close it and say so (main has dropped the record already) */
+  const goneFromBackground = () => {
+    actions.removeTab(tab.id);
+    showToast('That session has ended');
+  };
   inputFilterRef.current = IS_ANDROID ? (data) => {
     if (bypassRef.current) return data;
     const mods = modifiers.peek();
@@ -429,6 +436,8 @@ export default function TerminalView({ tab }) {
         window.electronAPI.localShell.onClose((sid, exitCode) => {
           if (mountedRef.current && sid === sessionIdRef.current) {
             setConnected(false);
+            /* Reopened from Sessions → Background and it was gone (102): no dead tab */
+            if (exitCode === 102 && tab.fromBackground) { goneFromBackground(); return; }
             term.writeln('\r\n\x1b[90m[Session ended]\x1b[0m');
           }
         });
@@ -550,6 +559,8 @@ export default function TerminalView({ tab }) {
               dispatch({ type: 'UPDATE_TAB', payload: { id: tab.id, error: 'This session is open on another device', elsewhere: true } });
               return;
             }
+            /* Reopened from Sessions → Background and the server no longer has it */
+            if (info && info.reason === 'gone' && tab.fromBackground) { goneFromBackground(); return; }
             /* The Sessions screen shows it as disconnected */
             if (IS_ANDROID) dispatch({ type: 'UPDATE_TAB', payload: { id: tab.id, closed: true } });
             term.writeln('\r\n\x1b[90m[Connection closed]\x1b[0m');

@@ -17,6 +17,7 @@ const connectionLogService = require('./services/connection-log-service');
 const { parseKnownHosts } = require('./services/known-hosts');
 const windowRegistry = require('./window-registry');
 const workspaceService = require('./services/workspace-service');
+const backgroundSessions = require('./services/background-sessions');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -64,6 +65,48 @@ function keptSessionsOf(win) {
   if (!win || !win.webContents) return [];
   return windowRegistry.sessionsOf(win.webContents).filter(isKept);
 }
+/* What a kept session is, for the Sessions dock's Background list: from the
+   service that holds it, never the connection config (no secrets) */
+function keptInfo(sid) {
+  const s = sshService.sessions && sshService.sessions.get(sid);
+  if (s && s.keeper && s.keeper.session && s.config) {
+    return {
+      kind: 'ssh', keeperId: s.keeper.session.id, sessionKey: s.config.sessionKey || null,
+      hostId: s.config.hostId || null, label: s.config.label || s.config.host || 'SSH',
+    };
+  }
+  const l = localShellService.keptInfo && localShellService.keptInfo(sid);
+  if (l) return { kind: 'local', keeperId: l.id, sessionKey: l.sessionKey, hostId: null, label: 'Local Terminal' };
+  return null;
+}
+/* Kept session `sid` is detached with no tab left to show it (tab closed
+   with Keep, window closed with Keep, renderer gone): list it in Background */
+function noteBackground(sid) {
+  const info = keptInfo(sid);
+  return info ? backgroundSessions.noteDetach(sid, info) : null;
+}
+/* before-quit: the kept sessions there are now (captured before anything
+   disconnects); then, with "Restore tabs on startup" off, nothing brings
+   them back as tabs, so they go to Background. With it on, the workspace
+   restores them as tabs and they are not listed. */
+function captureKeptForQuit() {
+  const ids = [...(sshService.sessions ? sshService.sessions.keys() : []), ...(localShellService.shells ? localShellService.shells.keys() : [])];
+  return ids.map(sid => [sid, keptInfo(sid)]).filter(([, info]) => info);
+}
+async function noteKeptOnQuit(captured) {
+  if (!captured || !captured.length) return 0;
+  let settings = null;
+  try { settings = await storeService.getSettings(); } catch (_) { settings = null; }
+  if (settings && settings.general && settings.general.restoreTabs === false) {
+    for (const [sid, info] of captured) backgroundSessions.noteDetach(sid, info);
+    return captured.length;
+  }
+  return 0;
+}
+backgroundSessions.onChange = () => {
+  windowRegistry.broadcast('window:background-sessions', backgroundSessions.list());
+};
+
 /* Windows whose kept sessions are to be ended (KILL) when they close */
 const endKeptOnClose = new WeakSet();   // webContents
 function endKeptWhenClosed(win) {
@@ -82,9 +125,11 @@ async function endWindowSessions(sessionIds, { endKept = false } = {}) {
         await sshService.keeperEnd(sid);
         sftpService.closeSFTP(sid);
       } else if (sshService.isConnected(sid)) {
+        noteBackground(sid);
         await sshService.disconnect(sid);
         sftpService.closeSFTP(sid);
       } else if (localShellService.isActive(sid)) {
+        noteBackground(sid);
         await localShellService.kill(sid);
       } else if (sshService.isPending(sid)) {
         /* Still connecting (or on its host-key prompt): it must not come up
@@ -283,6 +328,8 @@ function registerIpcHandlers(mainWindow) {
 
   ipcMain.handle('ssh:disconnect', wrapHandler(async (event, sessionId) => {
     ensureMayUse(event, sessionId, 'ssh:disconnect');
+    /* A kept session's tab closed with "Keep running": Sessions → Background */
+    noteBackground(sessionId);
     await sshService.disconnect(sessionId);
     // Also close any associated SFTP session
     sftpService.closeSFTP(sessionId);
@@ -306,7 +353,12 @@ function registerIpcHandlers(mainWindow) {
 
   ipcMain.handle('ssh:keeper-list', wrapHandler(async (event, sessionId) => {
     ensureMayUse(event, sessionId, 'ssh:keeper-list');
-    return sshService.keeperList(sessionId);
+    const r = await sshService.keeperList(sessionId);
+    /* The server's own list: Background records of this host it lacks are gone */
+    const s = sshService.sessions.get(sessionId);
+    const hostId = s && s.config && s.config.hostId;
+    if (r.installed && hostId) backgroundSessions.reconcile('ssh', hostId, r.rows.map(x => x.id));
+    return r;
   }));
 
   ipcMain.handle('ssh:keeper-kill', wrapHandler(async (event, sessionId, id) => {
@@ -691,7 +743,12 @@ function registerIpcHandlers(mainWindow) {
     return localShellService.keeperEnd(sessionId);
   }));
 
-  ipcMain.handle('local:keeper-list', wrapHandler(async () => localShellService.keeperList()));
+  ipcMain.handle('local:keeper-list', wrapHandler(async () => {
+    const r = await localShellService.keeperList();
+    /* This computer's own list: Background records it lacks are gone */
+    if (r.installed) backgroundSessions.reconcile('local', null, r.rows.map(x => x.id));
+    return r;
+  }));
 
   ipcMain.handle('local:keeper-kill', wrapHandler(async (event, id) => {
     if (typeof id !== 'string') throw new Error('bad keeper id');
@@ -700,6 +757,8 @@ function registerIpcHandlers(mainWindow) {
 
   ipcMain.handle('local:kill', wrapHandler(async (event, sessionId) => {
     ensureMayUse(event, sessionId, 'local:kill');
+    /* A kept local session's tab closed with "Keep running": Sessions → Background */
+    noteBackground(sessionId);
     await localShellService.kill(sessionId);
     return true;
   }));
@@ -782,8 +841,23 @@ function registerIpcHandlers(mainWindow) {
   /* Agents panel: this window's rows in, everybody's merged list out */
   ipcMain.handle('window:agents-report', wrapHandler(async (event, rows) => {
     if (!windowRegistry.setAgents(event.sender, rows)) return false;
+    /* What each terminal looks like now: a Background record keeps it */
+    const entry = windowRegistry.entryOf(event.sender);
+    if (entry) backgroundSessions.noteRows(entry.agents);
     broadcastAgents();
     return true;
+  }));
+  /* Sessions dock → Background: kept sessions this device detached (list;
+     forget = off the list without ending it; rename = its alias). Every
+     change is pushed to all windows as 'window:background-sessions'. */
+  ipcMain.handle('window:background-sessions', wrapHandler(async () => backgroundSessions.list()));
+  ipcMain.handle('window:background-forget', wrapHandler(async (event, keeperId) => {
+    if (typeof keeperId !== 'string') throw new Error('Invalid session id');
+    return backgroundSessions.remove(keeperId);
+  }));
+  ipcMain.handle('window:background-rename', wrapHandler(async (event, keeperId, alias) => {
+    if (typeof keeperId !== 'string') throw new Error('Invalid session id');
+    return backgroundSessions.rename(keeperId, typeof alias === 'string' ? alias : '');
   }));
   ipcMain.handle('window:agents', wrapHandler(async (event) => windowRegistry.agentRows(event.sender)));
   /* {windowId, tabId}: focus that window, which then opens that tab/pane */
@@ -1001,6 +1075,7 @@ function removeIpcHandlers() {
     'window:take-adoptions', 'window:move-adopted', 'window:move-ready', 'window:move-abort',
     'window:request-move', 'window:drop-target',
     'window:agents-report', 'window:agents', 'window:focus-agent', 'window:session-action',
+    'window:background-sessions', 'window:background-forget', 'window:background-rename',
     'window:workspace-take', 'window:workspace-report', 'window:workspace-restored',
     'system:info',
     'sync:status', 'sync:login', 'sync:logout', 'sync:now',
@@ -1022,4 +1097,4 @@ function removeIpcHandlers() {
   ipcMain.removeAllListeners('window:close');
 }
 
-module.exports = { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting, endWindowSessions, attention, keptSessionsOf, endKeptWhenClosed };
+module.exports = { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting, endWindowSessions, attention, keptSessionsOf, endKeptWhenClosed, captureKeptForQuit, noteKeptOnQuit };

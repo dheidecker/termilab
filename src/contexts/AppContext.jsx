@@ -89,6 +89,12 @@ const MOCK_CONNECTION_LOGS = [
   { id: 'l6', type: 'ssh', hostId: '8', label: 'Raspberry Pi', hostname: '192.168.0.42', port: 22, username: 'pi', os: 'raspbian', email: 'derek@example.com', deviceName: 'derek-laptop', startedAt: mockAgo(0, 11, 30) },
 ];
 
+/* Sessions dock → Background in the browser preview */
+const MOCK_BACKGROUND_SESSIONS = [
+  { keeperId: 'mockbgaaaaaaaaaaaaaaaaaaaa', sessionKey: 'mock-1', kind: 'ssh', hostId: '4', label: 'Dev Machine', alias: 'refactor', color: null, agent: { id: 'claude', name: 'Claude Code' }, detachedAt: Date.now() - 12 * 60000 },
+  { keeperId: 'mockbgbbbbbbbbbbbbbbbbbbbb', sessionKey: 'mock-2', kind: 'local', hostId: null, label: 'Local Terminal', alias: null, color: null, agent: null, detachedAt: Date.now() - 95 * 60000 },
+];
+
 const MOCK_SETTINGS = {
   terminal: { fontSize: 14, fontFamily: 'JetBrains Mono', cursorStyle: 'block', scrollback: 5000 },
   appearance: { theme: 'dark', accentColor: '#58a6ff' },
@@ -126,6 +132,54 @@ function buildConnectConfig(host, extra = {}) {
   if (host.authType === 'key' && host.keyId) config.keyId = host.keyId;
   if (host.authType === 'key' && host.privateKey) config.privateKey = host.privateKey;
   return config;
+}
+
+/* A tab bound to keeper session `id` (adopted: never created). Local: a local
+   terminal tab whose spawn attaches. extra: {alias, color, fromBackground}
+   (fromBackground: reopened from Sessions → Background; a session found gone
+   then closes the tab with a toast instead of leaving a dead terminal). */
+function attachKeeperTab(dispatch, host, id, extra = {}) {
+  const tabId = crypto.randomUUID();
+  const sessionKey = `keeper:${id}`;
+  const look = {
+    ...(extra.alias ? { alias: extra.alias } : {}),
+    ...(extra.color ? { color: extra.color } : {}),
+    ...(extra.fromBackground ? { fromBackground: true } : {}),
+  };
+  if (host && host.local) {
+    dispatch({ type: 'ADD_TAB', payload: { id: tabId, type: 'local-terminal', label: 'Local Terminal', sessionId: `local-${tabId}`, sessionKey, ...look } });
+    return Promise.resolve({ tabId, sessionId: null });
+  }
+  dispatch({ type: 'ADD_TAB', payload: {
+    id: tabId, type: 'terminal', label: host.label || host.hostname, sessionId: null,
+    hostId: host.id, connecting: true, hostConfig: host, sessionKey, ...look,
+  }});
+  if (!hasApi()) {
+    dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, connecting: false, error: 'Not available in the browser preview.' } });
+    return Promise.resolve({ tabId, sessionId: null });
+  }
+  return connectTab({ tabId, host, config: buildConnectConfig(host, { sessionKey, adopted: true }), ssh: api().ssh, dispatch });
+}
+
+/* A control connection to `host` for its keeper sessions (no shell, like an
+   SFTP pane's). → {list(), end(id), close()} */
+async function openKeeperControl(host) {
+  if (host && host.local) {
+    const local = hasApi() ? api().localShell : null;
+    if (!local || typeof local.keeperList !== 'function') {
+      return { list: async () => ({ installed: false, rows: [] }), end: async () => true, close: async () => {} };
+    }
+    return { list: () => local.keeperList(), end: (id) => local.keeperKill(id), close: async () => {} };
+  }
+  if (!hasApi() || typeof api().ssh.keeperList !== 'function') {
+    return { list: async () => ({ installed: false, rows: [] }), end: async () => true, close: async () => {} };
+  }
+  const { sessionId } = await api().ssh.connect({ ...buildConnectConfig(host), purpose: 'sftp' });
+  return {
+    list: () => api().ssh.keeperList(sessionId),
+    end: (id) => api().ssh.keeperKill(sessionId, id),
+    close: async () => { try { await api().ssh.disconnect(sessionId); } catch (_) { /* gone */ } },
+  };
 }
 
 /* ── Sync bridge ──
@@ -170,6 +224,10 @@ const initialState = {
      merged them. null until main has sent it (and always on Android / in the
      browser, where the panel reads this window's tabs). */
   agentsAll: null,
+  /* Sessions dock → Background (desktop): kept sessions this device sent to
+     the background, from main's background-sessions.json; the same list in
+     every window. [{keeperId, sessionKey, kind, hostId, label, alias, color, agent, detachedAt}] */
+  backgroundSessions: [],
 };
 
 /* ── Reducer ── */
@@ -400,6 +458,8 @@ function baseReducer(state, action) {
       if (!p || !Array.isArray(p.rows)) return state;
       return { ...state, agentsAll: { windows: Number.isInteger(p.windows) && p.windows > 0 ? p.windows : 1, rows: p.rows } };
     }
+    case 'SET_BACKGROUND_SESSIONS':
+      return Array.isArray(action.payload) ? { ...state, backgroundSessions: action.payload } : state;
     /* The pane was focused or typed in: its done mark (ring, badge) goes */
     case 'PANE_SEEN': {
       const t = state.tabs.find(x => x.id === action.payload);
@@ -955,24 +1015,61 @@ export function AppProvider({ children }) {
 
     /* "Background sessions" → Attach here: a tab bound to keeper session `id`
        on that host (adopted: not one this device created, see buildConnectConfig) */
-    attachBackgroundSession: useCallback(async (host, id) => {
-      const tabId = crypto.randomUUID();
-      const sessionKey = `keeper:${id}`;
-      /* This computer's kept sessions (local keeper): a local terminal tab
-         bound to it; TerminalView's spawn attaches and never creates */
-      if (host && host.local) {
-        dispatch({ type: 'ADD_TAB', payload: { id: tabId, type: 'local-terminal', label: 'Local Terminal', sessionId: `local-${tabId}`, sessionKey } });
-        return { tabId, sessionId: null };
+    attachBackgroundSession: useCallback((host, id) => attachKeeperTab(dispatch, host, id), []),
+
+    /* Sessions dock → Background. Reopen: a tab here bound to that session
+       (its alias/colour back); a local one is checked first (cheap), an SSH
+       one on attach (a gone one closes its tab with a toast, TerminalView).
+       → {tabId} | {gone:true} | {noHost:true} */
+    reopenBackgroundSession: useCallback(async (rec) => {
+      const extra = { alias: rec.alias || null, color: rec.color || null, fromBackground: true };
+      if (rec.kind === 'local') {
+        const local = hasApi() ? api().localShell : null;
+        if (local && typeof local.keeperList === 'function') {
+          let r = null;
+          try { r = await local.keeperList(); } catch (_) { r = null; }
+          /* main's reconcile already dropped the record (and told every window) */
+          if (r && r.installed && !r.rows.some(x => x.id === rec.keeperId)) return { gone: true };
+        }
+        if (!hasApi()) dispatch({ type: 'SET_BACKGROUND_SESSIONS', payload: stateRef.current.backgroundSessions.filter(x => x.keeperId !== rec.keeperId) });
+        return attachKeeperTab(dispatch, { local: true }, rec.keeperId, extra);
       }
-      dispatch({ type: 'ADD_TAB', payload: {
-        id: tabId, type: 'terminal', label: host.label || host.hostname, sessionId: null,
-        hostId: host.id, connecting: true, hostConfig: host, sessionKey,
-      }});
-      if (!hasApi()) {
-        dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, connecting: false, error: 'Not available in the browser preview.' } });
-        return { tabId, sessionId: null };
-      }
-      return connectTab({ tabId, host, config: buildConnectConfig(host, { sessionKey, adopted: true }), ssh: api().ssh, dispatch });
+      const host = stateRef.current.hosts.find(h => h.id === rec.hostId);
+      if (!host) return { noHost: true };
+      return attachKeeperTab(dispatch, host, rec.keeperId, extra);
+    }, []),
+
+    /* End it for good (KILL), on this computer or on its server. Main drops
+       the record when the kill succeeds. */
+    endBackgroundSession: useCallback(async (rec) => {
+      const drop = () => dispatch({ type: 'SET_BACKGROUND_SESSIONS', payload: stateRef.current.backgroundSessions.filter(x => x.keeperId !== rec.keeperId) });
+      if (!hasApi()) { drop(); return true; }
+      const host = rec.kind === 'local' ? { local: true } : stateRef.current.hosts.find(h => h.id === rec.hostId);
+      if (!host) throw new Error('its host is no longer saved here; use Remove from list');
+      const c = await openKeeperControl(host);
+      try { await c.end(rec.keeperId); } finally { c.close(); }
+      return true;
+    }, []),
+
+    /* Off the list without ending it / its alias ('' = none) */
+    forgetBackgroundSession: useCallback(async (rec) => {
+      const w = hasApi() ? api().window : null;
+      if (w && typeof w.backgroundForget === 'function') return w.backgroundForget(rec.keeperId);
+      dispatch({ type: 'SET_BACKGROUND_SESSIONS', payload: stateRef.current.backgroundSessions.filter(x => x.keeperId !== rec.keeperId) });
+      return true;
+    }, []),
+    renameBackgroundSession: useCallback(async (rec, alias) => {
+      const w = hasApi() ? api().window : null;
+      if (w && typeof w.backgroundRename === 'function') return w.backgroundRename(rec.keeperId, alias || '');
+      dispatch({ type: 'SET_BACKGROUND_SESSIONS', payload: stateRef.current.backgroundSessions.map(x => (x.keeperId === rec.keeperId ? { ...x, alias: Layout.cleanAlias(alias) || null } : x)) });
+      return true;
+    }, []),
+    /* This computer's kept sessions, listed again: main reconciles the
+       Background records with what the keeper still has (and pushes them) */
+    refreshLocalBackground: useCallback(async () => {
+      const local = hasApi() ? api().localShell : null;
+      if (!local || typeof local.keeperList !== 'function') return null;
+      try { return await local.keeperList(); } catch (_) { return null; }
     }, []),
 
     /* "This session is open on another device" (a restore or an
@@ -995,24 +1092,7 @@ export function AppProvider({ children }) {
 
     /* A control connection to `host` for the Background sessions list (no
        shell, like an SFTP pane's). → {list(), end(id), close()} */
-    openBackgroundSessions: useCallback(async (host) => {
-      if (host && host.local) {
-        const local = hasApi() ? api().localShell : null;
-        if (!local || typeof local.keeperList !== 'function') {
-          return { list: async () => ({ installed: false, rows: [] }), end: async () => true, close: async () => {} };
-        }
-        return { list: () => local.keeperList(), end: (id) => local.keeperKill(id), close: async () => {} };
-      }
-      if (!hasApi() || typeof api().ssh.keeperList !== 'function') {
-        return { list: async () => ({ installed: false, rows: [] }), end: async () => true, close: async () => {} };
-      }
-      const { sessionId } = await api().ssh.connect({ ...buildConnectConfig(host), purpose: 'sftp' });
-      return {
-        list: () => api().ssh.keeperList(sessionId),
-        end: (id) => api().ssh.keeperKill(sessionId, id),
-        close: async () => { try { await api().ssh.disconnect(sessionId); } catch (_) { /* gone */ } },
-      };
-    }, []),
+    openBackgroundSessions: useCallback((host) => openKeeperControl(host), []),
 
     disconnectSession: useCallback(async (sessionId) => {
       if (hasApi()) {
@@ -1424,6 +1504,18 @@ export function AppProvider({ children }) {
     });
     return () => { alive = false; w.offEvents(onAgents); w.offEvents(onActivate); };
   }, []);
+  /* Sessions dock → Background: main's list, the same in every window */
+  useEffect(() => {
+    const w = FEATURES.multiWindow ? window.electronAPI.window : null;
+    if (!w || typeof w.backgroundSessions !== 'function') {
+      if (!hasApi()) dispatch({ type: 'SET_BACKGROUND_SESSIONS', payload: MOCK_BACKGROUND_SESSIONS });
+      return undefined;
+    }
+    let alive = true;
+    w.backgroundSessions().then((list) => { if (alive) dispatch({ type: 'SET_BACKGROUND_SESSIONS', payload: list }); }).catch(() => {});
+    const on = w.onBackgroundSessions((list) => dispatch({ type: 'SET_BACKGROUND_SESSIONS', payload: list }));
+    return () => { alive = false; w.offEvents(on); };
+  }, []);
 
   /* ── Several windows (desktop) ──
      Tabs moving in and out, and another window saving hosts/settings/…: the
@@ -1491,7 +1583,12 @@ export function AppProvider({ children }) {
           dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, connecting: false, error: 'This host was deleted.' } });
           return null;
         }
-        return connectTab({ tabId, host, config: buildConnectConfig(host, { sessionKey: tab.sessionKey || tabId, restored: true }), ssh: api().ssh, dispatch });
+        /* A tab reopened from Background / Attach here names its session
+           ('keeper:<id>'): reattach that one (adopted, never recreated), but
+           as a restore (never taken from another device) */
+        const sessionKey = tab.sessionKey || tabId;
+        const flags = sessionKey.startsWith('keeper:') ? { adopted: true, restored: true } : { restored: true };
+        return connectTab({ tabId, host, config: buildConnectConfig(host, { sessionKey, ...flags }), ssh: api().ssh, dispatch });
       });
       w.workspaceRestored().catch(() => {});
     })();

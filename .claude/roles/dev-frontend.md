@@ -632,3 +632,21 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
 - Rename en la fila: mientras edita la fila es `div`, no `button` (input dentro de button falla). El
   doble rAF de `open()` que da el teclado a xterm se salta si hay rename en curso.
 - Capturas: `/tmp/claude-1000/agents-ux/shots.mjs` (dist/ + CDP; clic derecho con `Input.dispatchMouseEvent`).
+
+## Sessions → Background (rama `feat/background-in-sessions`, 2026-10-05)
+
+- `state.backgroundSessions` = lista de main (igual en todas las ventanas, push
+  `window:background-sessions`); en el navegador, `MOCK_BACKGROUND_SESSIONS`. El grupo va en el mismo
+  `<ul>` del dock, debajo de las abiertas (dos `<ul>` con `flex:1` se repartían la altura).
+- Las filas de `localSessionRows` llevan `sessionId` (el **pty** en local, `ptySessionId`): main lo usa
+  para guardar alias/color/agente al soltar. Si cambias esa forma, BG1 lo nota.
+- Reabrir = `attachKeeperTab` (helper de módulo; `attachBackgroundSession` lo usa también) con
+  `sessionKey 'keeper:<id>'` + `fromBackground:true`. Local: se mira `keeperList` antes (barato);
+  SSH: solo al conectar. Si el attach dice que no existe (ssh `reason:'gone'`, local exit 102),
+  TerminalView cierra la pestaña y `showToast` (Keeper/toast.js, imperativo). No hay otro toast en la app.
+- **Bug viejo arreglado**: restaurar una pestaña `keeper:<id>` iba solo con `restored:true` → no
+  propia → id derivado con deviceId → sesión NUEVA y la adoptada se perdía. Ahora `adopted+restored`
+  (adoptada, pero sin robarla de otro dispositivo).
+- Liveness local cada 30 s solo mientras el dock está montado y hay registros locales.
+- Capturas: `/tmp/claude-1000/bg-sessions/shots.mjs` (dist/ + CDP, puerto 9382/8813).
+- Android: el `SessionsScreen` no tiene grupo Background (main no registra en Android).

@@ -13,7 +13,7 @@ if (process.platform === 'linux' && process.env.TERMILAB_USE_SYSTEM_IME !== '1')
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 
-const { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting, keptSessionsOf, endKeptWhenClosed } = require('./ipc-handlers');
+const { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting, keptSessionsOf, endKeptWhenClosed, captureKeptForQuit, noteKeptOnQuit } = require('./ipc-handlers');
 const windowRegistry = require('./window-registry');
 const sshService = require('./services/ssh-service');
 const sftpService = require('./services/sftp-service');
@@ -124,7 +124,7 @@ function createWindow(bounds = {}, { maximized = false } = {}) {
    ask first if it has any. The last window closes as it always did.
    Kept sessions (session keeper) are the exception: closing only detaches
    them, so the question is whether to leave them running in the background
-   (Background sessions lists them) or end them on the server too. */
+   (the Sessions dock lists them under Background) or end them too. */
 function confirmClose(win, event) {
   if (quitCleanupDone || closeConfirmed.has(win)) return;
   const others = [...windows].filter(w => w !== win && !w.isDestroyed());
@@ -147,7 +147,8 @@ function confirmClose(win, event) {
       defaultId: 0,
       cancelId: 2,
       message: plural(kept, 'This window has a session kept alive in the background.', 'This window has # sessions kept alive in the background.'),
-      detail: 'Keep them running to reopen them later from Background sessions, or end them and every process in them.'
+      detail: plural(kept, 'Keep running — find it under Sessions → Background to reopen it later. Or end it and every process in it.',
+        'Keep running — find them under Sessions → Background to reopen them later. Or end them and every process in them.')
         + (open > kept ? ` ${plural(open - kept, 'The other open session', `The other ${open - kept} open sessions`)} will be terminated either way.` : ''),
     };
   dialog.showMessageBox(win, { type: 'question', ...ask }).then(({ response }) => {
@@ -451,7 +452,11 @@ app.on('before-quit', async (event) => {
   quitCleanupDone = true;
   // Windows closing from here on end nothing themselves: this handler does
   setQuitting(true);
+  /* Kept sessions as they are now, before anything below disconnects them:
+     with "Restore tabs on startup" off they go to Sessions → Background */
+  const kept = captureKeptForQuit();
   if (installingUpdate) {
+    noteKeptOnQuit(kept).catch(() => {});
     connectionLogService.closeAllSync();
     try { workspaceService.quitFlushSync(); } catch (err) { console.error('[Main] Could not save the workspace:', err.message); }
   } else {
@@ -462,6 +467,7 @@ app.on('before-quit', async (event) => {
         connectionLogService.closeAllForQuit(QUIT_LOG_TIMEOUT_MS),
         /* Windows, tabs and splits for the next launch, before anything closes */
         workspaceService.quitFlush().catch(err => console.error('[Main] Could not save the workspace:', err.message)),
+        noteKeptOnQuit(kept).catch(err => console.error('[Main] Could not list background sessions:', err.message)),
       ]),
       new Promise(r => { timer = setTimeout(r, QUIT_LOG_TIMEOUT_MS + 500); }),
     ]).catch(err => console.error('[Main] Could not close history on quit:', err.message))

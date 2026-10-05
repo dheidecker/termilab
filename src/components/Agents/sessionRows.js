@@ -29,6 +29,9 @@ export function localSessionRows(state) {
         name: t.agent ? t.agent.name : null,
         state: t.agent ? t.agent.state : null,
         since: t.agent ? t.agent.since : null,
+        /* The live session (a local terminal's pty id): main keeps how this
+           row looks for the Background list if the session is detached */
+        sessionId: (t.type === 'local-terminal' ? t.ptySessionId : t.sessionId) || null,
       });
     }
   }

@@ -44,6 +44,10 @@
  *       enganchado (sshd congelado) NO cuenta como "otro dispositivo".
  *  KP20 cerrar con solo el shell delante pero `sleep &` debajo → jobs
  *       ['sleep'] y closePlan pregunta; sin trabajos, cierre silencioso.
+ *  KP21 Sessions → Background con sesiones de verdad: soltar por
+ *       ssh:disconnect la lista (sin la clave privada en el archivo);
+ *       adoptarla la quita; matarla en el servidor y listar el host
+ *       (ssh:keeper-list) la reconcilia; End (ssh:keeper-end) no la lista.
  */
 const assert = require('assert');
 const crypto = require('crypto');
@@ -93,7 +97,7 @@ function sshdDeConexion(pids) {
 }
 const vive = (pid) => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };
 
-async function seccionKeeper({ check, ROOT }) {
+async function seccionKeeper({ check, ROOT, handlers = null }) {
   const E = (...p) => require(path.join(ROOT, 'electron', ...p));
   const keeper = E('services', 'keeper-service.js');
   const sshService = E('services', 'ssh-service.js');
@@ -447,6 +451,57 @@ async function seccionKeeper({ check, ROOT }) {
       const r2 = await sshService.keeperList(sf);
       assert.ok(!r2.rows.some(x => x.id === row.id), 'End no la quito');
       await sshService.disconnect(sf);
+    });
+
+    await check('KP21 Background con sshd real: soltar la lista; adoptar la quita; matarla y listar reconcilia; End no la lista', async () => {
+      if (!handlers) throw new Error('falta handlers (check-main los pasa)');
+      const bg = E('services', 'background-sessions.js');
+      const call = async (canal, ...args) => {
+        const r = await handlers.get(canal)({ sender: null }, ...args);
+        assert.ok(r && r.success, `${canal}: ${r && r.error}`);
+        return r.data;
+      };
+      const prevFile = bg.file;
+      bg.file = path.join(tmp, 'background-sessions.json');
+      bg._reset();
+      const env = { ...process.env, HOME: home };
+      try {
+        const k = clave(21);
+        const id = keeper.keeperIdFor(k);
+        const s = await conecta({ sessionKey: k, hostId: 'kp-host', label: 'KP host' });
+        const pid = await pidDe(s, 'P21');
+        await call('ssh:disconnect', s);
+        const r = bg.list().find(x => x.keeperId === id);
+        assert.ok(r && r.kind === 'ssh' && r.hostId === 'kp-host' && r.label === 'KP host' && r.sessionKey === k, JSON.stringify(bg.list()));
+        assert.ok(await espera(() => listaLocal().some(x => x.id === id && !x.attached), 4000), 'la sesion no sigue suelta en el servidor');
+        const disco = fs.readFileSync(bg.file, 'utf-8');
+        const pk = String(sshd.privateKey || '');
+        assert.ok(pk.length > 40 && !disco.includes(pk.split('\n')[1] || pk.slice(30, 70)), 'la clave privada llego al archivo');
+        /* Reabrirla (Attach here / el dock): adoptada → fuera de la lista */
+        const s2 = await conecta({ sessionKey: `keeper:${id}`, adopted: true, hostId: 'kp-host', label: 'KP host' });
+        assert.strictEqual(await pidDe(s2, 'P21B'), pid, 'adoptar no engancho la misma');
+        assert.ok(!bg.has(id), 're-engancharla no la quito de Background');
+        await call('ssh:disconnect', s2);
+        assert.ok(bg.has(id), 'soltarla otra vez no la volvio a listar');
+        /* Muere en el servidor (otro equipo la acabo); listar ese host reconcilia */
+        try { execFileSync(binPath, ['kill', id], { env, timeout: 5000, stdio: 'ignore' }); } catch (_) { /* 102 */ }
+        const sf = await sshService.connect({ ...base(sshd), purpose: 'sftp', hostId: 'kp-host' });
+        abiertas.push(sf);
+        const lista = await call('ssh:keeper-list', sf);
+        assert.ok(lista.installed && !lista.rows.some(x => x.id === id));
+        assert.ok(!bg.has(id), 'ssh:keeper-list no la quito');
+        await sshService.disconnect(sf);
+        /* End desde la pestana: se acaba, nunca a Background */
+        const k3 = clave('21e');
+        const s3 = await conecta({ sessionKey: k3, hostId: 'kp-host' });
+        await pidDe(s3, 'P21E');
+        await call('ssh:keeper-end', s3);
+        assert.ok(!bg.has(keeper.keeperIdFor(k3)), 'End la dejo en Background');
+        assert.deepStrictEqual(bg.list(), []);
+      } finally {
+        bg._reset();
+        bg.file = prevFile;
+      }
     });
 
     await check('KP13 `exit` en el shell → ssh:close "exited", sin reconexion, olvidada', async () => {

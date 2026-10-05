@@ -72,6 +72,9 @@ function cleanSessionRows(rows) {
       alias: text(r.alias, 40) || null,
       host: text(r.host, 80),
       color: hexColor(r.color),
+      /* The live session behind it (pty id for a local terminal): main keeps
+         alias/colour/agent for a Background record when it is detached */
+      sessionId: text(r.sessionId, 120) || null,
     });
   }
   return out;

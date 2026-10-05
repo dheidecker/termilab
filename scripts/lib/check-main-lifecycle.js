@@ -272,7 +272,7 @@ async function seccionCicloVida({ check, ROOT }) {
       const d = r.L.dialogos[0];
       assert.deepStrictEqual(d.buttons, ['Keep Running in Background', 'End Sessions', 'Cancel'], `botones: ${d.buttons}`);
       assert.strictEqual(d.cancelId, 2);
-      assert.ok(/Background sessions/.test(d.detail), 'el detalle no dice donde quedan');
+      assert.ok(/Sessions → Background/.test(d.detail), 'el detalle no dice donde quedan (Sessions → Background)');
       assert.ok(/other open session/.test(d.detail), 'el detalle no avisa de la sesion normal');
       assert.deepStrictEqual(r.V.llamadas, [], 'Cancel cerro la ventana');
       assert.deepStrictEqual(llamadas, [], 'Cancel termino sesiones');

@@ -103,3 +103,24 @@
 }
 .keeper-error { color: var(--color-danger); }
 
+
+/* showToast (toast.js): one short line, bottom centre, goes by itself */
+.termilab-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 6100;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 8px 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-primary);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  box-shadow: var(--shadow-xl);
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+.termilab-toast.leaving { opacity: 0; }

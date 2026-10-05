@@ -337,6 +337,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     /* sessionAction({windowId, tabId, action, value}): a terminal of another
        window, from the Sessions panel: action rename|color|mute|close */
     sessionAction: (spec) => invoke('window:session-action', spec || {}),
+    /* Sessions dock → Background: kept sessions this device detached
+       [{keeperId, sessionKey, kind, hostId, label, alias, color, agent, detachedAt}];
+       forget = off the list (the session keeps running); rename = its alias */
+    backgroundSessions: () => invoke('window:background-sessions'),
+    backgroundForget: (keeperId) => invoke('window:background-forget', keeperId),
+    backgroundRename: (keeperId, alias) => invoke('window:background-rename', keeperId, alias || ''),
     /* Workspace restore on launch: workspaceTake() = what this window should
        recreate ({tabs, layouts, activeTabId, focusedPane}, once; null when
        nothing); workspaceReport(snapshot) = its tabs now; workspaceRestored()
@@ -406,6 +412,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('window:session-request', listener);
       return listener;
     },
+    /* [records]: the Background list changed (any window, or main) */
+    onBackgroundSessions: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('window:background-sessions', listener);
+      return listener;
+    },
     /* {collection} saved by another window (or 'all' after a sync there) */
     onStoreChanged: (cb) => {
       const listener = (event, payload) => cb(payload);
@@ -423,6 +435,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('window:agents', listener);
       ipcRenderer.removeListener('window:activate-tab', listener);
       ipcRenderer.removeListener('window:session-request', listener);
+      ipcRenderer.removeListener('window:background-sessions', listener);
     },
   },
 
