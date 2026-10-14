@@ -713,3 +713,37 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   instalado), CDP `Input.dispatchDragEvent` con `data.files:[ruta]` → `webUtils.getPathForFile` da
   la ruta de verdad. Las filas se leen de `.xterm-rows` (renderer DOM). `navigator.clipboard.write`
   con `ClipboardItem` image/png funciona bajo xvfb. Script: scratchpad de la sesión, `drop-e2e.mjs`.
+
+## Respuestas rápidas a un aviso de agente (rama `worktree-agent-a8db2bf3dd701ee0e`, 2026-10-14)
+
+- `parseChoices(lineas, agentId, {cursorLine})` en `agentRules.js` (puro) → `[{label, keys, hint,
+  cancel?, default?}]`; `[]` = no estoy seguro, no se pinta nada. Menú numerado solo con cursor
+  (`❯`/`›`) Y un pie que diga cómo contestar ("Esc to cancel", "Press enter to confirm…",
+  "enter confirm · esc skip"); sin eso es una lista numerada de la conversación (Claude acaba sus
+  turnos con "1. … 2. … 3. …"). UI en `Agents/PromptActions.jsx` (+css), montada por TerminalView
+  en un ancla de altura 0 bajo `.terminal-wrapper`: flota, no cambia el tamaño del pty.
+- **Verificado en vivo** (Claude 2.1.299, Codex 0.162.1): el dígito elige al instante en los dos
+  (no hace falta Enter). El aviso de confianza de Claude NO tiene números y el dígito no hace nada:
+  flechas desde el cursor + Enter, y `"\e[B\r"` en una sola escritura sí lo toma Ink. Agente sin
+  dígitos verificados (Gemini…) → flechas. `[Y/n]`/`(yes/no)` → la palabra + `\r`, y solo si es la
+  fila del cursor (`cursorRowText`): un `echo '[Y/n]'` seguido de un programa que sigue no es pregunta.
+- Envío: `answerPrompt` sube `noBroadcastRef` y `bypassRef` alrededor de `term.input(keys, true)`
+  (sin broadcast, sin Ctrl/Alt pegajosos de Android). Tras un clic se esconden hasta que un escaneo
+  no vea aviso (`answeredRef`): redibujar el mismo aviso no los devuelve.
+- **Codex 0.162 cambió el pie**: "GPT-6.1-Sol default · /ruta" (mayúsculas; la regla ahora es `/i`)
+  y "← for agents · ? for shortcuts", que la firma de Claude `/\? for shortcuts/` cogía → Codex salía
+  como Claude. La de Claude va anclada a inicio de fila. Al arrancar, Codex puede enseñar
+  "Hooks need review" (menú numerado, "enter confirm · esc skip"): es firma + blocked de Codex.
+- **Trampa cara al conducir agentes reales en un pty**: no teclees texto hasta ver la caja de
+  entrada normal. Codex al arrancar puede abrir el menú de actualizar (Enter = `npm install -g`) o
+  la lista de hooks, donde `t` = "trust all": una frase tecleada ahí confía hooks en
+  `~/.codex/config.toml`. Claude en `/tmp` no pide confianza (carpeta ya confiada): usa `/var/tmp`.
+  Claude en `auto mode` no pide permisos: `--permission-mode default`.
+- Notificación de escritorio: `onclick = showThisPane` → `window.info()` + `focusAgent` (main
+  levanta la ventana; `window.focus()` desde la página no lo hace en Linux) + `SET_ACTIVE_TAB` del
+  grupo + `PANE_FOCUS` del panel (SET_ACTIVE_TAB del id del grupo no cambia `focusedPane`).
+- Pruebas: `TERMILAB_CHECK_ONLY=PA node scripts/check-main.js` (o `node scripts/lib/check-prompt-actions.js`),
+  capturas reales en `scripts/lib/fixtures/prompts/`. Bucle real: `/tmp/claude-1000/prompt-actions/live/
+  live-e2e.cjs claude|codex` (pty de python + `@xterm/headless`). Capturas: `shots-desktop.mjs` y
+  `shots-android.mjs` (Android en Chrome: el shim real sobre un transporte falso, `android/entry.jsx`
+  empaquetado con esbuild — sirve para cualquier captura de la vista de sesión de Android).

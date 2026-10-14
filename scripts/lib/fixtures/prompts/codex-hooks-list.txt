@@ -1,0 +1,36 @@
+
+  >_ OpenAI Codex (v0.162.1)
+     /var/tmp/pa-cx-iIuEff
+
+  To get started, describe a task or try one of these commands:
+
+  /init - create an AGENTS.md file with instructions for Codex
+  /status - show current session configuration
+  /permissions - choose what Codex is allowed to do
+  /model - choose what model and reasoning effort to use
+  /review - review any changes and find issues
+
+
+
+
+
+
+
+  Hooks
+  Lifecycle hooks from config and enabled plugins.
+
+  ⚠ 3 hooks need review before they can run.
+
+  Event                 Installed   Active      Review      Description
+
+  PreToolUse            0           0           0           Before a tool executes
+  PermissionRequest     0           0           0           When permission is requested
+  PostToolUse           0           0           0           After a tool executes
+› PreCompact            1           0           1           Before context compaction
+  PostCompact           1           0           1           After context compaction
+  SessionStart          1           0           1           When a new session starts
+  SessionEnd            0           0           0           Right before a session ends
+  UserPromptSubmit      0           0           0           When the user submits a prompt
+↓
+
+  t trust all · enter review · esc close

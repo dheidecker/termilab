@@ -1,0 +1,29 @@
+derek@derek-brains:/tmp/claude-1000/-home-derek-Proyectos-terminal/agent-status/obs/cdir$ ls -la
+total 12
+drwxrwxr-x 2 derek derek 4096 oct  2 10:48 .
+drwxrwxr-x 4 derek derek 4096 oct  2 10:57 ..
+-rw-rw-r-- 1 derek derek    6 oct  2 10:48 a.txt
+derek@derek-brains:/tmp/claude-1000/-home-derek-Proyectos-terminal/agent-status/obs/cdir$ echo 'Do y
+ou want to proceed? [Y/n]'
+Do you want to proceed? [Y/n]
+derek@derek-brains:/tmp/claude-1000/-home-derek-Proyectos-terminal/agent-status/obs/cdir$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
