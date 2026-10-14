@@ -650,3 +650,37 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
 - Liveness local cada 30 s solo mientras el dock está montado y hay registros locales.
 - Capturas: `/tmp/claude-1000/bg-sessions/shots.mjs` (dist/ + CDP, puerto 9382/8813).
 - Android: el `SessionsScreen` no tiene grupo Background (main no registra en Android).
+
+## Copiar y pegar en la terminal (rama `worktree-agent-ae94d8c74e0a13e8a`, 2026-10-14)
+
+- **Todo copiar/pegar pasa por `src/components/Terminal/clipboardPaste.js`** (`pasteInto`,
+  `copySelection`). Teclas, clic derecho, clic central, copy-on-select y los botones de Android.
+  No vuelvas a llamar a `navigator.clipboard` desde la terminal: **rechaza con `NotAllowedError:
+  Document is not focused`** en cuanto otra ventana (otra de Termilab con Ctrl+Shift+N, DevTools)
+  tiene el foco, medido en Electron real. El código viejo se lo tragaba: pegar no hacía nada y
+  copiar devolvía `true` sin copiar (`await undefined?.writeClipboard()` no lanza). Escritorio usa
+  `window.electronAPI.clipboard` (IPC → `clipboard` de Electron en main); Android no lo tiene (el
+  shim lo omite) y cae a `mobile/clipboard.js`.
+- **Costura para pegar imágenes:** `pasteImageRef.current = ({ png, mime }) => …` en TerminalView.
+  `pasteInto` solo la llama si NO hay texto (el texto siempre gana) y nunca desde el clic central.
+- **`copyOnSelect` estaba en Ajustes (default true) y nadie lo leía.** Ahora: al soltar el ratón
+  (en `document`: el arrastre puede terminar fuera del panel) se escribe PRIMARY siempre en Linux y
+  CLIPBOARD si copyOnSelect. `rightClickPaste` (default true) tampoco se leía; ahora sí.
+- **Orden en `attachCustomKeyEventHandler`:** los combos de copiar/pegar van ANTES del atajo de
+  teclas imprimibles (el bypass del IME). Insert del teclado numérico llega como `code: 'Numpad0'`,
+  `key: 'Insert'`.
+- **Mouse tracking (tmux/vim/htop con ratón):** clic derecho y central son del programa salvo con
+  Shift (la regla de xterm). Antes el clic derecho pegaba Y además se lo mandaba a tmux.
+- **`rightClickSelectsWord: false`**: el default de xterm en macOS selecciona la palabra en el
+  mousedown, así que "clic derecho = pegar" copiaba esa palabra.
+- **Confirmar pegado multilínea** solo si `!term.modes.bracketedPasteMode` y hay `\n`. bash 5 /
+  zsh piden bracketed paste en el prompt → no pregunta; `wc`, `cat`, un `read` → sí. Ajuste
+  `terminal.warnMultilinePaste`. `normalizePaste` quita `ESC[200~`/`ESC[201~` del texto (un texto
+  copiado no puede cerrar el corchete y ejecutar lo que sigue) y pasa CRLF/CR a `\n`.
+- `getSelection()` de xterm ya une las filas envueltas y solo recorta celdas VACÍAS: un espacio
+  real en la última columna sobrevive. Lo que sí sobra son espacios pintados por el programa al
+  final de la fila: `selectionText` los recorta por línea.
+- El listener `contextmenu` era anónimo y no se quitaba: en dev (StrictMode) quedaban dos.
+- **E2E de verdad:** `scripts/e2e-clipboard.mjs` (xvfb + xdotool + xclip, ver cabecera). Lee
+  CLIPBOARD/PRIMARY con `xclip -o`, el xterm se saca del fiber de `.terminal-wrapper` (primer hook
+  con `.current.buffer`). La terminal local usa TU `$HOME` real (local-shell-service filtra env).

@@ -8,10 +8,14 @@ const native = () => (typeof window !== 'undefined' ? window.__termilabNative : 
 export async function readClipboard() {
   try {
     const text = await navigator.clipboard.readText();
-    if (typeof text === 'string') return text;
+    /* An empty answer is not proof the clipboard is empty (a WebView without
+       focus/permission may answer ''): ask the native side too */
+    if (typeof text === 'string' && text) return text;
   } catch { /* not allowed here: try native */ }
+  const n = native();
+  if (!n) return '';
   try {
-    const r = await native()?.readClipboard();
+    const r = await n.readClipboard();
     return (r && typeof r.text === 'string') ? r.text : '';
   } catch { return ''; }
 }
@@ -22,8 +26,11 @@ export async function writeClipboard(text) {
     await navigator.clipboard.writeText(text);
     return true;
   } catch { /* try native */ }
+  /* No plugin (a plain browser): say it failed instead of claiming success */
+  const n = native();
+  if (!n) return false;
   try {
-    await native()?.writeClipboard({ text });
+    await n.writeClipboard({ text });
     return true;
   } catch { return false; }
 }

@@ -6,6 +6,7 @@ const connectionLogService = require('./connection-log-service');
 const windowRegistry = require('../window-registry');
 const keeperService = require('./keeper-service');
 const backgroundSessions = require('./background-sessions');
+const { createChunkedWriter } = require('./chunked-writer');
 
 /*
  * Auto-reconnect: when a terminal's connection drops without the user asking
@@ -765,12 +766,28 @@ class SSHService {
       console.warn(`[SSHService] No active stream for session ${sessionId}`);
       return;
     }
-    try {
-      session.stream.write(data);
-    } catch (err) {
-      console.error(`[SSHService] Error writing to session ${sessionId}:`, err.message);
-      this._send('ssh:error', sessionId, `Write error: ${err.message}`);
+    /* A big paste goes out in slices, after 'drain' when the channel's
+       window is full, and keys typed meanwhile queue behind it. The writer
+       looks the stream up per slice: a reconnect swaps it. */
+    if (!session.writer) {
+      session.writer = createChunkedWriter((chunk) => {
+        const live = this.sessions.get(sessionId);
+        if (!live || live.reconnecting || !live.stream) return true;   // dropped, as typing would be
+        try {
+          return live.stream.write(chunk);
+        } catch (err) {
+          console.error(`[SSHService] Error writing to session ${sessionId}:`, err.message);
+          this._send('ssh:error', sessionId, `Write error: ${err.message}`);
+          return true;
+        }
+      }, {
+        waitDrain: (cb) => {
+          const live = this.sessions.get(sessionId);
+          if (live && live.stream) live.stream.once('drain', cb); else cb();
+        },
+      });
     }
+    session.writer.write(data);
   }
 
   resize(sessionId, cols, rows) {
@@ -878,6 +895,7 @@ class SSHService {
     if (session) {
       if (session.reconnecting) clearTimeout(session.reconnecting.timer);
       clearTimeout(session.holdTimer);
+      if (session.writer) session.writer.dispose();
       connectionLogService.end(session.logId);
       try {
         if (session.stream) {

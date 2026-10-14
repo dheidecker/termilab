@@ -35,6 +35,9 @@
  *     guardadas que este equipo mando al fondo (registro, quitar, persistir).
  *  9. BINARIOS DEL KEEPER (KB*, scripts/lib/check-keeper-files.js): manifest,
  *     sha256, ELF estatico por arquitectura, Zig fijado.
+ * 10. COPIAR Y PEGAR (C*, scripts/lib/check-clipboard.js): canales clipboard:*,
+ *     writer troceado de ssh/pty, la costura clipboardPaste.js del renderer y
+ *     200 lineas por un pty real (TERMILAB_CHECK_ONLY=C: solo esto).
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -123,7 +126,10 @@ const emit = (channel, data) => {
   for (const listener of (rendererListeners.get(channel) || []).slice()) listener({}, data);
 };
 
+const fakeClipboard = require('./lib/check-clipboard').makeFakeClipboard();
+
 const electronStub = {
+  clipboard: fakeClipboard,
   app: {
     getPath: () => currentUserData,
     getVersion: () => '0.0.0-test',
@@ -1358,6 +1364,14 @@ async function main() {
       assert.strictEqual(a.length, 2, `${chan}: sin argumento no limpio`);
     }
   });
+
+  // ── C. Copiar y pegar en la terminal (TERMILAB_CHECK_ONLY=C: solo esto) ──
+  await require('./lib/check-clipboard').seccionClipboard({ check, ROOT, handlers, getBridge: () => bridge, fakeClipboard });
+  if (process.env.TERMILAB_CHECK_ONLY === 'C') {
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo C)');
+    process.exit(failures ? 1 : 0);
+  }
 
   // TERMILAB_CHECK_ONLY=LK: solo el grafo + el keeper local
   if (process.env.TERMILAB_CHECK_ONLY === 'LK') {

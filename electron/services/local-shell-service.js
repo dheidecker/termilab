@@ -5,6 +5,7 @@ const windowRegistry = require('../window-registry');
 const ptyEscape = require('./local-shell-escape');
 const localKeeper = require('./local-keeper');
 const backgroundSessions = require('./background-sessions');
+const { createChunkedWriter } = require('./chunked-writer');
 
 /* What a kept session's attach exit means (keeper README), said in the tab */
 const KEPT_EXIT_LINES = {
@@ -29,6 +30,8 @@ class LocalShellService {
   constructor() {
     /** @type {Map<string, import('node-pty').IPty>} */
     this.shells = new Map();
+    /** sessionId -> chunked, ordered input writer (big pastes; chunked-writer.js) */
+    this.writers = new Map();
     /** sessionId -> systemd unit name, only for shells started via systemd-run */
     this.units = new Map();
     /** sessionId -> connection-log entry id */
@@ -205,6 +208,7 @@ class LocalShellService {
       this._send('local:close', sessionId, exitCode, signal);
       this.ents.delete(sessionId);
       this.shells.delete(sessionId);
+      this._dropWriter(sessionId);
       this.units.delete(sessionId);
       this.infos.delete(sessionId);
       this._endLog(sessionId);
@@ -249,12 +253,29 @@ class LocalShellService {
       console.warn(`[LocalShellService] No active shell for session ${sessionId}`);
       return;
     }
-    try {
-      shell.write(data);
-    } catch (err) {
-      console.error(`[LocalShellService] Error writing to session ${sessionId}:`, err.message);
-      this._send('local:error', sessionId, `Write error: ${err.message}`);
+    /* Through the session's chunked writer: a big paste goes out in slices
+       and keys typed meanwhile queue behind it (chunked-writer.js) */
+    let writer = this.writers.get(sessionId);
+    if (!writer) {
+      writer = createChunkedWriter((chunk) => {
+        const live = this.shells.get(sessionId);
+        if (!live) return true;
+        try {
+          live.write(chunk);
+        } catch (err) {
+          console.error(`[LocalShellService] Error writing to session ${sessionId}:`, err.message);
+          this._send('local:error', sessionId, `Write error: ${err.message}`);
+        }
+        return true;
+      });
+      this.writers.set(sessionId, writer);
     }
+    writer.write(data);
+  }
+
+  _dropWriter(sessionId) {
+    const writer = this.writers.get(sessionId);
+    if (writer) { writer.dispose(); this.writers.delete(sessionId); }
   }
 
   /**
@@ -291,6 +312,7 @@ class LocalShellService {
       console.error(`[LocalShellService] Error killing session ${sessionId}:`, err.message);
     } finally {
       this.shells.delete(sessionId);
+      this._dropWriter(sessionId);
       /* SIGHUP to systemd-run already ends the unit; this is the safety net */
       const unit = this.units.get(sessionId);
       if (unit) { this.units.delete(sessionId); ptyEscape.stopUnit(unit); }

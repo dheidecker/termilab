@@ -783,3 +783,23 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
 - `TERMILAB_CHECK_ONLY=BG` (segundos). KP21 = lo mismo con sshd real (soltar/adoptar/reconciliar/End).
   Control negativo hecho en copia: sin `noteBackground` → BG1/BG3 rojos; sin el `remove` de
   `_wireStream` → BG4; sin `onChange` → BG7.
+
+## Portapapeles y pegados grandes (2026-10-14, arnés C1–C6)
+
+- Canales `clipboard:read-text|write-text|has-image|read-image` en `ipc-handlers.js` (Electron
+  `clipboard`). `'selection'` = PRIMARY solo en Linux; en el resto cae al portapapeles normal.
+  `write-text` acepta `{ clipboard: false, selection: true }` (solo PRIMARY). `read-image` devuelve
+  `{ png: Buffer, mime }` (cruza IPC como Uint8Array) o `null`. Android: namespace `clipboard`
+  omitido en el shim y en `EXPECTED_OMITTED` de check-mobile (M1).
+- **`electron/services/chunked-writer.js`** está delante de `ssh-service.sendData` y
+  `local-shell-service.write`: escrituras > 1024 chars salen en trozos cada 4 ms, lo que llega
+  después (teclas) va en cola DETRÁS, y nunca corta un par sustituto (medio emoji = U+FFFD).
+  En ssh, `write()===false` espera `'drain'` con fallback de 1 s (un reconnect cambia el stream y
+  ese drain no llegaría nunca).
+- **Medido, no supuesto:** en Linux, 200 líneas (48 KB, multibyte) de un golpe por node-pty 1.1
+  a `wc -lc` llegan enteras igual (C6 prueba ambas): node-pty 1.1 ya encola ante EAGAIN y el pty
+  de Linux bloquea en vez de tirar. El troceo es para macOS (cola canónica de 1024 que TIRA lo que
+  desborda; readline de bash 3.2 corrompe entradas rápidas, node-pty #833) y para no
+  desordenar teclas. ssh2 `Channel.write` nunca pierde (bufferiza); devuelve false y ya.
+- `TERMILAB_CHECK_ONLY=C node scripts/check-main.js` corre solo la sección C (~5 s). C6 lanza
+  `scripts/lib/paste-driver.js` con Electron-como-node, como N5.

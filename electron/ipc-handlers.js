@@ -1,4 +1,4 @@
-const { ipcMain, dialog, BrowserWindow, app } = require('electron');
+const { ipcMain, dialog, BrowserWindow, app, clipboard } = require('electron');
 const path = require('path');
 const os = require('os');
 
@@ -772,6 +772,34 @@ function registerIpcHandlers(mainWindow) {
     if (!mayUse(event, sessionId, 'local:resize')) return;
     localShellService.resize(sessionId, cols, rows);
   });
+
+  // ─── Clipboard (terminal copy / paste) ────────────────
+  // From main, not navigator.clipboard: that one rejects whenever the
+  // document is not focused (a right-click that is also focusing the window,
+  // DevTools, another Termilab window) and the terminal then pasted nothing,
+  // silently. 'selection' is Linux's PRIMARY (select / middle-click); other
+  // systems have none, so it falls back to the normal clipboard there.
+  const primary = (which) => (which === 'selection' && process.platform === 'linux' ? 'selection' : 'clipboard');
+  ipcMain.handle('clipboard:read-text', wrapHandler(async (event, which) => clipboard.readText(primary(which))));
+  ipcMain.handle('clipboard:write-text', wrapHandler(async (event, text, opts) => {
+    if (typeof text !== 'string') throw new Error('clipboard:write-text needs a string');
+    // opts: { clipboard: false } = PRIMARY only (a plain selection on Linux)
+    if (!opts || opts.clipboard !== false) clipboard.writeText(text);
+    if (opts && opts.selection && process.platform === 'linux') clipboard.writeText(text, 'selection');
+    return true;
+  }));
+  ipcMain.handle('clipboard:has-image', wrapHandler(async () => {
+    const formats = clipboard.availableFormats() || [];
+    if (formats.some((f) => /^image\//i.test(f))) return true;
+    const img = clipboard.readImage();
+    return !!img && !img.isEmpty();
+  }));
+  // PNG bytes (a Buffer crosses IPC as a Uint8Array), or null without an image
+  ipcMain.handle('clipboard:read-image', wrapHandler(async () => {
+    const img = clipboard.readImage();
+    if (!img || img.isEmpty()) return null;
+    return { png: img.toPNG(), mime: 'image/png' };
+  }));
 
   // ─── Dialog Handlers ──────────────────────────────────
 

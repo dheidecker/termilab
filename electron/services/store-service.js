@@ -166,6 +166,7 @@ class StoreService {
         theme: 'github-dark',
         copyOnSelect: true,
         rightClickPaste: true,
+        warnMultilinePaste: true, // "Paste N lines?" when the program has no bracketed paste
         agentSound: true,      // chime when an agent CLI rings the bell / sends OSC 9
         agentNotify: true,     // desktop notification for it when the window is not focused
         visualAlerts: true,    // pane glow, tab done badge, taskbar flash for it (not muted by tab.muted)

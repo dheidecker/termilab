@@ -11,13 +11,18 @@
  * pretending to work. scripts/check-mobile.js fails if preload.js grows a
  * channel that is neither here nor in the omit list.
  *
+ * `clipboard` is omitted on purpose: Android keeps navigator.clipboard with
+ * the native plugin as fallback (src/components/Terminal/mobile/clipboard.js),
+ * and src/components/Terminal/clipboardPaste.js picks that path when
+ * electronAPI.clipboard is absent.
+ *
  * Keep this file free of browser globals at import time: the check imports it
  * under Node with a fake transport.
  */
 
-export const OMITTED_NAMESPACES = ['sftp', 'localFs', 'portForward', 'localShell', 'window', 'dialog'];
+export const OMITTED_NAMESPACES = ['sftp', 'localFs', 'portForward', 'localShell', 'window', 'dialog', 'clipboard'];
 /** Channel prefixes that belong to the omitted namespaces. */
-export const OMITTED_CHANNEL_PREFIXES = ['sftp:', 'local-fs:', 'port-forward:', 'local:', 'window:', 'dialog:'];
+export const OMITTED_CHANNEL_PREFIXES = ['sftp:', 'local-fs:', 'port-forward:', 'local:', 'window:', 'dialog:', 'clipboard:'];
 
 const HELLO_EVERY_MS = 250;
 

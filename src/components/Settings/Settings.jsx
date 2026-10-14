@@ -437,11 +437,33 @@ export default function Settings({ fullPage = false, onBack }) {
             <div className="settings-field">
               <div className="settings-field-label">
                 <span>Copy on Select</span>
-                <small>Automatically copy text when selected</small>
+                <small>Selecting text copies it to the clipboard (on Linux a selection is always ready for middle-click paste)</small>
               </div>
               <button
                 className={`settings-toggle ${settings.terminal?.copyOnSelect !== false ? 'active' : ''}`}
                 onClick={() => update('terminal.copyOnSelect', !(settings.terminal?.copyOnSelect !== false))}
+              />
+            </div>
+
+            <div className="settings-field">
+              <div className="settings-field-label">
+                <span>Right-click Pastes</span>
+                <small>Right-click copies the selection, or pastes when nothing is selected</small>
+              </div>
+              <button
+                className={`settings-toggle ${settings.terminal?.rightClickPaste !== false ? 'active' : ''}`}
+                onClick={() => update('terminal.rightClickPaste', !(settings.terminal?.rightClickPaste !== false))}
+              />
+            </div>
+
+            <div className="settings-field">
+              <div className="settings-field-label">
+                <span>Confirm Multi-line Paste</span>
+                <small>Ask before pasting several lines into a program without bracketed paste</small>
+              </div>
+              <button
+                className={`settings-toggle ${settings.terminal?.warnMultilinePaste !== false ? 'active' : ''}`}
+                onClick={() => update('terminal.warnMultilinePaste', !(settings.terminal?.warnMultilinePaste !== false))}
               />
             </div>
           </div>

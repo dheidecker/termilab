@@ -10,12 +10,12 @@ import { getTheme } from '../../themes/terminal-themes';
 import { tintTheme } from '../../themes/tint';
 import { tabColor } from '../HostList/hostColor';
 import { paneTitle, groupOf, focusedPaneOf } from '../SplitPane/layoutTree';
-import { IS_ANDROID } from '../../platform';
+import { IS_ANDROID, PLATFORM } from '../../platform';
 import ExtraKeys, { useStickyModifiers } from './mobile/ExtraKeys';
 import SessionHeader from './mobile/SessionHeader';
 import { applyModifiers, keySequence } from './mobile/keys';
 import { attachTouch, readPinchedFont, writePinchedFont, FONT_EVENT } from './mobile/touch';
-import { readClipboard, writeClipboard } from './mobile/clipboard';
+import { pasteInto, copySelection } from './clipboardPaste';
 import { sessionStatus } from '../Mobile/sessions';
 import { liveSessionId } from '../SplitPane/sessions';
 import { registerTerminal, adoptedReady } from '../SplitPane/windowMove';
@@ -54,6 +54,15 @@ export default function TerminalView({ tab }) {
   const inputFilterRef = useRef(null);
   const bypassRef = useRef(false);
   const [hasSelection, setHasSelection] = useState(false);
+  /* "Copied" hint on the pane (time of the last copy; 0 = hidden) */
+  const [copiedAt, setCopiedAt] = useState(0);
+  /* A multi-line paste waiting for "Paste N lines?" ({ lines, resolve }) */
+  const [pasteAsk, setPasteAsk] = useState(null);
+  const askPasteRef = useRef(null);
+  /* SEAM for image paste: set pasteImageRef.current = ({ png, mime }) => ...
+     and every paste entry point (keys, right-click, Android button) hands it
+     a clipboard that has an image and no text (clipboardPaste.pasteInto). */
+  const pasteImageRef = useRef(null);
   /* A tab reopened from Sessions → Background whose session turned out to
      be gone: close it and say so (main has dropped the record already) */
   const goneFromBackground = () => {
@@ -122,6 +131,9 @@ export default function TerminalView({ tab }) {
       scrollback: termSettings.scrollback || 5000,
       theme: themeRef.current,
       allowProposedApi: true,
+      /* xterm's default on macOS: a right-click first selects the word under
+         it, so right-click "paste" copied that word instead */
+      rightClickSelectsWord: false,
     });
 
     const fitAddon = new FitAddon();
@@ -301,24 +313,53 @@ export default function TerminalView({ tab }) {
       return true;
     });
 
-    /* ─── Copy / Paste support ───
-       Paste goes through term.paste(): xterm wraps it in bracketed paste when
-       the program asked for it (zsh, vim, Claude CLI...), turns newlines into
-       CR, and emits it via onData, the same path as typing, so the right
-       session id, broadcast and the input filter all apply. Writing the text
-       straight to ssh/pty skipped all of that and mangled multi-line pastes.
-       Keys are matched by `code` so the keyboard layout and CapsLock don't
-       matter. */
+    /* ─── Copy / Paste ───
+       All of it goes through clipboardPaste.js (Electron's clipboard in main
+       on desktop: reliable whether or not the document has focus; the old
+       navigator.clipboard path rejected then and pasted nothing, silently).
+       Paste ends in term.paste(): bracketed paste when the program asked for
+       it, newlines as CR, and onData, the same path as typing (right session
+       id, broadcast, the input filter). Keys are matched by `code` so the
+       layout and CapsLock don't matter. */
+    const flashCopied = () => { if (!disposed) setCopiedAt(Date.now()); };
     const doCopy = () => {
-      const sel = term.getSelection();
-      if (!sel) return false;
-      writeClipboard(sel);
+      if (!term.hasSelection()) return false;
+      copySelection(term).then((r) => { if (r.copied) flashCopied(); });
       term.clearSelection();
       return true;
     };
-    const doPaste = () => {
-      readClipboard().then((text) => { if (text) term.paste(text); });
+    const doPaste = (source = 'clipboard') => {
+      pasteInto(term, {
+        source,
+        onImage: pasteImageRef.current || undefined,
+        confirm: (termSettingsRef.current || {}).warnMultilinePaste === false ? undefined : (info) => askPasteRef.current(info),
+      }).catch(() => {});
+      term.focus();
     };
+    /* Selecting is copying: Linux's PRIMARY always (what middle-click pastes
+       everywhere), the clipboard too with Copy on Select (on by default).
+       After the mouse is released, so a drag is copied once, at its end;
+       on the document, since a drag may end outside the pane. */
+    let lastSelected = '';
+    let selecting = false;
+    const onSelectStart = (e) => { if (e.button === 0) selecting = true; };
+    const onSelectEnd = (e) => {
+      if (e.button !== 0 || !selecting) return;
+      selecting = false;
+      setTimeout(() => {
+        if (disposed || !term.hasSelection()) return;
+        const onSelect = (termSettingsRef.current || {}).copyOnSelect !== false;
+        if (!onSelect && PLATFORM !== 'linux') return;
+        const text = term.getSelection();
+        if (!text || text === lastSelected) return;
+        lastSelected = text;
+        copySelection(term, { clipboard: onSelect, selection: true }).then((r) => { if (r.copied) flashCopied(); });
+      }, 0);
+    };
+    term.onSelectionChange(() => { if (!term.hasSelection()) lastSelected = ''; });
+    /* The program asked for the mouse (tmux, vim, htop with mouse on): clicks
+       are its own unless Shift forces the terminal's (xterm's rule) */
+    const mouseIsApps = (e) => term.modes && term.modes.mouseTrackingMode !== 'none' && !e.shiftKey;
     /* Right after a dead key (´ + space = ´, ´ + a = á) the default path is
        kept, so the composed character comes from the IME as usual. */
     let afterDeadKey = false;
@@ -327,6 +368,28 @@ export default function TerminalView({ tab }) {
       if (ev.key === 'Dead') { afterDeadKey = true; return true; }
       const wasDead = afterDeadKey;
       afterDeadKey = false;
+      /* Copy / paste combos first: nothing below may ever swallow them */
+      const ctrl = ev.ctrlKey || ev.metaKey;
+      const insert = ev.code === 'Insert' || (ev.code === 'Numpad0' && ev.key === 'Insert');
+      // Ctrl+Shift+C / Ctrl+Insert → copy the selection (Cmd+C on macOS)
+      if ((ctrl && ev.shiftKey && !ev.altKey && ev.code === 'KeyC') || (ev.ctrlKey && !ev.shiftKey && !ev.altKey && insert)) {
+        doCopy();
+        ev.preventDefault();
+        return false;
+      }
+      // Ctrl+C (Cmd+C) with a selection copies it (Windows Terminal style); without one Ctrl+C is ^C as always
+      if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey && ev.code === 'KeyC' && term.hasSelection()) {
+        doCopy();
+        ev.preventDefault();
+        return false;
+      }
+      // Ctrl+Shift+V / Shift+Insert → paste (Cmd+V on macOS)
+      if ((ctrl && ev.shiftKey && !ev.altKey && ev.code === 'KeyV') || (ev.shiftKey && !ev.ctrlKey && !ev.altKey && insert)
+          || (ev.metaKey && !ev.shiftKey && !ev.altKey && ev.code === 'KeyV')) {
+        doPaste();
+        ev.preventDefault();
+        return false;
+      }
       /* Printable keys (space, letters with or without Shift, digits,
          symbols, AltGr characters) are sent by us on keydown. xterm takes
          them from the textarea's input/composition events, and on Linux
@@ -342,26 +405,6 @@ export default function TerminalView({ tab }) {
         term.input(ev.key, true);
         return false;
       }
-      const ctrl = ev.ctrlKey || ev.metaKey;
-      // Ctrl+Shift+C / Ctrl+Insert → copy the selection
-      if ((ctrl && ev.shiftKey && ev.code === 'KeyC') || (ev.ctrlKey && !ev.shiftKey && ev.code === 'Insert')) {
-        doCopy();
-        ev.preventDefault();
-        return false;
-      }
-      // Ctrl+C with a selection copies it (Windows Terminal style); without one it is ^C as always
-      if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && ev.code === 'KeyC' && term.hasSelection()) {
-        doCopy();
-        ev.preventDefault();
-        return false;
-      }
-      // Ctrl+Shift+V / Shift+Insert → paste (Cmd+V on macOS)
-      if ((ctrl && ev.shiftKey && ev.code === 'KeyV') || (ev.shiftKey && !ev.ctrlKey && ev.code === 'Insert')
-          || (ev.metaKey && !ev.shiftKey && ev.code === 'KeyV')) {
-        doPaste();
-        ev.preventDefault();
-        return false;
-      }
       // Ctrl+Shift+N → new window (App handles it): xterm must not also send ^N
       if (!IS_ANDROID && ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.code === 'KeyN') {
         return false;
@@ -375,12 +418,35 @@ export default function TerminalView({ tab }) {
     });
 
     /* Right-click: copies the selection if there is one, otherwise pastes
-       (on Android a long-press is a contextmenu too: there it selects
-       instead, see mobile/touch.js) */
-    if (!IS_ANDROID) containerRef.current.addEventListener('contextmenu', (e) => {
+       (Settings → Right-click pastes). A program that took the mouse gets
+       the click instead, unless Shift is held. On Android a long-press is a
+       contextmenu too: there it selects instead, see mobile/touch.js. */
+    const onContextMenu = (e) => {
       e.preventDefault();
-      if (!doCopy()) doPaste();
-    });
+      if (mouseIsApps(e)) return;
+      if (doCopy()) return;
+      if ((termSettingsRef.current || {}).rightClickPaste !== false) doPaste();
+    };
+    /* Middle-click pastes PRIMARY (the last selection, in any app), like
+       every Linux terminal. Pasted on press; the release is swallowed so
+       Chromium cannot paste it a second time into the textarea. */
+    const onMiddleDown = (e) => {
+      if (e.button !== 1 || mouseIsApps(e)) return;
+      e.preventDefault();
+      doPaste('selection');
+    };
+    const onMiddleUp = (e) => { if (e.button === 1 && !mouseIsApps(e)) e.preventDefault(); };
+    const wrapperEl = containerRef.current;
+    if (!IS_ANDROID) {
+      wrapperEl.addEventListener('contextmenu', onContextMenu);
+      wrapperEl.addEventListener('mousedown', onSelectStart, true);
+      document.addEventListener('mouseup', onSelectEnd);
+      if (PLATFORM === 'linux') {
+        wrapperEl.addEventListener('mousedown', onMiddleDown, true);
+        wrapperEl.addEventListener('mouseup', onMiddleUp, true);
+        wrapperEl.addEventListener('auxclick', onMiddleUp, true);
+      }
+    }
 
     /* Android: pinch zoom, long-press selection, and the size other
        terminals were pinched to. */
@@ -712,6 +778,12 @@ export default function TerminalView({ tab }) {
       ro.disconnect();
       document.fonts?.removeEventListener?.('loadingdone', remeasure);
       document.removeEventListener('keydown', keyHandler);
+      wrapperEl.removeEventListener('contextmenu', onContextMenu);
+      wrapperEl.removeEventListener('mousedown', onSelectStart, true);
+      document.removeEventListener('mouseup', onSelectEnd);
+      wrapperEl.removeEventListener('mousedown', onMiddleDown, true);
+      wrapperEl.removeEventListener('mouseup', onMiddleUp, true);
+      wrapperEl.removeEventListener('auxclick', onMiddleUp, true);
       if (term.textarea) {
         term.textarea.removeEventListener('focus', seen);
         term.textarea.removeEventListener('keydown', seen);
@@ -722,6 +794,36 @@ export default function TerminalView({ tab }) {
     };
 
   }, [tab.sessionId, tab.connecting]); // Re-run when sessionId arrives
+
+  /* "Paste N lines?": pasteInto waits on this promise (Enter pastes, Esc cancels) */
+  const pasteAskRef = useRef(null);
+  const neverAskRef = useRef(null);
+  askPasteRef.current = (info) => new Promise((resolve) => {
+    if (pasteAskRef.current) pasteAskRef.current.resolve(false);
+    const ask = { lines: info.lines, chars: info.chars, resolve };
+    pasteAskRef.current = ask;
+    setPasteAsk(ask);
+  });
+  const answerPaste = (ok) => {
+    const ask = pasteAskRef.current;
+    if (!ask) return;
+    pasteAskRef.current = null;
+    setPasteAsk(null);
+    if (ok && neverAskRef.current?.checked) {
+      const settings = stateRef.current.settings || {};
+      actions.saveSettings({ ...settings, terminal: { ...(settings.terminal || {}), warnMultilinePaste: false } }).catch(() => {});
+    }
+    termRef.current?.focus();
+    ask.resolve(ok);
+  };
+  useEffect(() => () => { if (pasteAskRef.current) pasteAskRef.current.resolve(false); }, []);
+
+  /* The "Copied" hint goes away by itself */
+  useEffect(() => {
+    if (!copiedAt) return undefined;
+    const t = setTimeout(() => setCopiedAt(0), 1100);
+    return () => clearTimeout(t);
+  }, [copiedAt]);
 
   /* Keep activeTabIdRef in sync for the onBell closure */
   useEffect(() => {
@@ -804,15 +906,20 @@ export default function TerminalView({ tab }) {
        broadcast and everything else downstream see it */
     inject(term, () => term.input(seq, true));
   };
-  const pasteClipboard = async () => {
-    const text = await readClipboard();
-    const term = termRef.current;
-    if (term && text) inject(term, () => term.paste(text));
-  };
-  const copySelection = async () => {
+  /* Android buttons: the same paste / copy as the desktop keys */
+  const pasteClipboard = () => {
     const term = termRef.current;
     if (!term) return;
-    await writeClipboard(term.getSelection());
+    pasteInto(term, {
+      onImage: pasteImageRef.current || undefined,
+      confirm: termSettings.warnMultilinePaste === false ? undefined : (info) => askPasteRef.current(info),
+      paste: (text) => inject(term, () => term.paste(text)),
+    }).catch(() => {});
+  };
+  const copyAndClear = () => {
+    const term = termRef.current;
+    if (!term) return;
+    copySelection(term).then((r) => { if (r.copied) setCopiedAt(Date.now()); });
     term.clearSelection();
   };
   const mobileHeader = IS_ANDROID ? (
@@ -911,9 +1018,29 @@ export default function TerminalView({ tab }) {
 
       <div className="terminal-wrapper" ref={containerRef} />
 
+      {copiedAt > 0 && <div className="terminal-copied-hint" key={copiedAt} role="status">Copied</div>}
+      {pasteAsk && (
+        <div
+          className="terminal-paste-confirm"
+          role="alertdialog"
+          aria-label="Confirm paste"
+          onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); answerPaste(false); } }}
+        >
+          <div className="terminal-paste-confirm-text">
+            <strong>Paste {pasteAsk.lines} {pasteAsk.lines === 1 ? 'line' : 'lines'}?</strong>
+            <span>This program has no bracketed paste: each line runs as it arrives.</span>
+          </div>
+          <label className="terminal-paste-confirm-never">
+            <input type="checkbox" ref={neverAskRef} /> Don't ask again
+          </label>
+          <button type="button" className="terminal-paste-btn" onMouseDown={(e) => e.preventDefault()} onClick={() => answerPaste(false)}>Cancel</button>
+          <button type="button" className="terminal-paste-btn primary" autoFocus onClick={() => answerPaste(true)}>Paste</button>
+        </div>
+      )}
+
       {IS_ANDROID && hasSelection && (
         <div className="m-selection-bar">
-          <button type="button" className="m-chip m-chip-primary" onMouseDown={(e) => e.preventDefault()} onClick={copySelection}>Copy</button>
+          <button type="button" className="m-chip m-chip-primary" onMouseDown={(e) => e.preventDefault()} onClick={copyAndClear}>Copy</button>
           <button type="button" className="m-chip" onMouseDown={(e) => e.preventDefault()} onClick={() => termRef.current?.clearSelection()}>Cancel</button>
         </div>
       )}

@@ -305,6 +305,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     saveFile: (options) => invoke('dialog:save-file', options),
   },
 
+  // ─── Clipboard (terminal; Electron's clipboard in main) ─
+  // which: 'clipboard' (default) or 'selection' (Linux PRIMARY).
+  clipboard: {
+    readText: (which) => invoke('clipboard:read-text', which || 'clipboard'),
+    writeText: (text, opts) => invoke('clipboard:write-text', text, opts || {}),
+    hasImage: () => invoke('clipboard:has-image'),
+    readImage: () => invoke('clipboard:read-image'),
+  },
+
   // ─── Window Controls ─────────────────────────────────
   window: {
     minimize: () => ipcRenderer.send('window:minimize'),
