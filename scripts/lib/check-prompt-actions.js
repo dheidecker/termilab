@@ -19,6 +19,18 @@
  *  PA8  Un agente sin digitos verificados recibe flechas, no digitos.
  *  PA9  detectAgent sobre las capturas nuevas (Codex 0.162 no se confunde con Claude).
  *  PA10 TerminalView manda las teclas sin broadcast y solo con el agente bloqueado.
+ *  PA11 Sugerencia de Claude (texto fantasma): exacta, nada con texto del usuario
+ *       en la caja, nada con el placeholder 'Try "…"' (Tab no lo toma, visto en vivo).
+ *  PA12 AskUserQuestion (2.1.300): opciones con descripcion y una raya antes de
+ *       "Chat about this"; "Type something." lleva textKeys (su digito, o nada
+ *       si el cursor ya esta en ella).
+ *  PA13 Permiso con "Tab to amend": el "No" lleva flechas + Tab; con el campo
+ *       ya abierto, nada. Solo para Claude.
+ *  PA14 Composer: chips, Alt+N, Tab, y el texto como respuesta (fuente).
+ *
+ * Las capturas claude-ask*, claude-permission-{bash,edit,amend},
+ * claude-suggestion* y claude-placeholder son de Claude Code 2.1.300
+ * (2026-10-14); las *.cells.json guardan las corridas [texto, dim] de cada fila.
  *
  * Solo esta seccion: TERMILAB_CHECK_ONLY=PA, o `node scripts/lib/check-prompt-actions.js`.
  */
@@ -43,6 +55,14 @@ async function seccionPromptActions({ check, ROOT }) {
   const parse = (name, agentId, opts) => R.parseChoices(R.bottomRows(screen(name)), agentId, opts);
   const summary = (list) => list.map(c => [c.label, c.keys]);
   const lastText = (lines) => R.bottomRows(lines).slice(-1)[0];
+  /* As TerminalView reads it: screenCells() of the bottom rows */
+  const cells = (name) => {
+    const d = JSON.parse(fs.readFileSync(path.join(FIX, `${name}.cells.json`), 'utf-8'));
+    const rows = d.rows.map(r => ({ text: r.map(x => x[0]).join(''), runs: r }));
+    let n = rows.length;
+    while (n > 0 && !/\S/.test(rows[n - 1].text)) n--;
+    return rows.slice(Math.max(0, n - R.AGENT_SCAN_ROWS), n);
+  };
 
   try {
     await check('PA1 Claude, aviso de permiso (2.1.299 y 2.1.287): digitos 1-4 y Esc', () => {
@@ -149,18 +169,82 @@ async function seccionPromptActions({ check, ROOT }) {
       assert.strictEqual(st('codex-approval-after-digit'), 'codex:idle');
       assert.strictEqual(st('codex-hooks-review'), 'codex:blocked');
       assert.strictEqual(st('old-bash'), null);
+      for (const n of ['claude-ask', 'claude-ask-typing', 'claude-permission-bash', 'claude-permission-edit', 'claude-permission-amend']) {
+        assert.strictEqual(st(n), 'claude:blocked', n);
+      }
+      for (const n of ['claude-suggestion', 'claude-suggestion-typed', 'claude-placeholder']) assert.strictEqual(st(n), 'claude:idle', n);
+      /* AskUserQuestion with the cursor off option 1 is still blocked (its footer) */
+      const moved = R.bottomRows(screen('claude-ask')).map(l => l.replace(/^❯ 1\./, '  1.').replace(/^  2\./, '❯ 2.'));
+      assert.strictEqual(R.detectAgent(moved, 'claude').state, 'blocked');
     });
 
     await check('PA10 TerminalView: teclas sin broadcast, menu solo bloqueado, notificacion enfoca el panel', () => {
       const tv = fs.readFileSync(path.join(ROOT, 'src', 'components', 'Terminal', 'TerminalView.jsx'), 'utf-8');
-      const answer = tv.match(/const answerPrompt = \(choice\) => \{[\s\S]*?\n  \};/);
+      const answer = tv.match(/const answerPrompt = \(choice, \{ keepFocus = false \} = \{\}\) => \{[\s\S]*?\n  \};/);
       assert.ok(answer, 'falta answerPrompt');
       assert.match(answer[0], /noBroadcastRef\.current = true;[\s\S]*t\.input\(choice\.keys, true\)[\s\S]*finally \{ noBroadcastRef\.current = false;/);
       assert.match(tv, /a\.state === 'blocked' \? parseChoices\(/);
-      assert.match(tv, /<PromptActions choices=\{choices\} onAnswer=\{answerPrompt\} \/>/);
+      assert.match(tv, /<PromptActions choices=\{composeOpen \? null : choices\} onAnswer=\{answerPrompt\} \/>/);
       assert.strictEqual((tv.match(/\.onclick = showThisPane/g) || []).length, 2, 'las dos notificaciones tienen que abrir su panel');
       /* onData de ssh y de local: las dos ramas de broadcast miran la bandera */
       assert.strictEqual((tv.match(/broadcastRef\.current && !noBroadcastRef\.current/g) || []).length, 2);
+    });
+
+    await check('PA11 sugerencia de Claude: texto exacto; nada con texto escrito ni con el placeholder', () => {
+      assert.strictEqual(R.claudeSuggestion(cells('claude-suggestion')), 'yes, add a few tests');
+      assert.strictEqual(R.claudeSuggestion(cells('claude-suggestion-typed')), '', 'Tab la acepto: ya es texto del usuario (sin dim)');
+      assert.strictEqual(R.claudeSuggestion(cells('claude-placeholder')), '', 'Try "…" no es una sugerencia');
+      /* The same row with the text not dim, or with the user's text before it */
+      const rows = cells('claude-suggestion');
+      /* Claude draws "❯" + NO-BREAK SPACE: \s covers it, a literal space does not */
+      const k = rows.findIndex(r => /^❯\syes/.test(r.text));
+      assert.ok(k > 0);
+      const typed = rows.map((r, i) => (i === k ? { text: r.text, runs: [['❯ ', 0], ['yes, add a few tests', 0]] } : r));
+      assert.strictEqual(R.claudeSuggestion(typed), '');
+      const mixed = rows.map((r, i) => (i === k ? { text: '❯ y es, add a few tests', runs: [['❯ ', 0], ['y', 0], ['es, add a few tests', 1]] } : r));
+      assert.strictEqual(R.claudeSuggestion(mixed), '');
+      /* No input box (a permission menu), nothing at all */
+      assert.strictEqual(R.claudeSuggestion(R.bottomRows(screen('claude-permission-bash')).map(t => ({ text: t, runs: [[t, 1]] }))), '');
+      assert.strictEqual(R.claudeSuggestion([]), '');
+      assert.strictEqual(R.claudeSuggestion(null), '');
+    });
+
+    await check('PA12 AskUserQuestion: 5 opciones + Cancel, digitos, "Type something." con textKeys', () => {
+      const got = parse('claude-ask', 'claude');
+      assert.deepStrictEqual(summary(got), [['Red', '1'], ['Green', '2'], ['Blue', '3'], ['Type something.', '4'],
+        ['Chat about this', '5'], ['Cancel', '\x1b']]);
+      assert.deepStrictEqual(got.map(c => c.textKeys), [undefined, undefined, undefined, '4', undefined, undefined]);
+      const typing = parse('claude-ask-typing', 'claude');
+      assert.strictEqual(typing[3].label, 'Type something.');
+      assert.strictEqual(typing[3].textKeys, '', 'el cursor ya esta en el campo: un digito se escribiria dentro');
+      /* Without the agent being Claude: no text option */
+      assert.ok(parse('claude-ask', null).every(c => c.textKeys === undefined));
+    });
+
+    await check('PA13 permiso con "Tab to amend": No = flechas + Tab; campo abierto = nada', () => {
+      const bash = parse('claude-permission-bash', 'claude');
+      assert.deepStrictEqual(bash.filter(c => c.textKeys !== undefined).map(c => [c.label, c.textKeys]), [['No', '\x1b[B\x1b[B\x1b[B\t']]);
+      const edit = parse('claude-permission-edit', 'claude');
+      assert.deepStrictEqual(edit.filter(c => c.textKeys !== undefined).map(c => [c.label, c.textKeys]), [['No', '\x1b[B\x1b[B\t']]);
+      const amend = parse('claude-permission-amend', 'claude');
+      assert.deepStrictEqual(amend.filter(c => c.textKeys !== undefined).map(c => [c.label, c.textKeys]),
+        [['No, and tell Claude what to do differently', '']]);
+      assert.ok(parse('claude-trust', 'claude').every(c => c.textKeys === undefined), 'el aviso de confianza no tiene texto');
+      assert.ok(parse('codex-approval', 'codex').every(c => c.textKeys === undefined), 'Codex: no verificado');
+    });
+
+    await check('PA14 Composer: chips con Alt+N, Tab toma la sugerencia, el texto como respuesta', () => {
+      const cm = fs.readFileSync(path.join(ROOT, 'src', 'components', 'Terminal', 'Composer.jsx'), 'utf-8');
+      assert.match(cm, /e\.key === 'Tab' && ghost && !e\.shiftKey/, 'Tab solo con sugerencia; si no, el del navegador');
+      assert.match(cm, /const ghost = !text && !chips && suggestion/);
+      assert.match(cm, /ALT_DIGIT = \/\^Digit\(\[1-9\]\)\$\//);
+      assert.match(cm, /if \(textChoice\) \{\s*if \(onAnswerText\(textChoice, out, sendEnter\)/);
+      const tv = fs.readFileSync(path.join(ROOT, 'src', 'components', 'Terminal', 'TerminalView.jsx'), 'utf-8');
+      const awt = tv.match(/const answerWithText = [\s\S]*?\n  \};/);
+      assert.ok(awt, 'falta answerWithText');
+      assert.match(awt[0], /noBroadcastRef\.current = true;[\s\S]*finally \{ noBroadcastRef\.current = false;/);
+      assert.match(tv, /onAnswer=\{\(c\) => answerPrompt\(c, \{ keepFocus: true \}\)\}/);
+      assert.match(tv, /a\.id === 'claude' && \(a\.state === 'idle' \|\| a\.state === 'done'\)\s*\? claudeSuggestion\(screenCells\(term\)\)/);
     });
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

@@ -10,6 +10,11 @@
 // XDO_LIB=<dir>/usr/lib/x86_64-linux-gnu. Usa un --user-data-dir temporal y TU
 // $HOME (con CLAUDE=1 lanza el `claude` real en un directorio temporal: gasta
 // una respuesta corta del modelo y apunta ese directorio como "de confianza").
+//
+// G* y M* corren contra scripts/lib/fake-claude.mjs (la pantalla de Claude Code
+// 2.1.300 copiada de las capturas, que registra cada byte que recibe): texto
+// fantasma de la sugerencia y Tab, chips de un menu, Alt+N y el texto como
+// respuesta a "Type something." / al "No" con "Tab to amend".
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -271,6 +276,131 @@ try {
   xdo('key', 'Escape');
   await sleep(200);
   if (p9) try { fs.unlinkSync(p9); } catch (_) {}
+
+  /* G and M checks: a fake Claude Code screen (scripts/lib/fake-claude.mjs, drawn as
+     2.1.300 draws it) that logs every byte it gets */
+  {
+    const LOG = path.join(work, 'fake-claude.log');
+    const PHASE = path.join(work, 'fake-claude.phase');
+    const phase = async (p) => { fs.writeFileSync(PHASE, p); await sleep(250); };
+    const got = () => { try { return fs.readFileSync(LOG, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).join(''); } catch (_) { return ''; } };
+    const placeholder = () => c.ev(`(document.querySelector('.composer-input') || {}).placeholder ?? null`);
+    const isGhost = () => c.ev(`!!document.querySelector('.composer-input.ghost')`);
+    const chipLabels = () => c.ev(`[...document.querySelectorAll('.composer-chip .composer-chip-label')].map(e => e.textContent)`);
+    const waitChips = (n = 1) => c.ev(`window.__T.until(() => document.querySelectorAll('.composer-chip').length >= ${n}, 4000)`);
+    const SUG = 'yes, add a few tests';
+    fs.writeFileSync(PHASE, `suggest:${SUG}`);
+    await click('.terminal-wrapper');
+    xdo('type', '--delay', '5', `clear; ${process.execPath} ${path.join(ROOT, 'scripts/lib/fake-claude.mjs')} ${LOG} ${PHASE}`);
+    xdo('key', 'Return');
+    ok('G0 fake Claude screen up', !!(await waitScreen('Claude Code v2\\.1\\.300[\\s\\S]*\\n❯', 8000)));
+    await sleep(600);
+    ok('G0 ... detected as Claude Code, idle', await c.ev(`window.__T.until(() => { const a = window.__T.ctx().state.tabs.find(t => t.agent); return a && a.agent.id === 'claude' && a.agent.state === 'idle'; }, 4000)`));
+
+    /* G1 the suggestion as ghost text in the empty composer */
+    xdo('key', 'ctrl+shift+e');
+    await sleep(800);
+    ok('G1 ghost text = Claude\'s suggestion', (await placeholder()) === SUG && (await isGhost()) && (await composerValue()) === '', JSON.stringify(await placeholder()));
+    ok('G1 ... Tab hint in the bar', await c.ev(`!!document.querySelector('.composer-ghost-hint')`));
+    await shot('composer-ghost.png');
+
+    /* G2 Tab takes it as editable text, caret at the end; nothing reaches the program */
+    const before2 = got();
+    xdo('key', 'Tab');
+    await sleep(250);
+    const caretEnd = await c.ev(`(() => { const t = document.querySelector('.composer-input'); return t.selectionStart === t.value.length && t.selectionEnd === t.value.length; })()`);
+    ok('G2 Tab inserts the suggestion, caret at the end, focus stays', (await composerValue()) === SUG && caretEnd && /composer-input/.test(await active() || ''), JSON.stringify(await composerValue()));
+    ok('G2 ... and is no longer a ghost; nothing sent', !(await isGhost()) && got() === before2, JSON.stringify(got()));
+    xdo('type', '--delay', '15', ' please');
+    await sleep(150);
+    ok('G2 ... it is editable', (await composerValue()) === `${SUG} please`);
+
+    /* G3 empty again → ghost back; typing hides it */
+    xdo('key', 'ctrl+a');
+    xdo('key', 'BackSpace');
+    await sleep(200);
+    const back = (await isGhost()) && (await placeholder()) === SUG;
+    xdo('type', 'x');
+    await sleep(200);
+    ok('G3 cleared → ghost again; typing hides it', back && !(await isGhost()) && (await composerValue()) === 'x');
+    xdo('key', 'BackSpace');
+    await sleep(150);
+
+    /* G4 Claude's suggestion changes → the ghost follows; goes → gone */
+    await phase('suggest:run the tests');
+    const changed = await c.ev(`window.__T.until(() => document.querySelector('.composer-input').placeholder === 'run the tests', 4000)`);
+    await phase('idle');
+    const gone = await c.ev(`window.__T.until(() => !document.querySelector('.composer-input.ghost'), 4000)`);
+    ok('G4 the ghost follows Claude\'s box (new text, then none)', !!changed && !!gone);
+
+    /* G5 Tab with no suggestion: the browser's Tab (focus moves on), no tab character, nothing sent */
+    const before5 = got();
+    xdo('key', 'Tab');
+    await sleep(200);
+    ok('G5 Tab without a suggestion moves focus, types nothing', !/composer-input/.test(await active() || '') && (await composerValue()) === '' && got() === before5, await active());
+    await click('.composer-input');
+
+    /* M1 a menu → chips in the composer; the overlay over the terminal hides */
+    await phase('ask');
+    await waitChips(6);
+    ok('M1 chips = the menu\'s options', JSON.stringify(await chipLabels()) === JSON.stringify(['Red', 'Green', 'Blue', 'Type something.', 'Chat about this', 'Cancel']), JSON.stringify(await chipLabels()));
+    ok('M1 ... with 1..5 hints, and no PromptActions overlay meanwhile', JSON.stringify(await c.ev(`[...document.querySelectorAll('.composer-chip-key')].map(e => e.textContent)`)) === '["1","2","3","4","5"]'
+      && !(await c.ev(`!!document.querySelector('.prompt-actions')`)));
+    await shot('composer-chips.png');
+
+    /* M2 click a chip → its key, keyboard stays in the composer */
+    let mark = got().length;
+    await click('.composer-chip:nth-child(2)');
+    await sleep(300);
+    ok('M2 chip click sends "2", focus stays in the composer', got().slice(mark) === '2' && /composer-input/.test(await active() || ''), JSON.stringify(got().slice(mark)));
+    ok('M2 ... chips hidden once answered', !(await c.ev(`!!document.querySelector('.composer-chip')`)));
+
+    /* M3 Alt+1 */
+    await phase('idle');
+    await sleep(500);
+    await phase('ask');
+    await waitChips(6);
+    mark = got().length;
+    xdo('key', 'alt+1');
+    await sleep(300);
+    ok('M3 Alt+1 sends "1", focus stays', got().slice(mark) === '1' && /composer-input/.test(await active() || ''), JSON.stringify(got().slice(mark)));
+
+    /* M4 free text: "Type something." = its digit, then the text (bracketed), then Enter */
+    await phase('idle');
+    await sleep(500);
+    await phase('ask');
+    await waitChips(6);
+    ok('M4 placeholder says Enter answers "Type something."', /Type something/.test(await placeholder() || ''), await placeholder());
+    mark = got().length;
+    xdo('type', '--delay', '15', 'mango');
+    xdo('key', 'Return');
+    await sleep(900);
+    ok('M4 typed text answers "Type something.": 4, paste, Enter', got().slice(mark) === '4\x1b[200~mango\x1b[201~\r' && (await composerValue()) === '', JSON.stringify(got().slice(mark)));
+
+    /* M5 permission with "Tab to amend": arrows to No, Tab, the text, Enter */
+    await phase('idle');
+    await sleep(500);
+    await phase('perm');
+    await waitChips(5);
+    mark = got().length;
+    xdo('type', '--delay', '15', 'no thanks');
+    xdo('key', 'Return');
+    await sleep(900);
+    ok('M5 typed text answers "No": ↓↓↓ Tab, paste, Enter', got().slice(mark) === '\x1b[B\x1b[B\x1b[B\t\x1b[200~no thanks\x1b[201~\r', JSON.stringify(got().slice(mark)));
+
+    /* M6 composer closed → the overlay answers again */
+    await phase('idle');
+    await sleep(500);
+    await phase('perm');
+    await waitChips(5);
+    xdo('key', 'Escape');
+    await sleep(300);
+    ok('M6 composer closed → PromptActions over the terminal again', await c.ev(`window.__T.until(() => !!document.querySelector('.prompt-actions'), 4000)`));
+    ok('M6 ... and the program got exactly the answers, nothing else', got() === '2' + '1' + '4\x1b[200~mango\x1b[201~\r'
+      + '\x1b[B\x1b[B\x1b[B\t\x1b[200~no thanks\x1b[201~\r', JSON.stringify(got()));
+    fs.writeFileSync(PHASE, 'quit');
+    await waitScreen('PROMPT\\$\\s*$', 4000);
+  }
 
   if (process.env.CLAUDE === '1') {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'termilab-composer-claude-'));

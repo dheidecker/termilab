@@ -811,3 +811,33 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   live-e2e.cjs claude|codex` (pty de python + `@xterm/headless`). Capturas: `shots-desktop.mjs` y
   `shots-android.mjs` (Android en Chrome: el shim real sobre un transporte falso, `android/entry.jsx`
   empaquetado con esbuild — sirve para cualquier captura de la vista de sesión de Android).
+
+## Composer: sugerencia de Claude y respuestas (rama `feat/composer-suggest`, 2026-10-14)
+
+- **La sugerencia de Claude Code (2.1.300) es SGR 2 (dim) con el color por defecto**, tras
+  "❯" + **NO-BREAK SPACE** sin dim. Lo que escribe el usuario es el mismo color sin dim: el
+  texto de la fila no distingue una cosa de otra, hay que leer `cell.isDim()`
+  (`screenCells` → `claudeSuggestion`). Un regex `/^❯ /` con espacio literal no casa: usa `\s`.
+- **El placeholder de arranque `Try "…"` se pinta igual (dim) y Tab NO lo toma** (visto en
+  vivo): se descarta por texto. Tras `/clear` no hay placeholder.
+- La sugerencia vuelve si se vacía la caja de Claude y desaparece en cuanto hay texto (aunque
+  sea su prefijo). Llega asíncrona, segundos después de la respuesta, y no siempre.
+- En el composer el fantasma es el `placeholder` del textarea (clase `ghost`). Tab sin
+  sugerencia es el Tab del navegador (mueve el foco), decisión explícita: no se atrapa.
+- **AskUserQuestion**: opciones con línea de descripción, una raya `────` antes de la última
+  ("Chat about this") y pie "Enter to select · ↑/↓ to navigate · Esc to cancel"; el dígito
+  elige al instante. "N. Type something." con su dígito abre el campo; **con el cursor ya en
+  ella el campo está abierto y un dígito se escribiría dentro** (`textKeys: ''`).
+- **Permiso con "Tab to amend"**: un dígito en "No" rechaza al instante; para dar texto hay que
+  ir con flechas, Tab (la opción pasa a "No, and tell Claude what to do differently"), pegar y
+  Enter. Flechas+Tab en una sola escritura funciona; el pegado va 200 ms después y el Enter
+  150 ms más tarde (`answerWithText`). Verificado en vivo con 2.1.300, nada se ejecutó.
+- Con el composer abierto, `PromptActions` recibe `null` (sus chips sustituyen al overlay);
+  `answerPrompt(c, { keepFocus: true })` no devuelve el foco a xterm.
+- **Capturar pantallas reales**: `node-pty` del repo está compilado para Electron; corre el
+  driver con `ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron driver.js` y
+  `@xterm/headless` instalado en el scratchpad (no está en el repo). Claude arranca en
+  **auto mode**: Shift+Tab (`\e[Z`) hasta "manual mode" antes de pedir nada que dé permiso.
+- e2e-composer C3 (tecla muerta ´ por el IME en xvfb) falló en 1 de 4 corridas con este cambio
+  (la primera tras arrancar xvfb) y pasó en las otras 3: parece intermitente del IME. Reintenta
+  antes de buscar un bug, y si se repite compáralo con la base (`git stash`).

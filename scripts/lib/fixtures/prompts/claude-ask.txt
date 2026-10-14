@@ -1,0 +1,40 @@
+
+
+● SKIPPED
+
+✻ Cooked for 2s · done 16:45
+  
+❯ Run the shell command: ls -la                                                                                         
+
+  Listed 1 directory 
+
+● The directory /var/tmp/cs-ws-jeJraH is empty. It has only the . and .. entries, and hello.txt isn't there because that
+  write was skipped.
+
+✻ Brewed for 3s · done 16:45
+
+❯ Use the Bash tool to run exactly: touch a.txt                                                                         
+ 
+  Ran 1 shell command 
+
+● NOPE
+
+✻ Worked for 2s · done 16:46
+
+❯ Use the AskUserQuestion tool to ask me which colour I prefer (red, green or blue). Single question.                   
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Colour 
+
+Which colour do you prefer?
+
+❯ 1. Red
+     The colour red.
+  2. Green
+     The colour green.
+  3. Blue
+     The colour blue.                                                                                 
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

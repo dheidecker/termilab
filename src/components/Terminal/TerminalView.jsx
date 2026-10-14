@@ -20,7 +20,7 @@ import { sessionStatus } from '../Mobile/sessions';
 import { liveSessionId } from '../SplitPane/sessions';
 import { registerTerminal, adoptedReady } from '../SplitPane/windowMove';
 import { playChime, playQuestionChime, TYPING_QUIET_MS } from './agentChime';
-import { detectAgent, screenTail, createAgentTracker, NEEDS_YOU_TEXT, parseChoices, cursorRowText } from './agentRules';
+import { detectAgent, screenTail, createAgentTracker, NEEDS_YOU_TEXT, parseChoices, cursorRowText, claudeSuggestion, screenCells } from './agentRules';
 import PromptActions from '../Agents/PromptActions';
 import './TerminalView.css';
 import '../Keeper/Keeper.css';
@@ -107,7 +107,7 @@ export default function TerminalView({ tab }) {
     choicesKeyRef.current = key;
     setChoices(next);
   };
-  const answerPrompt = (choice) => {
+  const answerPrompt = (choice, { keepFocus = false } = {}) => {
     const t = termRef.current;
     if (!t || !choice) return;
     answeredRef.current = true;
@@ -116,7 +116,40 @@ export default function TerminalView({ tab }) {
     noBroadcastRef.current = true;
     bypassRef.current = true;
     try { t.input(choice.keys, true); } finally { noBroadcastRef.current = false; bypassRef.current = false; }
-    if (!IS_ANDROID) t.focus();
+    if (!IS_ANDROID && !keepFocus) t.focus();
+  };
+  /* The composer's text as the answer to an option that takes text
+     (choice.textKeys, agentRules.freeTextOption): the keys that open its
+     field, then the text as one paste, then Enter. Separate writes with a
+     pause, as verified live: Ink has to redraw the field before the paste. */
+  const answerWithText = (choice, text, enter) => {
+    const t = termRef.current;
+    if (!t || !choice || typeof choice.textKeys !== 'string') return false;
+    if (hasApi() && !sessionIdRef.current) return false;
+    answeredRef.current = true;
+    choicesKeyRef.current = 'null';
+    setChoices(null);
+    const here = (fn) => {
+      if (termRef.current !== t) return;
+      noBroadcastRef.current = true;
+      bypassRef.current = true;
+      try { fn(); } finally { noBroadcastRef.current = false; bypassRef.current = false; }
+    };
+    if (choice.textKeys) here(() => t.input(choice.textKeys, true));
+    setTimeout(() => {
+      here(() => t.paste(text));
+      if (enter) setTimeout(() => here(() => t.input('\r', true)), 150);
+    }, choice.textKeys ? 200 : 0);
+    return true;
+  };
+  /* Claude Code's suggested next prompt (agentRules.claudeSuggestion), for
+     the composer's ghost text. Re-read at every scan. */
+  const [suggestion, setSuggestion] = useState('');
+  const suggestionRef = useRef('');
+  const showSuggestion = (text) => {
+    if (text === suggestionRef.current) return;
+    suggestionRef.current = text;
+    setSuggestion(text);
   };
   attachRef.current = (items) => attachImages(termRef.current, tabLiveRef.current, items, { onStatus: showAttachStatus, paste: pasteHereOnly });
   useEffect(() => () => clearTimeout(attachTimerRef.current), []);
@@ -347,6 +380,8 @@ export default function TerminalView({ tab }) {
       const a = r.agent;
       showChoices(!a ? parseChoices(screenTail(term), null, { cursorLine: cursorRowText(term) })
         : a.state === 'blocked' ? parseChoices(screenTail(term), a.id) : []);
+      showSuggestion(a && a.id === 'claude' && (a.state === 'idle' || a.state === 'done')
+        ? claudeSuggestion(screenCells(term)) : '');
       if (r.event === 'blocked') needsYou(r.agent);
       else if (r.event === 'done') finished(`${r.agent.name} finished`);
       return r;
@@ -1065,6 +1100,10 @@ export default function TerminalView({ tab }) {
         : null}
       onClose={closeComposer}
       onFocusTerminal={() => termRef.current?.focus()}
+      suggestion={suggestion}
+      choices={choices}
+      onAnswer={(c) => answerPrompt(c, { keepFocus: true })}
+      onAnswerText={answerWithText}
     />
   ) : null;
   const toggleComposer = () => (composeOpen ? closeComposer() : composeKeyRef.current());
@@ -1194,7 +1233,8 @@ export default function TerminalView({ tab }) {
       )}
 
       <div className="terminal-wrapper" ref={containerRef} />
-      <PromptActions choices={choices} onAnswer={answerPrompt} />
+      {/* With the composer open its chips answer instead (no duplicates) */}
+      <PromptActions choices={composeOpen ? null : choices} onAnswer={answerPrompt} />
       {composer}
 
       {copiedAt > 0 && <div className="terminal-copied-hint" key={copiedAt} role="status">Copied</div>}

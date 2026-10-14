@@ -69,6 +69,7 @@ export const AGENT_RULES = [
       /^\s*❯\s*1\.\s+\S/,
       /Enter to confirm · Esc to cancel/,
       /No, and tell Claude what to do differently/,
+      /Enter to select · ↑\/↓ to navigate/,
     ],
     working: [
       /* "✻ Choreographing… (5s · ↓ 265 tokens · thinking)": a spinner glyph,
@@ -82,6 +83,8 @@ export const AGENT_RULES = [
       /Esc to cancel · Tab to amend/,
       /Yes, I trust this folder/,
       /Enter to confirm · Esc to cancel/,
+      /* AskUserQuestion (2.1.300): the cursor can be on any option */
+      /Enter to select · ↑\/↓ to navigate/,
     ],
     idle: [claudeInputBox],
   },
@@ -368,7 +371,8 @@ export const NEEDS_YOU_TEXT = /\b(needs your (permission|approval)|permission to
       a line). Only when it is the last text on screen AND the row the cursor
       is on (`cursorLine`, when the caller knows it): `echo '[Y/n]'` followed
       by a shell prompt, or by a program still running, is no question.
-   A footer that mentions Esc adds a Cancel (Esc) item, marked cancel:true. */
+   A footer that mentions Esc adds a Cancel (Esc) item, marked cancel:true.
+   An option that answers with typed text carries `textKeys` (freeTextOption). */
 
 const MENU_OPTION = /^(\s*)([❯›▶●>]\s*)?(\d{1,2})\.\s+(\S.*)$/u;
 const MENU_FOOTER = /\b(esc to cancel|enter to confirm|press enter to confirm|enter confirm|esc skip)\b/i;
@@ -378,10 +382,14 @@ const DOWN = '\x1b[B';
 const UP = '\x1b[A';
 const MAX_CHOICES = 6;
 
+/** Down/Up from the cursor's option to `to` */
+function moveKeys(from, to) {
+  const n = to - from;
+  return n > 0 ? DOWN.repeat(n) : UP.repeat(-n);
+}
 /** Down/Up from the cursor's option to `to`, then Enter */
 function arrowKeys(from, to) {
-  const n = to - from;
-  return (n > 0 ? DOWN.repeat(n) : UP.repeat(-n)) + '\r';
+  return moveKeys(from, to) + '\r';
 }
 
 /** "Yes, proceed (y)" → "Yes, proceed"; an option that runs on is cut at " · " */
@@ -414,6 +422,8 @@ function numberedMenu(lines, agentId) {
       if (opts.length) return [];   // a gap inside the menu: not one menu
       continue;                     // blank rows between menu and footer
     }
+    /* AskUserQuestion puts a rule above its last option ("Chat about this") */
+    if (opts.length && RULE.test(l)) continue;
     const m = MENU_OPTION.exec(l);
     if (m) {
       opts.unshift({ n: Number(m[3]), cursor: !!m[2], text: m[4] });
@@ -436,7 +446,29 @@ function numberedMenu(lines, agentId) {
     hint: digits ? String(o.n) : null,
   }));
   if (items.some(c => !c.label)) return [];
+  if (agentId === 'claude') freeTextOption(items, opts, cur, lines[f]);
   return [...items, ...cancelItem(lines[f])];
+}
+
+/* The option of a Claude Code menu that takes typed text, marked with
+   `textKeys`: the keys that open its text field. The caller sends them, then
+   the text (a paste), then Enter. All three seen live (Claude Code 2.1.300):
+   - AskUserQuestion's "N. Type something.": its digit focuses the field.
+     With the cursor already on it the field is open, and a digit would be
+     typed INTO it: nothing to press.
+   - A permission prompt's "No" when the footer says "Tab to amend": arrows
+     to it, then Tab turns it into "No, and tell Claude what to do
+     differently" with a field (a digit would pick "No" at once).
+   - That field already open (cursor on it): nothing to press. */
+const TYPE_SOMETHING = /^Type something\.?$/;
+const AMENDED_NO = /^No, and tell Claude what to do differently$/;
+function freeTextOption(items, opts, cur, footer) {
+  let k = opts.findIndex(o => TYPE_SOMETHING.test(cleanLabel(o.text)));
+  if (k >= 0) { items[k].textKeys = k === cur ? '' : String(opts[k].n); return; }
+  if (AMENDED_NO.test(cleanLabel(opts[cur].text))) { items[cur].textKeys = ''; return; }
+  if (!/\bTab to amend\b/i.test(footer)) return;
+  k = opts.findIndex(o => /^No$/.test(cleanLabel(o.text)));
+  if (k >= 0) items[k].textKeys = moveKeys(cur, k) + '\t';
 }
 
 function plainMenu(lines) {
@@ -507,4 +539,73 @@ export function cursorRowText(term) {
   if (!b) return '';
   const line = b.getLine(b.baseY + b.cursorY);
   return line ? line.translateToString(true) : '';
+}
+
+/* ─── Claude Code's suggested next prompt (the "ghost text") ───
+   After a reply Claude Code may print a suggested next prompt inside its
+   empty input box, faint, and Tab accepts it. Seen live (2.1.300, pty +
+   @xterm/headless): the row is "❯ " in normal intensity followed by the
+   suggestion in SGR 2 (dim) with the DEFAULT foreground; what the user types
+   is the same colour without dim, and the suggestion disappears as soon as
+   the box has text. The startup placeholder ('Try "…"') is drawn exactly the
+   same way but Tab does NOT take it, so it is not a suggestion. Only rule
+   for Claude Code: no other agent has been seen doing this. */
+
+/**
+ * @param {{text: string, runs: [string, boolean|number][]}[]} rows  bottom rows
+ *   of the screen (screenCells): each row's text and its runs of [text, dim]
+ * @returns {string}  the suggestion, or '' (none, the box has text, placeholder)
+ */
+export function claudeSuggestion(rows) {
+  if (!Array.isArray(rows) || !rows.length) return '';
+  const texts = rows.map(r => (r && typeof r.text === 'string' ? r.text.replace(/\s+$/, '') : ''));
+  const i = claudeInputBox(texts);
+  if (i < 0 || !/^\s*❯(\s|$)/.test(texts[i])) return '';
+  let end = i + 1;
+  while (end < texts.length && !RULE.test(texts[end])) end++;
+  const parts = [];
+  for (let y = i; y < end; y++) {
+    let prompt = y === i;
+    for (const [t, dim] of rows[y].runs || []) {
+      let txt = String(t || '');
+      if (prompt) {
+        /* The "❯" itself, and the space after it, are not dim */
+        const m = /^\s*❯\s?/.exec(txt);
+        if (!m) return '';
+        txt = txt.slice(m[0].length);
+        prompt = false;
+      }
+      if (!txt.trim()) continue;
+      if (!dim) return '';             // the user's own text: no suggestion
+      parts.push(txt.trim());
+    }
+  }
+  const s = parts.join(' ').replace(/\s+/g, ' ').trim();
+  if (!s || /^Try ".*"$/.test(s)) return '';
+  return s;
+}
+
+/** The bottom rows of an xterm's screen with their dim runs (claudeSuggestion) */
+export function screenCells(term, rows = AGENT_SCAN_ROWS) {
+  const b = term && term.buffer && term.buffer.active;
+  if (!b) return [];
+  const out = [];
+  let cell = null;
+  for (let y = b.baseY; y < b.baseY + term.rows; y++) {
+    const line = b.getLine(y);
+    if (!line) { out.push({ text: '', runs: [] }); continue; }
+    const runs = [];
+    for (let x = 0; x < line.length; x++) {
+      cell = line.getCell(x, cell || undefined);
+      if (!cell || cell.getWidth() === 0) continue;
+      const dim = !!cell.isDim();
+      const ch = cell.getChars() || ' ';
+      const last = runs[runs.length - 1];
+      if (last && last[1] === dim) last[0] += ch; else runs.push([ch, dim]);
+    }
+    out.push({ text: line.translateToString(true), runs });
+  }
+  let n = out.length;
+  while (n > 0 && !/\S/.test(out[n - 1].text)) n--;
+  return out.slice(Math.max(0, n - rows), n);
 }

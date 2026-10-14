@@ -17,6 +17,16 @@
  * Images pasted or dropped here are attached (saved/uploaded by
  * imageAttach.js) and their path goes into THIS text at the caret, not into
  * the terminal.
+ *
+ * Claude Code's suggested next prompt (TerminalView reads it from the
+ * screen) shows as grey ghost text while this box is empty; Tab takes it as
+ * editable text. With no suggestion Tab is the browser's: focus moves on,
+ * as in any chat box (nothing is trapped, no tab character is typed).
+ *
+ * While the agent is blocked on a menu its options are chips on top: a
+ * click or Alt+N answers it and the keyboard stays here. An option that
+ * takes text (agentRules' textKeys: "Type something.", a permission's "No"
+ * with Tab to amend) makes Enter send this text AS that answer.
  */
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { normalizePaste } from './clipboardPaste';
@@ -65,6 +75,8 @@ const readFraction = () => {
 /* Image files among clipboard / drop items */
 const imageFiles = (list) => [...(list || [])].filter(f => f && /^image\//.test(f.type || ''));
 
+const ALT_DIGIT = /^Digit([1-9])$/;
+
 /**
  * Props:
  *   tab           the pane's tab (id, sessionKey)
@@ -75,8 +87,13 @@ const imageFiles = (list) => [...(list || [])].filter(f => f && /^image\//.test(
  *   onClose()     Esc / ×: close, the draft stays
  *   onFocusTerminal()   Ctrl+Shift+E: keyboard back to the terminal
  *   mobile        Android: no shortcuts hint, back button closes
+ *   suggestion    Claude Code's suggested prompt ('' = none): ghost text
+ *   choices       the options of the prompt the agent waits on (parseChoices), or null
+ *   onAnswer(choice)                 send that option's keys
+ *   onAnswerText(choice, text, enter) → boolean   this text as that option's answer
  */
-export default function Composer({ tab, color, focusSignal, onSend, onAttach, onClose, onFocusTerminal, mobile = false }) {
+export default function Composer({ tab, color, focusSignal, onSend, onAttach, onClose, onFocusTerminal, mobile = false,
+  suggestion = '', choices = null, onAnswer = null, onAnswerText = null }) {
   const sessionKey = tab.sessionKey || tab.id;
   const [text, setText] = useState(() => loadDraft(tab.id, sessionKey));
   const [sendEnter, setSendEnter] = useState(() => lsGet(ENTER_KEY) !== 'false');
@@ -179,10 +196,18 @@ export default function Composer({ tab, color, focusSignal, onSend, onAttach, on
     onAttach(files, { onStatus: showStatus, paste: (paths) => insertAtCaret(paths, at) });
   };
 
+  const chips = onAnswer && choices && choices.length ? choices : null;
+  /* Numbered for Alt+N: the options, not Cancel (Esc here closes the box) */
+  const numbered = chips ? chips.filter(c => !c.cancel) : [];
+  const textChoice = chips && onAnswerText ? chips.find(c => typeof c.textKeys === 'string') : null;
+  const ghost = !text && !chips && suggestion ? suggestion : '';
+
   const send = () => {
     const out = composedText(text);
     if (!out) return;
-    if (onSend(out, sendEnter) === false) return;
+    if (textChoice) {
+      if (onAnswerText(textChoice, out, sendEnter) === false) return;
+    } else if (onSend(out, sendEnter) === false) return;
     setText('');
     saveDraft(tab.id, sessionKey, '');
     /* Stays open, like a chat box: ready for the next message */
@@ -197,6 +222,22 @@ export default function Composer({ tab, color, focusSignal, onSend, onAttach, on
       e.preventDefault();
       e.stopPropagation();
       send();
+      return;
+    }
+    /* Tab takes Claude's suggestion; otherwise it is the browser's Tab */
+    if (e.key === 'Tab' && ghost && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      insertAtCaret(ghost);
+      return;
+    }
+    /* Alt+1…9 answers with that chip (by key code: any layout) */
+    const digit = numbered.length && e.altKey && !e.ctrlKey && !e.metaKey ? ALT_DIGIT.exec(e.code || '') : null;
+    if (digit) {
+      e.preventDefault();
+      e.stopPropagation();
+      const c = numbered[Number(digit[1]) - 1];
+      if (c) onAnswer(c);
       return;
     }
     if (e.key === 'Escape') {
@@ -276,14 +317,38 @@ export default function Composer({ tab, color, focusSignal, onSend, onAttach, on
           aria-hidden="true"
         />
       )}
+      {chips && (
+        <div className="composer-choices" role="group" aria-label="Answer the prompt">
+          {chips.map((c, i) => {
+            const n = c.cancel ? 0 : numbered.indexOf(c) + 1;
+            const isText = c === textChoice;
+            const tip = `${c.label}${n && !mobile ? ` (Alt+${n})` : ''}${isText ? ' · or type your answer below and press Enter' : ''}`;
+            return (
+              <button
+                key={`${i}-${c.label}`}
+                type="button"
+                className={`composer-chip${c.cancel ? ' cancel' : ''}${isText ? ' text' : ''}`}
+                title={tip}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={(e) => { e.stopPropagation(); onAnswer(c); taRef.current?.focus({ preventScroll: true }); }}
+              >
+                {n > 0 && <kbd className="composer-chip-key">{n}</kbd>}
+                <span className="composer-chip-label">{c.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
       <textarea
         ref={taRef}
-        className="composer-input"
+        className={`composer-input${ghost ? ' ghost' : ''}`}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
-        placeholder={mobile ? 'Write a message…' : 'Write a message… Enter sends · Shift+Enter new line'}
+        placeholder={ghost
+          || (textChoice ? `Type your answer… Enter answers “${textChoice.label}”`
+            : (mobile ? 'Write a message…' : 'Write a message… Enter sends · Shift+Enter new line'))}
         spellCheck
         aria-label="Message"
       />
@@ -294,7 +359,9 @@ export default function Composer({ tab, color, focusSignal, onSend, onAttach, on
         </label>
         {status
           ? <span className={`composer-status${status.kind === 'error' ? ' error' : ''}`} role="status">{status.text}</span>
-          : !mobile && <span className="composer-hint">Esc closes · Ctrl+Shift+E terminal</span>}
+          : ghost
+            ? <span className="composer-hint composer-ghost-hint"><kbd>Tab</kbd> takes Claude’s suggestion</span>
+            : !mobile && <span className="composer-hint">{chips ? `Alt+1…${numbered.length} answers · Esc closes` : 'Esc closes · Ctrl+Shift+E terminal'}</span>}
         <span className="composer-spacer" />
         {onAttach && (
           <>
