@@ -344,3 +344,40 @@
   outline: 2px solid var(--border-focus);
   outline-offset: 1px;
 }
+
+/* Image files dragged over a pane (imageAttach.js) */
+.terminal-container.file-drop-over::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent-subtle);
+  pointer-events: none;
+  z-index: 40;
+}
+
+/* "Uploading captura.png… 60%" / "Only images can be attached" */
+.terminal-attach-status {
+  position: absolute;
+  left: 12px;
+  bottom: 34px;
+  max-width: calc(100% - 24px);
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: var(--shadow-md);
+  z-index: 41;
+  pointer-events: none;
+}
+
+.terminal-attach-status.error {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}

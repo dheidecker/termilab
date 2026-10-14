@@ -18,6 +18,7 @@ const { parseKnownHosts } = require('./services/known-hosts');
 const windowRegistry = require('./window-registry');
 const workspaceService = require('./services/workspace-service');
 const backgroundSessions = require('./services/background-sessions');
+const uploadService = require('./services/upload-service');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -507,6 +508,22 @@ function registerIpcHandlers(mainWindow) {
 
   ipcMain.handle('sftp:cleanup', wrapHandler(async (event, owner) => {
     return await sftpEditService.cleanup(owner);
+  }));
+
+  // ─── Images into a terminal (drag & drop, clipboard) ───
+  // upload-service.js: saved to / uploaded into ~/.termilab/uploads, the
+  // path is typed by the renderer. Progress goes to the window that asked.
+
+  ipcMain.handle('attach:save-local', wrapHandler(async (event, items) => {
+    return await uploadService.saveLocal(items);
+  }));
+
+  ipcMain.handle('attach:upload', wrapHandler(async (event, sessionId, uploadId, items) => {
+    ensureMayUse(event, sessionId, 'attach:upload');
+    const sender = event && event.sender;
+    return await uploadService.uploadRemote(sessionId, uploadId, items, (p) => {
+      try { if (sender && !sender.isDestroyed()) sender.send('attach:progress', p); } catch (_) { /* window gone */ }
+    });
   }));
 
   // ─── Local filesystem (SFTP screen's Local pane) ───────

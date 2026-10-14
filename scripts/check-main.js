@@ -38,6 +38,9 @@
  * 10. COPIAR Y PEGAR (C*, scripts/lib/check-clipboard.js): canales clipboard:*,
  *     writer troceado de ssh/pty, la costura clipboardPaste.js del renderer y
  *     200 lineas por un pty real (TERMILAB_CHECK_ONLY=C: solo esto).
+ *  11. IMAGENES A UNA TERMINAL (UP*, scripts/lib/check-attach.js): guardar en
+ *     local y subir por SFTP sobre la misma conexion (sshd real, HOME temporal).
+ *     Solo esta seccion: TERMILAB_CHECK_ONLY=UP.
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -1389,6 +1392,14 @@ async function main() {
     process.exit(failures ? 1 : 0);
   }
 
+  // TERMILAB_CHECK_ONLY=UP: solo el grafo + imagenes a una terminal (upload-service)
+  if (process.env.TERMILAB_CHECK_ONLY === 'UP') {
+    await require('./lib/check-attach').seccionAttach({ check, ROOT, handlers });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo UP)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // TERMILAB_CHECK_ONLY=KP: solo el grafo + la seccion KP (iterar sobre el keeper)
   if (process.env.TERMILAB_CHECK_ONLY === 'KP') {
     await require('./lib/check-keeper').seccionKeeper({ check, ROOT, handlers });
@@ -1412,6 +1423,8 @@ async function main() {
 
   // ── L/F. SFTP de dos paneles: local-fs, sshd real, transferencias ──
   await require('./lib/check-sftp').seccionSftp({ check, ROOT, getBridge: () => bridge });
+  // ── UP. Imagenes a una terminal: guardar en local / subir por la misma conexion ──
+  await require('./lib/check-attach').seccionAttach({ check, ROOT, handlers });
 
   // ── W. Varias ventanas: enrutado por sesion, mudanzas con bufer, cierre ──
   await require('./lib/check-windows').seccionVentanas({ check, ROOT, handlers, onHandlers });

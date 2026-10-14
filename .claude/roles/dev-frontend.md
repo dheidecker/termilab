@@ -684,3 +684,22 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
 - **E2E de verdad:** `scripts/e2e-clipboard.mjs` (xvfb + xdotool + xclip, ver cabecera). Lee
   CLIPBOARD/PRIMARY con `xclip -o`, el xterm se saca del fiber de `.terminal-wrapper` (primer hook
   con `.current.buffer`). La terminal local usa TU `$HOME` real (local-shell-service filtra env).
+
+## Imágenes a una terminal (rama `feat/image-attach`, 2026-10-14)
+
+- `Terminal/imageAttach.js`: `attachImages(term, tab, items, {onStatus})` (items = `File` o
+  `{png, mime, name}`), `isFilesDrag`, `shellQuote`, `refusal`. Escribe con `term.paste(rutas + ' ')`,
+  nunca Enter. Local con ruta en disco = se teclea tal cual; sin ruta (portapapeles, imagen de un
+  navegador) = `attach.saveLocal`. SSH = `attach.upload(liveSessionId(tab), …)`.
+- **El drop va en el `.terminal-container` de cada TerminalView** y solo con `isFilesDrag` (tipo
+  `Files` y SIN `DRAG_MIME`): los arrastres de panel/pestaña los toma `.pane-drop-layer`, que solo
+  existe durante un arrastre interno. Resalte = clase `file-drop-over` (`::after`, pointer-events none).
+- La línea de estado (`.terminal-attach-status`) es DOM sobre el panel, no texto en xterm: escribir
+  en el xterm rompería la TUI del agente (Claude Code) que corre ahí.
+- **Pegar una imagen** (fusionado con el portapapeles): `pasteImageRef.current = (img) =>
+  attachRef.current([img])` en TerminalView (solo escritorio con `canAttach()`); `pasteInto` → onImage
+  → `attachImages`. La costura temporal `readClipboardImage()` ya no existe.
+- E2E real: `xvfb-run electron` con `HOME`/`XDG_CONFIG_HOME` temporales (dev comparte el userData
+  instalado), CDP `Input.dispatchDragEvent` con `data.files:[ruta]` → `webUtils.getPathForFile` da
+  la ruta de verdad. Las filas se leen de `.xterm-rows` (renderer DOM). `navigator.clipboard.write`
+  con `ClipboardItem` image/png funciona bajo xvfb. Script: scratchpad de la sesión, `drop-e2e.mjs`.

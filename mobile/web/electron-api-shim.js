@@ -20,9 +20,9 @@
  * under Node with a fake transport.
  */
 
-export const OMITTED_NAMESPACES = ['sftp', 'localFs', 'portForward', 'localShell', 'window', 'dialog', 'clipboard'];
+export const OMITTED_NAMESPACES = ['sftp', 'localFs', 'portForward', 'localShell', 'window', 'dialog', 'clipboard', 'attach'];
 /** Channel prefixes that belong to the omitted namespaces. */
-export const OMITTED_CHANNEL_PREFIXES = ['sftp:', 'local-fs:', 'port-forward:', 'local:', 'window:', 'dialog:', 'clipboard:'];
+export const OMITTED_CHANNEL_PREFIXES = ['sftp:', 'local-fs:', 'port-forward:', 'local:', 'window:', 'dialog:', 'clipboard:', 'attach:'];
 
 const HELLO_EVERY_MS = 250;
 

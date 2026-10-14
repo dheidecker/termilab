@@ -803,3 +803,23 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   desordenar teclas. ssh2 `Channel.write` nunca pierde (bufferiza); devuelve false y ya.
 - `TERMILAB_CHECK_ONLY=C node scripts/check-main.js` corre solo la sección C (~5 s). C6 lanza
   `scripts/lib/paste-driver.js` con Electron-como-node, como N5.
+
+## Imágenes a una terminal (rama `feat/image-attach`, 2026-10-14, arnés UP1–UP10)
+
+- `services/upload-service.js`: `saveLocal(items)` y `uploadRemote(sid, uploadId, items, send)`, a
+  `~/.termilab/uploads` (dir 0700, fichero 0600, nombre `safeName` ASCII + `-yyyymmdd-HHMMSS[-n]`).
+  Canales `attach:save-local`, `attach:upload` (con `ensureMayUse`; progreso `attach:progress` al
+  `event.sender`, no al registro de ventanas). La imagen del portapapeles la lee el
+  `clipboard:read-image` de la sección del portapapeles (`{ png, mime }`); el duplicado se quitó al fusionar.
+- **El tipo sale de los bytes (`sniff`), no del nombre**: un ELF llamado `.png` no pasa (UP3).
+- **Remoto = `sftpService.getSFTP(sid)`**: canal SFTP sobre el cliente ssh2 de la pestaña, nunca otra
+  conexión (UP6 compara `getClient` y `sessions.size`). Home = `realpath('.')` del SFTP (sin exec);
+  dueño esperado = uid del `stat` del home. Escritura `open(..,'wx',0600)` directa al nombre final
+  (con `lstat` antes: SFTP v3 no distingue EEXIST) y 8 escrituras en vuelo; si falla, `unlink`.
+- Limpieza > 3 días en cada guardado/subida, `lstat` por entrada (attrs de readdir = del servidor),
+  carpetas no, enlaces se borran sin seguir, tope 200 entradas / 4 s.
+- **El sshd del arnés entra en tu HOME real**: UP usa `forceCommand` con `HOME` temporal y `cd` (el
+  `realpath('.')` del sftp-server es el cwd). En local, `uploadService.localHome` lo redirige.
+- Android: `attach` y `attach:` (más `clipboard`/`clipboard:`) en la lista de omitidos del shim (M1).
+  `TERMILAB_CHECK_ONLY=UP` (~5 s). Control negativo en copia: sin el check de symlink remoto → UP9;
+  sin la edad → UP4/UP8; 0644 → UP2/UP6; sin `sniff` → UP3/UP7.
