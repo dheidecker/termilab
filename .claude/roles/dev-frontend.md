@@ -740,3 +740,18 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   script borra esas variables del entorno de Electron. El status line del usuario sustituye
   "? for shortcuts": espera el `❯`. La respuesta es `●`, no `⏺`.
 - Sin probar en el emulador Android (solo `mobile:web` compila y `check-mobile` verde).
+
+## Conversaciones de Claude Code en el dock (2026-10-14)
+
+- `Agents/Conversations.jsx` devuelve `<li>`s DENTRO del `<ul>` del dock (el dock ya no tiene
+  la rama "lista vacía" sin `<ul>`). Objetivo = host de la terminal enfocada de ESTA ventana
+  (fila `self !== false`; el `sessionId` de otra ventana lo rechaza `ensureMayUse`), si no
+  "This computer". En el navegador usa `MOCK_CONVERSATIONS` del propio módulo.
+- Clic = pestaña nueva por el camino normal (`connectToHost` / `openLocalTerminal`, que ahora
+  devuelve el `tabId`) + `actions.typeInTab(tabId, cmd + '\r')`: espera a que la sesión esté
+  viva (ssh: `sessionId` y no `connecting`; local: `ptySessionId`) y escribe directo a la
+  sesión (sin broadcast). "Resume Here" = `typeInTab(focused, cmd)` SIN Enter, deshabilitado
+  si hay un agente en esa terminal (las teclas irían a su prompt).
+- El comando lo construye main (`row.command`, `resumeCommand` con comillas simples, null si
+  hay caracteres de control): no lo dupliques en el renderer.
+- Capturas: `/tmp/claude-1000/conversations/shots.mjs` (dist/ del worktree + CDP, 9391/8821).

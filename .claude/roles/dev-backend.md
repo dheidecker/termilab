@@ -827,3 +827,27 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
 - Android: `attach` y `attach:` (más `clipboard`/`clipboard:`) en la lista de omitidos del shim (M1).
   `TERMILAB_CHECK_ONLY=UP` (~5 s). Control negativo en copia: sin el check de symlink remoto → UP9;
   sin la edad → UP4/UP8; 0644 → UP2/UP6; sin `sniff` → UP3/UP7.
+
+## Conversaciones de Claude Code (dock de Sessions, 2026-10-14, arnés CH1–CH8)
+
+- `services/claude-history.js`, canal `claude-history:list(target, {fresh})` con
+  `target = {kind:'local'} | {kind:'ssh', sessionId}` (`ensureMayUse`). Remoto = UN exec
+  (`keeper-service.run`, ahora exportado) en el cliente de la pestaña, `sh -c` (el login shell
+  puede ser fish), 5 s, salida 256 KB, caché en memoria 60 s por `user@host:port`. Nada se
+  persiste ni sincroniza; CH8 busca escrituras en el fuente.
+- **Formato real** (`~/.claude/projects/<cwd con todo no-alfanumérico → '->/<id>.jsonl`): la
+  codificación es con pérdida (`a-b_c` y `a/b/c` dan lo mismo). El proyecto es el `cwd` cuya
+  codificación coincide con la carpeta, **no** el primero: en 7 de 91 ficheros del dueño el
+  primer `cwd` es otro directorio. Sin coincidencia: local decodifica contra el disco
+  (`diskDecode`), remoto prueba la ruta ingenua (`X` del script) y marca `guessed`.
+- **Un prompt enorme echa el `cwd` de la cabecera** (la clave `cwd` va DESPUÉS de `message`
+  en la línea): se lee también la cola (`tail -c 8192`, y lo mismo en local). Sin eso, un
+  pegado de 3 MB daba la ruta adivinada.
+- Hay sesiones sin mensaje de usuario (solo `bridge-session`/`mode`): fuera de la lista.
+  `custom-title`/`ai-title` existen como líneas aparte; el título va como extra.
+- awk con `LC_ALL=C` (no tropieza con UTF-8 cortado); los valores salen aún escapados JSON
+  (nunca un tab/newline crudo) y JS los decodifica igual que en local: CH3 exige filas
+  IDÉNTICAS local vs script. Un desplazamiento mal contado en `substr` (26 vs 25) solo lo
+  cazó esa comparación. Control negativo en copia: CH3/CH4/CH5 rojos con el offset, CH7 sin `sq`.
+- `ssh-service` hace su propio exec de detección de SO tras conectar: para contar execs
+  propios, filtra por el comando. `TERMILAB_CHECK_ONLY=CH` (~10 s; CH6 espera el timeout).

@@ -10,6 +10,7 @@ import { ColorPopover, anchorOf } from '../ColorPicker/ColorPicker';
 import { panelSessionRows, isWaiting } from './sessionRows';
 import { runSessionAction } from './sessionActions';
 import AgentDot from './AgentDot';
+import Conversations from './Conversations';
 import { showToast } from '../Keeper/toast';
 import './Agents.css';
 /* The row menu uses the tab/pane context menu look */
@@ -396,9 +397,8 @@ export default function AgentsDock({ onClose }) {
           <CloseIcon />
         </button>
       </div>
-      {rows.length === 0 && bg.length === 0 ? (
-        <div className="agents-dock-empty">No open sessions</div>
-      ) : (
+      {/* Always a list: Conversations sits under the sessions even with none open */}
+      {(
         <ul className="agents-dock-list" aria-label="Sessions">
           {rows.length === 0 && <li className="agents-dock-empty agents-dock-empty-inline">No open sessions</li>}
           {windows > 1 ? groups.map(g => (
@@ -410,6 +410,7 @@ export default function AgentsDock({ onClose }) {
             </React.Fragment>
           )) : rows.map(renderRow)}
           {bgGroup}
+          <Conversations focusRow={rows.find(r => r.self !== false && r.tabId === focusId) || null} now={now} />
         </ul>
       )}
       {bgMenuRow && (

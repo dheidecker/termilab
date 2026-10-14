@@ -193,6 +193,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  // ─── Claude Code conversations (Sessions dock) ─────────
+  // Desktop only (omitted in the Android shim). target: {kind:'local'} |
+  // {kind:'ssh', sessionId}. → {rows, found, at, cached?}
+  claudeHistory: {
+    list: (target, opts) => invoke('claude-history:list', target, opts || {}),
+  },
+
   // ─── Local filesystem (SFTP Local pane) ────────────────
   // Absolute paths; names are one segment; trash() uses the OS trash.
   localFs: {

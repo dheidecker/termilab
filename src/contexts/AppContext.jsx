@@ -1113,6 +1113,22 @@ export function AppProvider({ children }) {
         label: 'Local Terminal',
         sessionId: `local-${tabId}`,
       }});
+      return tabId;
+    }, []),
+    /* Types `text` into tab `tabId` once its session is live (SSH: connected;
+       local: its pty spawned), as keys, no broadcast. → true | false (the tab
+       closed, failed, or `waitMs` passed). Used by the dock's Conversations. */
+    typeInTab: useCallback(async (tabId, text, { waitMs = 30000 } = {}) => {
+      if (!hasApi()) return false;
+      const t0 = Date.now();
+      for (;;) {
+        const tab = stateRef.current.tabs.find(t => t.id === tabId);
+        if (!tab || tab.error) return false;
+        if (tab.type === 'local-terminal' && tab.ptySessionId) { api().localShell.write(tab.ptySessionId, text); return true; }
+        if (tab.type !== 'local-terminal' && tab.sessionId && !tab.connecting) { api().ssh.sendData(tab.sessionId, text); return true; }
+        if (Date.now() - t0 > waitMs) return false;
+        await new Promise(r => setTimeout(r, 100));
+      }
     }, []),
     removeTab: useCallback((tabId) => {
       /* Still connecting (or on the host-key prompt): connectToHost drops what it gets */

@@ -1,0 +1,86 @@
+/* Sessions dock → Conversations (Claude Code). Rows reuse .agents-dock-row. */
+.conv-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 4px;
+}
+
+.conv-toggle {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.conv-toggle:hover { color: var(--text-secondary); }
+.conv-toggle:focus-visible,
+.conv-refresh:focus-visible,
+.conv-more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
+}
+
+.conv-caret {
+  display: inline-block;
+  font-size: 9px;
+  transition: transform 0.12s ease;
+}
+.conv-caret.open { transform: rotate(90deg); }
+
+.conv-where {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+.conv-refresh {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.conv-refresh:hover:not(:disabled) { color: var(--text-primary); background: var(--overlay-subtle); }
+.conv-refresh:disabled { opacity: 0.5; cursor: progress; }
+
+.conv-row .agents-dock-name.conv-preview { font-weight: 400; }
+.conv-row .agents-dock-time { white-space: nowrap; }
+
+.conv-status { font-size: var(--font-size-xs); }
+
+.conv-more {
+  display: block;
+  width: 100%;
+  padding: 4px 8px 6px 14px;
+  border: 0;
+  background: none;
+  text-align: left;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.conv-more:hover { color: var(--text-primary); }
+
+.conv-menu-holder { list-style: none; height: 0; }
