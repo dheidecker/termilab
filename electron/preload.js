@@ -174,6 +174,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  // ─── Images into a terminal (drag & drop, clipboard) ───
+  // Desktop only (omitted in the Android shim). items: [{path} | {data, name}].
+  attach: {
+    pathForFile: (file) => {
+      try { return webUtils.getPathForFile(file) || null; } catch (_) { return null; }
+    },
+    saveLocal: (items) => invoke('attach:save-local', items),
+    upload: (sessionId, uploadId, items) => invoke('attach:upload', sessionId, uploadId, items),
+    /* PNG bytes (Uint8Array) or null */
+    readClipboardImage: () => invoke('clipboard:read-image'),
+    /* { uploadId, index, count, name, sent, total, done } */
+    onProgress: (callback) => {
+      const listener = (event, payload) => callback(payload);
+      ipcRenderer.on('attach:progress', listener);
+      return listener;
+    },
+    offProgress: (listener) => {
+      if (listener) ipcRenderer.removeListener('attach:progress', listener);
+    },
+  },
+
   // ─── Local filesystem (SFTP Local pane) ────────────────
   // Absolute paths; names are one segment; trash() uses the OS trash.
   localFs: {

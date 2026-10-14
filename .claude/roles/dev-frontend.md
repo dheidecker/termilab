@@ -650,3 +650,21 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
 - Liveness local cada 30 s solo mientras el dock está montado y hay registros locales.
 - Capturas: `/tmp/claude-1000/bg-sessions/shots.mjs` (dist/ + CDP, puerto 9382/8813).
 - Android: el `SessionsScreen` no tiene grupo Background (main no registra en Android).
+
+## Imágenes a una terminal (rama `feat/image-attach`, 2026-10-14)
+
+- `Terminal/imageAttach.js`: `attachImages(term, tab, items, {onStatus})` (items = `File` o
+  `{png, mime, name}`), `isFilesDrag`, `shellQuote`, `refusal`. Escribe con `term.paste(rutas + ' ')`,
+  nunca Enter. Local con ruta en disco = se teclea tal cual; sin ruta (portapapeles, imagen de un
+  navegador) = `attach.saveLocal`. SSH = `attach.upload(liveSessionId(tab), …)`.
+- **El drop va en el `.terminal-container` de cada TerminalView** y solo con `isFilesDrag` (tipo
+  `Files` y SIN `DRAG_MIME`): los arrastres de panel/pestaña los toma `.pane-drop-layer`, que solo
+  existe durante un arrastre interno. Resalte = clase `file-drop-over` (`::after`, pointer-events none).
+- La línea de estado (`.terminal-attach-status`) es DOM sobre el panel, no texto en xterm: escribir
+  en el xterm rompería la TUI del agente (Claude Code) que corre ahí.
+- **Costura TEMPORAL**: `doPaste` llama `readClipboardImage()` si `readClipboard()` vino vacío. Se
+  sustituye por `pasteInto(term, { onImage })` de `clipboardPaste.js` (otro agente).
+- E2E real: `xvfb-run electron` con `HOME`/`XDG_CONFIG_HOME` temporales (dev comparte el userData
+  instalado), CDP `Input.dispatchDragEvent` con `data.files:[ruta]` → `webUtils.getPathForFile` da
+  la ruta de verdad. Las filas se leen de `.xterm-rows` (renderer DOM). `navigator.clipboard.write`
+  con `ClipboardItem` image/png funciona bajo xvfb. Script: scratchpad de la sesión, `drop-e2e.mjs`.

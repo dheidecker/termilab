@@ -24,6 +24,7 @@ import { detectAgent, screenTail, createAgentTracker, NEEDS_YOU_TEXT } from './a
 import './TerminalView.css';
 import '../Keeper/Keeper.css';
 import { showToast } from '../Keeper/toast';
+import { attachImages, canAttach, isFilesDrag, readClipboardImage } from './imageAttach';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 
@@ -54,6 +55,20 @@ export default function TerminalView({ tab }) {
   const inputFilterRef = useRef(null);
   const bypassRef = useRef(false);
   const [hasSelection, setHasSelection] = useState(false);
+  /* Images dropped/pasted into this pane (imageAttach.js): the status line
+     ("Uploading x.png… 60%", or an error) and the dragover highlight */
+  const [attachStatus, setAttachStatus] = useState(null);
+  const [fileOver, setFileOver] = useState(false);
+  const attachTimerRef = useRef(null);
+  const showAttachStatus = (st) => {
+    clearTimeout(attachTimerRef.current);
+    if (!mountedRef.current) return;
+    setAttachStatus(st);
+    if (st && st.kind === 'error') attachTimerRef.current = setTimeout(() => setAttachStatus(null), 6000);
+  };
+  const attachRef = useRef(null);
+  attachRef.current = (items) => attachImages(termRef.current, tabLiveRef.current, items, { onStatus: showAttachStatus });
+  useEffect(() => () => clearTimeout(attachTimerRef.current), []);
   /* A tab reopened from Sessions → Background whose session turned out to
      be gone: close it and say so (main has dropped the record already) */
   const goneFromBackground = () => {
@@ -317,7 +332,12 @@ export default function TerminalView({ tab }) {
       return true;
     };
     const doPaste = () => {
-      readClipboard().then((text) => { if (text) term.paste(text); });
+      readClipboard().then(async (text) => {
+        if (text) { term.paste(text); return; }
+        /* TEMPORARY image seam: an image and no text → attach it (path typed).
+           Goes away when clipboardPaste.js's pasteInto(term, { onImage }) lands. */
+        if (!IS_ANDROID) { const img = await readClipboardImage(); if (img) attachRef.current([img]); }
+      });
     };
     /* Right after a dead key (´ + space = ´, ´ + a = á) the default path is
        kept, so the composed character comes from the IME as usual. */
@@ -871,9 +891,39 @@ export default function TerminalView({ tab }) {
     );
   }
 
+  /* Image files dragged in from the OS (never our own pane/tab drags: those
+     carry DRAG_MIME and the stage's drop layer takes them) */
+  const fileDrop = (!IS_ANDROID && canAttach()) ? {
+    onDragEnter: (e) => { if (isFilesDrag(e)) { e.preventDefault(); setFileOver(true); } },
+    onDragOver: (e) => {
+      if (!isFilesDrag(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      if (!fileOver) setFileOver(true);
+    },
+    onDragLeave: (e) => {
+      if (e.currentTarget.contains(e.relatedTarget)) return;
+      setFileOver(false);
+    },
+    onDrop: (e) => {
+      if (!isFilesDrag(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setFileOver(false);
+      const files = [...(e.dataTransfer.files || [])];
+      if (files.length) attachRef.current(files);
+      termRef.current?.focus();
+    },
+  } : {};
+
   return (
-    <div className="terminal-container" style={containerStyle}>
+    <div className={`terminal-container${fileOver ? ' file-drop-over' : ''}`} style={containerStyle} {...fileDrop}>
       {mobileHeader}
+      {attachStatus && (
+        <div className={`terminal-attach-status${attachStatus.kind === 'error' ? ' error' : ''}`} role="status">
+          {attachStatus.text}
+        </div>
+      )}
       {showSearch && (
         <div className="terminal-search">
           <input
