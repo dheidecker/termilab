@@ -705,6 +705,7 @@ module.exports.binDirCandidates = binDirCandidates;
 module.exports.localBinary = localBinary;
 module.exports.ADOPTED_KEY_RE = ADOPTED_KEY_RE;
 module.exports.ID_RE = ID_RE;
-/* One bounded exec on a client (claude-history lists conversations with it) */
+/* One bounded exec on a client (claude-history lists conversations with it;
+   open-path-service reads a remote cwd with it) */
 module.exports.run = run;
 module.exports.EXIT = { OK: 0, REPLACED: 75, KILLED: 76, GONE: 77, ERR: 101, NOSESSION: 102, CAP: 103, PROTO: 104 };

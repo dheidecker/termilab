@@ -55,7 +55,7 @@ const { startSshTestServer } = require('./lib/ssh-test-server');
 const { build } = require('./build-mobile-node');
 
 const BUILTIN_MODULES = path.join(ROOT, 'mobile', 'vendor', 'capacitor-nodejs', 'android', 'src', 'main', 'assets', 'builtin_modules');
-const EXPECTED_OMITTED = ['sftp', 'localFs', 'portForward', 'localShell', 'window', 'dialog', 'clipboard', 'attach', 'claudeHistory'];
+const EXPECTED_OMITTED = ['sftp', 'localFs', 'portForward', 'localShell', 'window', 'dialog', 'clipboard', 'attach', 'claudeHistory', 'paths'];
 const DEVICE_NAME = 'Pixel de prueba';
 const VERSION = require(path.join(ROOT, 'package.json')).version;
 

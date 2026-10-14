@@ -26,6 +26,7 @@ import '../Keeper/Keeper.css';
 import { showToast } from '../Keeper/toast';
 import { attachImages, canAttach, isFilesDrag } from './imageAttach';
 import Composer, { ComposeButton } from './Composer';
+import { attachPathLinks } from './pathLinkProvider';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 
@@ -188,6 +189,16 @@ export default function TerminalView({ tab }) {
     termRef.current = term;
 
     term.open(containerRef.current);
+
+    /* File paths in the output: Ctrl/Cmd+click opens, right-click menu (pathLinkProvider.js) */
+    const detachPaths = IS_ANDROID ? () => {} : attachPathLinks(term, containerRef.current, {
+      target: () => ({ kind: isLocal ? 'local' : 'ssh', sessionId: sessionIdRef.current, owner: `term-${String(tab.id).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 90)}`, label: tabLiveRef.current?.label }),
+      openSftpAt: (dir) => {
+        const h = isLocal ? null : stateRef.current.hosts.find(x => x.id === tab.hostId);
+        if (!isLocal && !h) { showToast('This terminal has no saved host to open in SFTP'); return; }
+        actions.openSFTPTab(h, isLocal ? { localPath: dir } : { path: dir });
+      },
+    });
 
     /* The adopted screen first; it resolves once xterm has parsed it */
     const restored = adopt && adopt.data
@@ -820,6 +831,7 @@ export default function TerminalView({ tab }) {
 
     return () => {
       disposed = true;
+      detachPaths();
       if (reconnectListener) window.electronAPI?.ssh?.removeReconnectListener?.(reconnectListener);
       clearTimeout(scanTimer);
       if (term.textarea) term.textarea.removeEventListener('keydown', onKey);

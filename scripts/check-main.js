@@ -41,6 +41,9 @@
  *  11. IMAGENES A UNA TERMINAL (UP*, scripts/lib/check-attach.js): guardar en
  *     local y subir por SFTP sobre la misma conexion (sshd real, HOME temporal).
  *     Solo esta seccion: TERMILAB_CHECK_ONLY=UP.
+ *  12. RUTAS CLICABLES (PL*, scripts/lib/check-path-links.js): detector sobre
+ *     un corpus real, cwd (OSC 7, /proc, keeper), abrir sin ejecutar nunca,
+ *     remoto por sftp-edit-service. Solo esta seccion: TERMILAB_CHECK_ONLY=PL.
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -1408,6 +1411,14 @@ async function main() {
     process.exit(failures ? 1 : 0);
   }
 
+  // TERMILAB_CHECK_ONLY=PL: solo el grafo + rutas clicables en la terminal
+  if (process.env.TERMILAB_CHECK_ONLY === 'PL') {
+    await require('./lib/check-path-links').seccionPathLinks({ check, ROOT, handlers });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo PL)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // TERMILAB_CHECK_ONLY=KP: solo el grafo + la seccion KP (iterar sobre el keeper)
   if (process.env.TERMILAB_CHECK_ONLY === 'KP') {
     await require('./lib/check-keeper').seccionKeeper({ check, ROOT, handlers });
@@ -1433,6 +1444,8 @@ async function main() {
   await require('./lib/check-sftp').seccionSftp({ check, ROOT, getBridge: () => bridge });
   // ── UP. Imagenes a una terminal: guardar en local / subir por la misma conexion ──
   await require('./lib/check-attach').seccionAttach({ check, ROOT, handlers });
+  // ── PL. Rutas impresas en la terminal: detector, resolver y abrir sin ejecutar ──
+  await require('./lib/check-path-links').seccionPathLinks({ check, ROOT, handlers });
 
   // ── W. Varias ventanas: enrutado por sesion, mudanzas con bufer, cierre ──
   await require('./lib/check-windows').seccionVentanas({ check, ROOT, handlers, onHandlers });

@@ -851,3 +851,30 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   cazó esa comparación. Control negativo en copia: CH3/CH4/CH5 rojos con el offset, CH7 sin `sq`.
 - `ssh-service` hace su propio exec de detección de SO tras conectar: para contar execs
   propios, filtra por el comando. `TERMILAB_CHECK_ONLY=CH` (~10 s; CH6 espera el timeout).
+
+## Rutas clicables en la terminal (rama `worktree-agent-acc7100701b13850c`, 2026-10-14, arnés PL1–PL8)
+
+- `services/open-path-service.js`, canales `paths:open` / `paths:resolve` (namespace `paths` omitido en
+  el shim Android y en `EXPECTED_OMITTED` de check-mobile). `ensureMayUse` con el `sessionId` de la
+  pestaña (local o ssh). **Nunca ejecuta**: carpeta → `openPath(dir)` salvo que el SO la lance (.app);
+  fichero con bit x o en `openRefusal(name,'edit',platform)` (.desktop, .AppImage; .js/.py en Windows)
+  → `showItemInFolder` (o VS Code si es el editor); fifo/dispositivo se niega; se mira el nombre del
+  enlace Y el de `realpath` (un `notes.txt -> evil.desktop` cuenta como .desktop).
+- **cwd**: OSC 7 del renderer primero (en local solo si su host es este equipo: un `ssh` tecleado
+  en una pestaña local manda los directorios del servidor), luego `/proc/<shell>/stat` → tpgid →
+  `/proc/<tpgid>/cwd` (Claude Code en primer plano = su raíz de proyecto). El pid del shell NO es
+  siempre el de node-pty: keeper local → `localKeeper.foreground().shellPid`; escapado de NNP →
+  `systemctl --user show -p MainPID --value <unidad>.service` (el pid de node-pty es systemd-run).
+  En SSH solo hay pid con keeper: UN exec acotado (3 s) con `keeperService.run` (exportado para esto).
+  Sin nada → HOME (remoto: `realpath('.')` del SFTP).
+- Remoto = `sftpEditService.start(sid, path, owner, { opener })`: el 4º argumento es solo de main (el
+  handler `sftp:edit-start` sigue pasando 3). Owner `term-<id de pestaña>`; se limpia al cerrar la
+  ventana / al salir, no al desmontar el panel (mudar la pestaña de ventana pierde el banner).
+- VS Code: `code` en PATH y, en Linux, `xdg-mime query default <mime>` = code*.desktop (sin xdg-mime
+  basta el PATH) → `code --goto file:L:C` con env sin `ELECTRON_*`. **En el arnés hay que esconder el
+  `code` real** (`ops._which`): en esta máquina `/usr/bin/code` existe y PL5 daba verde/rojo según PATH.
+- **`showItemInFolder` en Linux sin FileManager1 en D-Bus cae a `xdg-open .` en una carpeta POR
+  ENCIMA** (medido bajo xvfb: el padre del proyecto, no la carpeta del fichero). Con Nautilus/Dolphin
+  selecciona el fichero. No es nuestro; la e2e acepta "una carpeta que contiene el script".
+- `TERMILAB_CHECK_ONLY=PL` (~5 s, con sshd real para PL7). Control negativo en copia: sin el bit x →
+  PL5; sin la regla `host:path` → PL2; contextmenu sin captura → PL8.
