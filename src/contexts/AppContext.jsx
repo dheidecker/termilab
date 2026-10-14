@@ -1345,14 +1345,17 @@ export function AppProvider({ children }) {
        {kind:'local'} | {kind:'host', hostId} | null (pick one). Panes connect
        themselves (connectSftp) and close what they opened when they unmount,
        so closing the tab is just removing it. */
-    openSFTPTab: useCallback((host) => {
+    /* `at`: { path } (the host pane) / { localPath } (the local one) start
+       in that folder instead of home (a path Ctrl+clicked in a terminal). */
+    openSFTPTab: useCallback((host, at = {}) => {
       const tabId = crypto.randomUUID();
+      const where = (p) => (typeof p === 'string' && p ? { path: p } : {});
       dispatch({ type: 'ADD_TAB', payload: {
         id: tabId,
         type: 'sftp',
         label: host ? `SFTP · ${host.label || host.hostname}` : 'SFTP',
         hostId: host?.id,
-        panes: { left: { kind: 'local' }, right: host ? { kind: 'host', hostId: host.id } : null },
+        panes: { left: { kind: 'local', ...where(at.localPath) }, right: host ? { kind: 'host', hostId: host.id, ...where(at.path) } : null },
       } });
       return { tabId };
     }, []),

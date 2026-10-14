@@ -713,3 +713,25 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   instalado), CDP `Input.dispatchDragEvent` con `data.files:[ruta]` → `webUtils.getPathForFile` da
   la ruta de verdad. Las filas se leen de `.xterm-rows` (renderer DOM). `navigator.clipboard.write`
   con `ClipboardItem` image/png funciona bajo xvfb. Script: scratchpad de la sesión, `drop-e2e.mjs`.
+
+## Rutas clicables en la terminal (rama `worktree-agent-acc7100701b13850c`, 2026-10-14)
+
+- `Terminal/pathLinks.js` (puro: `findPaths`, `parseOsc7`, `logicalLine`, `spanRange`) decide qué es
+  una ruta; `Terminal/pathLinkProvider.js` (`attachPathLinks(term, wrapperEl, ctx)`) lo cuelga del
+  xterm: `registerLinkProvider`, OSC 7 (devuelve `false`: no lo consume), menú contextual, banners de
+  edición remota (DOM imperativo dentro de `.terminal-container`, como el toast). TerminalView solo
+  tiene el `attachPathLinks(...)` tras `term.open` y `detachPaths()` en la limpieza (PL8 mira ambos).
+- **Subrayado solo con Ctrl/Cmd**: los enlaces se crean con `decorations {underline:false,...}` y se
+  cambian al pulsar/soltar. **xterm REEMPLAZA `link.decorations` por un proxy DESPUÉS de llamar a
+  `hover()`**: cambiarlo dentro de `hover` cae en el objeto viejo; se hace un microtick después. La
+  clase `xterm-cursor-pointer` va en `.xterm-screen`, no en `.xterm` (la e2e miraba la equivocada).
+- Menú: listener de `contextmenu` en **captura** sobre el mismo `.terminal-wrapper` donde TerminalView
+  escucha en burbuja → `stopImmediatePropagation` evita que pegue. No sale con selección (clic derecho
+  = copiar) ni con un programa que tiene el ratón (salvo Shift).
+- Detector estricto a propósito (prosa `and/or`, `/help`, fechas, versiones, `host:443`, scp, `$VAR/x`
+  son negativas del corpus PL2). Sin barra solo con `:línea` o en contexto (tool lines de Claude Code,
+  git status, `File "x.py", line N`). Si lo aflojas, corre PL1/PL2 y mira qué entra.
+- "Open folder in SFTP": `openSFTPTab(host, { path })` / `(null, { localPath })`; el panel arranca en
+  `source.path` (FilePane `load(source?.path || h)`).
+- E2E real: `scripts/e2e-path-links.mjs` (xvfb + CDP; `xdg-open`, `code`, `xdg-mime` falsos en PATH
+  que apuntan sus argumentos; `DBUS_SESSION_BUS_ADDRESS` quitado). 16 comprobaciones.

@@ -192,7 +192,8 @@ export default function FilePane({
     fs.home().then((h) => {
       if (!alive) return;
       setHome(h);
-      load(h);
+      /* A source may say where to start (a path opened from a terminal) */
+      load(source?.path || h);
     }, (err) => { if (alive) setListError(err?.message || 'Could not find the home folder.'); });
     return () => { alive = false; };
   }, [fs, load]);

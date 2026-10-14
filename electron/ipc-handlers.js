@@ -19,6 +19,7 @@ const windowRegistry = require('./window-registry');
 const workspaceService = require('./services/workspace-service');
 const backgroundSessions = require('./services/background-sessions');
 const uploadService = require('./services/upload-service');
+const openPathService = require('./services/open-path-service');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -508,6 +509,25 @@ function registerIpcHandlers(mainWindow) {
 
   ipcMain.handle('sftp:cleanup', wrapHandler(async (event, owner) => {
     return await sftpEditService.cleanup(owner);
+  }));
+
+  // ─── File paths printed in a terminal (Ctrl+click, context menu) ───
+  // open-path-service.js: resolves against the terminal's cwd, never runs
+  // anything; remote files go through sftp-edit-service with the terminal
+  // tab as owner (cleaned when its window closes, like an SFTP tab's).
+  const pathSpecGuard = (event, spec, channel) => {
+    if (spec && typeof spec === 'object' && typeof spec.sessionId === 'string') ensureMayUse(event, spec.sessionId, channel);
+    if (spec && spec.kind === 'ssh' && typeof spec.sessionId !== 'string') throw new Error('No session.');
+  };
+  ipcMain.handle('paths:open', wrapHandler(async (event, spec) => {
+    pathSpecGuard(event, spec, 'paths:open');
+    if (spec && spec.kind === 'ssh') remember(editOwnersByWindow, event && event.sender, spec.owner);
+    return await openPathService.open(spec);
+  }));
+
+  ipcMain.handle('paths:resolve', wrapHandler(async (event, spec) => {
+    pathSpecGuard(event, spec, 'paths:resolve');
+    return await openPathService.resolve(spec);
   }));
 
   // ─── Images into a terminal (drag & drop, clipboard) ───

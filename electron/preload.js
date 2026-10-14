@@ -193,6 +193,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  // ─── File paths printed in a terminal ──────────────────
+  // Desktop only (omitted in the Android shim). spec: {kind:'local'|'ssh',
+  // sessionId, path, line, col, osc:{host,path}|null, owner}.
+  paths: {
+    open: (spec) => invoke('paths:open', spec),
+    resolve: (spec) => invoke('paths:resolve', spec),
+  },
+
   // ─── Local filesystem (SFTP Local pane) ────────────────
   // Absolute paths; names are one segment; trash() uses the OS trash.
   localFs: {

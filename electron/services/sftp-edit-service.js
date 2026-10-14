@@ -135,8 +135,12 @@ class SftpEditService {
     return { localPath };
   }
 
-  /** Download, open, and watch for saves. */
-  async start(sessionId, remotePath, owner) {
+  /**
+   * Download, open, and watch for saves. `opts.opener(localPath)` → error
+   * string ('' = ok) replaces shell.openPath (main only: open-path-service
+   * passes VS Code --goto for a terminal's file:line; never from IPC).
+   */
+  async start(sessionId, remotePath, owner, opts = {}) {
     assertOpenable(path.posix.basename(checkRemotePath(remotePath)), 'edit');
     const { localPath, dir } = await this._download(sessionId, remotePath, owner);
     assertOpenable(path.basename(localPath), 'edit');
@@ -152,7 +156,9 @@ class SftpEditService {
     });
     edit.watcher.on('error', () => { /* folder gone: cleanup */ });
     this.edits.set(editId, edit);
-    const error = await this._getShell().openPath(localPath);
+    const error = typeof opts.opener === 'function'
+      ? await opts.opener(localPath)
+      : await this._getShell().openPath(localPath);
     if (error) {
       this.stop(editId);
       throw new Error(error);
