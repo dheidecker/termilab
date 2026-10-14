@@ -1400,6 +1400,14 @@ async function main() {
     process.exit(failures ? 1 : 0);
   }
 
+  // TERMILAB_CHECK_ONLY=CH: solo el grafo + conversaciones de Claude Code (dock de Sessions)
+  if (process.env.TERMILAB_CHECK_ONLY === 'CH') {
+    await require('./lib/check-claude-history').seccionClaudeHistory({ check, ROOT, handlers });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo CH)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // TERMILAB_CHECK_ONLY=KP: solo el grafo + la seccion KP (iterar sobre el keeper)
   if (process.env.TERMILAB_CHECK_ONLY === 'KP') {
     await require('./lib/check-keeper').seccionKeeper({ check, ROOT, handlers });
@@ -1430,6 +1438,8 @@ async function main() {
   await require('./lib/check-windows').seccionVentanas({ check, ROOT, handlers, onHandlers });
   // ── BG. Sessions → Background: sesiones guardadas que este equipo solto ──
   await require('./lib/check-background').seccionBackground({ check, ROOT, handlers });
+  // ── CH. Conversaciones de Claude Code: local y por la conexion de la pestana ──
+  await require('./lib/check-claude-history').seccionClaudeHistory({ check, ROOT, handlers });
 
   // ── R/A. Restaurar el espacio de trabajo; reconexion automatica ──
   await require('./lib/check-workspace').seccionWorkspace({ check, ROOT });

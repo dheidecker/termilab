@@ -19,6 +19,7 @@ const windowRegistry = require('./window-registry');
 const workspaceService = require('./services/workspace-service');
 const backgroundSessions = require('./services/background-sessions');
 const uploadService = require('./services/upload-service');
+const claudeHistory = require('./services/claude-history');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -513,6 +514,14 @@ function registerIpcHandlers(mainWindow) {
   // ─── Images into a terminal (drag & drop, clipboard) ───
   // upload-service.js: saved to / uploaded into ~/.termilab/uploads, the
   // path is typed by the renderer. Progress goes to the window that asked.
+
+  // ─── Claude Code conversations (Sessions dock) ─────────
+  // target: {kind:'local'} | {kind:'ssh', sessionId}: one exec on that tab's
+  // connection, never a new one. Nothing is stored (60 s in-memory cache).
+  ipcMain.handle('claude-history:list', wrapHandler(async (event, target, opts) => {
+    if (target && target.kind === 'ssh') ensureMayUse(event, target.sessionId, 'claude-history:list');
+    return await claudeHistory.list(target, { fresh: !!(opts && opts.fresh) });
+  }));
 
   ipcMain.handle('attach:save-local', wrapHandler(async (event, items) => {
     return await uploadService.saveLocal(items);
