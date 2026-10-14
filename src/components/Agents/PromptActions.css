@@ -1,0 +1,126 @@
+/* Quick answers over the bottom of a pane (PromptActions.jsx) */
+
+/* Zero-height, right under .terminal-wrapper: the row floats over the last
+   terminal rows and never changes the pty's size */
+.prompt-actions-anchor {
+  position: relative;
+  height: 0;
+  flex: 0 0 0;
+  z-index: 42;
+}
+
+.prompt-actions {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  max-width: calc(100% - 20px);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  pointer-events: none;   /* only the pills take clicks: the gaps stay the terminal's */
+  animation: pa-in 120ms ease-out;
+}
+
+@keyframes pa-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.pa-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 170px;
+  height: 24px;
+  padding: 0 11px 0 5px;
+  border: 1px solid var(--border-primary);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+
+.pa-pill:hover {
+  border-color: var(--accent);
+}
+
+.pa-pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.pa-pill.pa-default {
+  border-color: var(--accent);
+}
+
+.pa-pill:not(:has(.pa-key)) {
+  padding-left: 11px;
+}
+
+.pa-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pa-key {
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.pa-pill.pa-cancel {
+  color: var(--text-secondary);
+}
+
+/* ─── Android: thumb-sized, above the extra-keys row ─── */
+.prompt-actions-touch {
+  left: 8px;
+  right: 8px;
+  max-width: none;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-top: 2px solid var(--color-warning);   /* the amber of "needs input" */
+  box-shadow: var(--shadow-md);
+  pointer-events: auto;
+}
+
+
+.prompt-actions-touch .pa-pill {
+  flex: 1 1 auto;
+  justify-content: center;
+  max-width: 100%;
+  height: 44px;
+  padding: 0 14px;
+  border-radius: 22px;
+  background: var(--bg-tertiary);
+  box-shadow: none;
+  font-size: 15px;
+}
+
+.prompt-actions-touch .pa-key {
+  min-width: 22px;
+  height: 22px;
+  line-height: 20px;
+  border-radius: 11px;
+  font-size: 13px;
+}

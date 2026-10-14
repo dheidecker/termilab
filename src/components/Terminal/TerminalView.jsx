@@ -10,7 +10,7 @@ import { getTheme } from '../../themes/terminal-themes';
 import { tintTheme } from '../../themes/tint';
 import { tabColor } from '../HostList/hostColor';
 import { paneTitle, groupOf, focusedPaneOf } from '../SplitPane/layoutTree';
-import { IS_ANDROID, PLATFORM } from '../../platform';
+import { IS_ANDROID, PLATFORM, FEATURES } from '../../platform';
 import ExtraKeys, { useStickyModifiers } from './mobile/ExtraKeys';
 import SessionHeader from './mobile/SessionHeader';
 import { applyModifiers, keySequence } from './mobile/keys';
@@ -20,7 +20,8 @@ import { sessionStatus } from '../Mobile/sessions';
 import { liveSessionId } from '../SplitPane/sessions';
 import { registerTerminal, adoptedReady } from '../SplitPane/windowMove';
 import { playChime, playQuestionChime, TYPING_QUIET_MS } from './agentChime';
-import { detectAgent, screenTail, createAgentTracker, NEEDS_YOU_TEXT } from './agentRules';
+import { detectAgent, screenTail, createAgentTracker, NEEDS_YOU_TEXT, parseChoices, cursorRowText } from './agentRules';
+import PromptActions from '../Agents/PromptActions';
 import './TerminalView.css';
 import '../Keeper/Keeper.css';
 import { showToast } from '../Keeper/toast';
@@ -89,6 +90,33 @@ export default function TerminalView({ tab }) {
     if (!t) return;
     noBroadcastRef.current = true;
     try { t.paste(text); } finally { noBroadcastRef.current = false; }
+  };
+  /* Quick answers (Agents/PromptActions): the options of the prompt the
+     agent is blocked on, parsed at each scan. After a click they stay hidden
+     until a scan finds no prompt (the next prompt shows them again). The
+     keys go to THIS session only, like an attached path (no broadcast), and
+     skip Android's sticky Ctrl/Alt (bypassRef). */
+  const [choices, setChoices] = useState(null);
+  const choicesKeyRef = useRef('null');
+  const answeredRef = useRef(false);
+  const showChoices = (list) => {
+    if (!list.length) answeredRef.current = false;
+    const next = answeredRef.current || !list.length ? null : list;
+    const key = JSON.stringify(next);
+    if (key === choicesKeyRef.current) return;
+    choicesKeyRef.current = key;
+    setChoices(next);
+  };
+  const answerPrompt = (choice) => {
+    const t = termRef.current;
+    if (!t || !choice) return;
+    answeredRef.current = true;
+    choicesKeyRef.current = 'null';
+    setChoices(null);
+    noBroadcastRef.current = true;
+    bypassRef.current = true;
+    try { t.input(choice.keys, true); } finally { noBroadcastRef.current = false; bypassRef.current = false; }
+    if (!IS_ANDROID) t.focus();
   };
   attachRef.current = (items) => attachImages(termRef.current, tabLiveRef.current, items, { onStatus: showAttachStatus, paste: pasteHereOnly });
   useEffect(() => () => clearTimeout(attachTimerRef.current), []);
@@ -238,6 +266,22 @@ export default function TerminalView({ tab }) {
       term.textarea.addEventListener('focus', seen);
       term.textarea.addEventListener('keydown', seen);
     }
+    /* A click on a desktop notification: raise this window (main does it:
+       window.focus() from the page does not on Linux), open the tab and give
+       this pane the keyboard */
+    const showThisPane = () => {
+      const id = (tabLiveRef.current || tab).id;
+      const w = FEATURES.multiWindow && window.electronAPI && window.electronAPI.window;
+      if (w && w.info && w.focusAgent) {
+        w.info().then((me) => me && w.focusAgent({ windowId: me.id, tabId: id })).catch(() => {});
+      } else {
+        try { window.focus(); } catch (_) { /* nothing to raise */ }
+      }
+      const g = groupOf(stateRef.current, id);
+      dispatch({ type: 'SET_ACTIVE_TAB', payload: g || id });
+      if (g) dispatch({ type: 'PANE_FOCUS', payload: { groupId: g, paneId: id } });
+      requestAnimationFrame(() => { if (!disposed && term.textarea) term.textarea.focus({ preventScroll: true }); });
+    };
     const paneLabel = (live) => (live.alias ? `${live.alias} · ${live.label || 'Terminal'}` : (live.label || 'Terminal'));
     /* An agent finished: the pane glows, its tab gets the done badge, the
        taskbar flashes (Settings → Terminal → Visual Alerts; a muted terminal
@@ -253,7 +297,7 @@ export default function TerminalView({ tab }) {
       }
       if (ts.agentSound !== false && !live.muted) playChime();
       if (ts.agentNotify !== false && !document.hasFocus() && typeof Notification !== 'undefined') {
-        try { new Notification(paneLabel(live), { body: message || 'Finished', silent: true }); } catch (_) { /* not allowed */ }
+        try { new Notification(paneLabel(live), { body: message || 'Finished', silent: true }).onclick = showThisPane; } catch (_) { /* not allowed */ }
       }
     };
 
@@ -289,7 +333,7 @@ export default function TerminalView({ tab }) {
       if (ts.agentSound !== false && !live.muted) playQuestionChime();
       if (ts.agentNotify !== false && !document.hasFocus() && typeof Notification !== 'undefined') {
         const who = agent && agent.name ? agent.name : 'The agent';
-        try { new Notification(`${paneLabel(live)} needs your input`, { body: `${who} is waiting for you`, silent: true }); } catch (_) { /* not allowed */ }
+        try { new Notification(`${paneLabel(live)} needs your input`, { body: `${who} is waiting for you`, silent: true }).onclick = showThisPane; } catch (_) { /* not allowed */ }
       }
     };
     const runScan = () => {
@@ -298,6 +342,11 @@ export default function TerminalView({ tab }) {
       const r = tracker.scan(detectAgent(screenTail(term), prev && prev.id), Date.now(),
         { typedRecently: Date.now() - lastKey < TYPING_QUIET_MS });
       if (r.changed) publish(r.agent);
+      /* An agent's menu only while it is blocked; a shell question ([Y/n])
+         only with no agent, and only on the cursor's row */
+      const a = r.agent;
+      showChoices(!a ? parseChoices(screenTail(term), null, { cursorLine: cursorRowText(term) })
+        : a.state === 'blocked' ? parseChoices(screenTail(term), a.id) : []);
       if (r.event === 'blocked') needsYou(r.agent);
       else if (r.event === 'done') finished(`${r.agent.name} finished`);
       return r;
@@ -1145,6 +1194,7 @@ export default function TerminalView({ tab }) {
       )}
 
       <div className="terminal-wrapper" ref={containerRef} />
+      <PromptActions choices={choices} onAnswer={answerPrompt} />
       {composer}
 
       {copiedAt > 0 && <div className="terminal-copied-hint" key={copiedAt} role="status">Copied</div>}

@@ -1,0 +1,34 @@
+│ Run npm install -g @openai/codex to update.     │
+│                                                 │
+│ See full release notes:                         │
+│ https://github.com/openai/codex/releases/latest │
+╰─────────────────────────────────────────────────╯
+
+╭─────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.128.0)                          │
+│                                                     │
+│ model:     gpt-5.5   /model to change               │
+│ directory: /tmp/claude-1000/…/agent-status/obs/xdir │
+╰─────────────────────────────────────────────────────╯
+
+  Tip: GPT-5.5 is now available in Codex. It's our strongest agentic coding model yet, built to
+  reason through large codebases, check assumptions with tools, and keep going until the work is
+  done.
+
+  Learn more: https://openai.com/index/introducing-gpt-5-5/
+
+⚠ MCP client for `browser-use` failed to start: MCP startup failed: No such file or directory (os
+  error 2)
+
+⚠ MCP startup incomplete (failed: browser-use)
+
+
+› Create an empty file named c.txt here with the shell command: touch c.txt
+
+
+• Working (14s • esc to interrupt)
+
+
+› Use /skills to list available skills
+
+  gpt-5.5 default · /tmp/claude-1000/-home-derek-Proyectos-terminal/agent-status/obs/xdir

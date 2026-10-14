@@ -44,6 +44,9 @@
  *  12. RUTAS CLICABLES (PL*, scripts/lib/check-path-links.js): detector sobre
  *     un corpus real, cwd (OSC 7, /proc, keeper), abrir sin ejecutar nunca,
  *     remoto por sftp-edit-service. Solo esta seccion: TERMILAB_CHECK_ONLY=PL.
+ *  13. RESPUESTAS RAPIDAS (PA*, scripts/lib/check-prompt-actions.js): parseChoices
+ *     de agentRules.js contra pantallas reales de Claude Code / Codex / bash.
+ *     Solo esta seccion: TERMILAB_CHECK_ONLY=PA.
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -1376,6 +1379,14 @@ async function main() {
   if (process.env.TERMILAB_CHECK_ONLY === 'C') {
     console.log(results.join('\n'));
     console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo C)');
+    process.exit(failures ? 1 : 0);
+  }
+
+  // ── PA. Respuestas rapidas a un aviso de agente (parseChoices, capturas reales) ──
+  await require('./lib/check-prompt-actions').seccionPromptActions({ check, ROOT });
+  if (process.env.TERMILAB_CHECK_ONLY === 'PA') {
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo PA)');
     process.exit(failures ? 1 : 0);
   }
 

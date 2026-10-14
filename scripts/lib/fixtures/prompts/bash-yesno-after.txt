@@ -1,0 +1,23 @@
+bash-5.2$ echo 'Do you want to proceed? [Y/n]'; read -p 'Do you want to continue? [Y/n] ' a; echo "g
+ot:$a"
+Do you want to proceed? [Y/n]
+Do you want to continue? [Y/n] n
+got:n
+bash-5.2$ read -p 'Are you sure you want to continue connecting (yes/no/[fingerprint])? ' a; echo "g
+ot:$a"
+Are you sure you want to continue connecting (yes/no/[fingerprint])? no
+got:no
+bash-5.2$
+
+
+
+
+
+
+
+
+
+
+
+
+

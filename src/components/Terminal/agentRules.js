@@ -56,7 +56,8 @@ export const AGENT_RULES = [
     verified: true,
     signature: [
       claudeInputBox,
-      /\? for shortcuts/,
+      /* At the start of the row: Codex 0.162 also prints "← for agents · ? for shortcuts" */
+      /^\s*\? for shortcuts/,
       /(⏵⏵|⏸) .*mode on/,
       /shift\+tab to cycle/,
       /· \/effort\s*$/,
@@ -89,13 +90,15 @@ export const AGENT_RULES = [
     name: 'Codex',
     verified: true,
     signature: [
-      /* Footer: "gpt-5.5 default · /path" (model, reasoning effort) */
-      /^\s+(gpt-[\w.-]+|o\d[\w-]*|codex-[\w.-]+)\s+(default|minimal|low|medium|high|xhigh)\b.* · /,
+      /* Footer: "gpt-5.5 default · /path" (model, reasoning effort); 0.162
+         capitalises it: "GPT-6.1-Sol default · /path" */
+      /^\s+(gpt-[\w.-]+|o\d[\w-]*|codex-[\w.-]+)\s+(default|minimal|low|medium|high|xhigh)\b.* · /i,
       /OpenAI Codex \(v\d/,
       /tokens used\s+\d+% context left/,                    // older footer, unverified
       /\(\s*(\d+h\s*)?(\d+m\s*)?\d+s\s*•\s*esc to interrupt\)/,
       /Press enter to confirm or esc to cancel/,
       /Would you like to (run the following command|make the following edits)\?/,
+      /^\s*enter confirm · esc skip\s*$/,                   // "Hooks need review" at launch (0.162)
     ],
     working: [
       /* "• Working (42s • esc to interrupt)". Not "• Starting MCP servers / Booting MCP server
@@ -112,6 +115,9 @@ export const AGENT_RULES = [
       /Would you like to (run the following command|make the following edits|apply)/,
       /Press enter to confirm or esc to cancel/,
       /^\s*›\s*1\.\s+Yes\b/,
+      /* Any numbered menu with its cursor (0.162: "Hooks need review" at launch) */
+      /^\s*›\s*\d+\.\s+\S/,
+      /^\s*enter confirm · esc skip\s*$/,
       /Allow command\?/,
       /Do you trust the (contents|files) of this directory/,   // unverified (trust prompt)
     ],
@@ -339,3 +345,166 @@ export function leadAgent(tabs) {
 
 /* An OSC notification text that is a request, not "finished" */
 export const NEEDS_YOU_TEXT = /\b(needs your (permission|approval)|permission to use|approval (needed|required)|requires approval)\b/i;
+
+/* ─── Quick answers: the choices of the prompt on screen ───
+   parseChoices(lines, agentId, {cursorLine}) → [{label, keys, hint, cancel?, default?}]
+   `keys` is exactly what to send to the session. [] = not sure: show nothing.
+
+   Three shapes, read from the bottom rows (screenTail):
+   1. A numbered menu with its cursor: "❯ 1. Yes / 2. … / 4. No" (Claude Code),
+      "› 1. Yes, proceed (y) / … / 3. No, and tell Codex… (esc)" (Codex), with
+      a footer right under it that says how to answer ("Esc to cancel · Tab to
+      amend", "Press enter to confirm or esc to cancel", "enter confirm · esc
+      skip"). No cursor or no footer = a numbered list in the conversation.
+      Claude Code 2.1.299 and Codex 0.162.1 pick an option the moment its digit
+      is pressed (seen live), so those get the digit; any other agent gets
+      arrows from where the cursor is, then Enter.
+   2. An unnumbered menu (Claude's trust prompt: "❯ No, exit / Yes, I trust
+      this folder" + "Enter to confirm · Esc to cancel"). Digits do nothing
+      there (seen live): arrows from the cursor + Enter, in one write (Ink
+      takes "\e[B\r" in one chunk as Down then Enter, seen live).
+   3. A shell-style question: "[Y/n]", "(y/n)", "[y/N]", "(yes/no/[fingerprint])?",
+      Aider's "(Y)es/(N)o [Yes]:". Answered with the word and Enter (they read
+      a line). Only when it is the last text on screen AND the row the cursor
+      is on (`cursorLine`, when the caller knows it): `echo '[Y/n]'` followed
+      by a shell prompt, or by a program still running, is no question.
+   A footer that mentions Esc adds a Cancel (Esc) item, marked cancel:true. */
+
+const MENU_OPTION = /^(\s*)([❯›▶●>]\s*)?(\d{1,2})\.\s+(\S.*)$/u;
+const MENU_FOOTER = /\b(esc to cancel|enter to confirm|press enter to confirm|enter confirm|esc skip)\b/i;
+/* Digit = pick at once, verified live (Claude Code 2.1.299, Codex 0.162.1) */
+const DIGIT_MENUS = new Set(['claude', 'codex']);
+const DOWN = '\x1b[B';
+const UP = '\x1b[A';
+const MAX_CHOICES = 6;
+
+/** Down/Up from the cursor's option to `to`, then Enter */
+function arrowKeys(from, to) {
+  const n = to - from;
+  return (n > 0 ? DOWN.repeat(n) : UP.repeat(-n)) + '\r';
+}
+
+/** "Yes, proceed (y)" → "Yes, proceed"; an option that runs on is cut at " · " */
+function cleanLabel(text) {
+  return text.replace(/\s+\((?:[a-z]|esc|enter)\)\s*$/i, '').split(' · ')[0].trim();
+}
+
+function cancelItem(footer) {
+  return /\besc\b/i.test(footer) ? [{ label: 'Cancel', keys: '\x1b', hint: 'Esc', cancel: true }] : [];
+}
+
+/* The footer among the last three rows, or -1 */
+function footerIndex(lines) {
+  for (let i = lines.length - 1; i >= Math.max(0, lines.length - 3); i--) {
+    if (MENU_FOOTER.test(lines[i])) return i;
+  }
+  return -1;
+}
+
+function numberedMenu(lines, agentId) {
+  const f = footerIndex(lines);
+  if (f < 1) return [];
+  /* Up from the footer: options (numbered down to 1) and the rows an option
+     wraps onto (indented past its number) */
+  const opts = [];
+  let wrapIndent = Infinity;
+  for (let i = f - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (!/\S/.test(l)) {
+      if (opts.length) return [];   // a gap inside the menu: not one menu
+      continue;                     // blank rows between menu and footer
+    }
+    const m = MENU_OPTION.exec(l);
+    if (m) {
+      opts.unshift({ n: Number(m[3]), cursor: !!m[2], text: m[4] });
+      wrapIndent = m[1].length + (m[2] ? m[2].length : 0);
+      if (Number(m[3]) === 1) break;
+      continue;
+    }
+    const indent = l.match(/^\s*/)[0].length;
+    if (opts.length && indent > wrapIndent) continue;
+    return [];
+  }
+  if (opts.length < 2 || opts.length > MAX_CHOICES) return [];
+  if (opts.some((o, k) => o.n !== k + 1)) return [];
+  const cur = opts.findIndex(o => o.cursor);
+  if (cur < 0 || opts.filter(o => o.cursor).length !== 1) return [];
+  const digits = DIGIT_MENUS.has(agentId);
+  const items = opts.map((o, k) => ({
+    label: cleanLabel(o.text),
+    keys: digits ? String(o.n) : arrowKeys(cur, k),
+    hint: digits ? String(o.n) : null,
+  }));
+  if (items.some(c => !c.label)) return [];
+  return [...items, ...cancelItem(lines[f])];
+}
+
+function plainMenu(lines) {
+  const f = footerIndex(lines);
+  if (f < 1 || !/enter to confirm/i.test(lines[f])) return [];
+  const opts = [];
+  for (let i = f - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (!/\S/.test(l)) { if (opts.length) break; continue; }
+    const m = /^(\s*)(❯\s+)?(\S.*)$/u.exec(l);
+    opts.unshift({ cursor: !!m[2], col: m[1].length + (m[2] ? m[2].length : 0), text: m[3] });
+    if (opts.length > MAX_CHOICES) return [];
+  }
+  if (opts.length < 2) return [];
+  const cur = opts.findIndex(o => o.cursor);
+  if (cur < 0 || opts.filter(o => o.cursor).length !== 1) return [];
+  /* Every label starts in the same column: a menu, not a paragraph */
+  if (opts.some(o => o.col !== opts[cur].col)) return [];
+  return [
+    ...opts.map((o, k) => ({ label: cleanLabel(o.text), keys: arrowKeys(cur, k), hint: null })),
+    ...cancelItem(lines[f]),
+  ];
+}
+
+const YES_NO = /[[(]\s*(y(?:es)?)\s*\/\s*(n(?:o)?)\b[^[\]()]*(?:\[[^\]]*\][^[\]()]*)?[\])]\s*[:?]?\s*$/i;
+const AIDER_YES_NO = /\(Y\)es\/\(N\)o\b.*\[(Yes|No)\]:\s*$/;
+
+function yesNo(lines, cursorLine) {
+  const last = lines[lines.length - 1];
+  if (typeof cursorLine === 'string' && cursorLine.replace(/\s+$/, '') !== last) return [];
+  const aider = AIDER_YES_NO.exec(last);
+  if (aider) {
+    return [
+      { label: 'Yes', keys: 'y\r', hint: 'y', default: aider[1] === 'Yes' },
+      { label: 'No', keys: 'n\r', hint: 'n', default: aider[1] === 'No' },
+    ];
+  }
+  const m = YES_NO.exec(last);
+  if (!m) return [];
+  const word = m[1].length > 1;
+  return [
+    { label: 'Yes', keys: word ? 'yes\r' : 'y\r', hint: word ? null : 'y', default: !word && m[1] === 'Y' },
+    { label: 'No', keys: word ? 'no\r' : 'n\r', hint: word ? null : 'n', default: !word && m[2] === 'N' },
+  ];
+}
+
+/**
+ * @param {string[]} lines  bottom rows of the screen (screenTail), top to bottom
+ * @param {string|null} agentId  the agent detected here (detectAgent), or null
+ * @param {{cursorLine?: string}} [opts]  the text of the cursor's row, if known
+ * @returns {{label: string, keys: string, hint: string|null, cancel?: boolean, default?: boolean}[]}
+ */
+export function parseChoices(lines, agentId = null, { cursorLine } = {}) {
+  if (!Array.isArray(lines) || !lines.length) return [];
+  const rows = lines.map(l => (typeof l === 'string' ? l.replace(/\s+$/, '') : ''));
+  while (rows.length && !/\S/.test(rows[rows.length - 1])) rows.pop();
+  if (!rows.length) return [];
+  const menu = numberedMenu(rows, agentId);
+  if (menu.length) return menu;
+  const plain = plainMenu(rows);
+  if (plain.length) return plain;
+  return yesNo(rows, cursorLine);
+}
+
+/** The text of the row the cursor is on (parseChoices' shell questions) */
+export function cursorRowText(term) {
+  const b = term && term.buffer && term.buffer.active;
+  if (!b) return '';
+  const line = b.getLine(b.baseY + b.cursorY);
+  return line ? line.translateToString(true) : '';
+}
