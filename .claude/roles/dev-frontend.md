@@ -713,3 +713,30 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   instalado), CDP `Input.dispatchDragEvent` con `data.files:[ruta]` → `webUtils.getPathForFile` da
   la ruta de verdad. Las filas se leen de `.xterm-rows` (renderer DOM). `navigator.clipboard.write`
   con `ClipboardItem` image/png funciona bajo xvfb. Script: scratchpad de la sesión, `drop-e2e.mjs`.
+
+## Prompt composer (rama `feat/shift-enter` + composer, 2026-10-14)
+
+- `Terminal/Composer.jsx` (+ `Composer.css`): caja multilínea **en el flujo** de `.terminal-container`
+  (entre `.terminal-wrapper` y la barra de abajo), no encima: el xterm encoge y refita por su
+  ResizeObserver, así el prompt del agente sigue a la vista. TerminalView solo cablea: estado
+  `composeOpen`/`composeFocus`, Ctrl+Shift+E en `attachCustomKeyEventHandler` (antes de `wasDead`),
+  `sendComposed`, botón `ComposeButton` en `.session-log-controls`; Android: `onCompose` en ExtraKeys.
+- **Enviar = `term.paste(texto)` y, 120 ms después, `term.input('\r', true)`**, ambos con
+  `noBroadcastRef` + `bypassRef` arriba (onData es síncrono). El Enter va aparte para que no
+  caiga dentro del corchete. `composedText` quita marcadores de pegado, CRLF y saltos finales.
+- Borrador: `Map` por `tab.id` en memoria + `localStorage['termilab.composer.draft.<sessionKey>']`
+  (try/catch, máx. 200 KB). Tamaño arrastrado: `termilab.composer.size` (fracción; doble clic =
+  auto). Toggle Send Enter: `termilab.composer.sendEnter`.
+- **Todo botón/checkbox del composer lleva `onMouseDown={preventDefault}`**: el checkbox "Send
+  Enter" se llevaba el foco y lo siguiente que se tecleaba no iba a ningún sitio (lo cazó la e2e).
+- Imágenes pegadas/soltadas en el composer: `attachImages(..., { paste })` con un `paste` que
+  inserta en el textarea con `execCommand('insertText')` (deshacer funciona). El drop hace
+  `stopPropagation` o el `.terminal-container` lo adjuntaría también a la terminal.
+- El composer solo para la propagación de Ctrl+Shift+F (la búsqueda del panel); Ctrl+T/W/Tab y
+  Ctrl+Shift+N de App siguen funcionando con el foco dentro.
+- E2E: `scripts/e2e-composer.mjs` (xvfb + xdotool latam, tecla muerta real, `cat -v > archivo` con
+  `\e[?2004h`; `CLAUDE=1` lanza `claude` real y lee su transcript JSONL). **Lanzada desde dentro de
+  Claude Code, la terminal hereda `CLAUDE_CODE_*` y el claude hijo no guarda transcript**: el
+  script borra esas variables del entorno de Electron. El status line del usuario sustituye
+  "? for shortcuts": espera el `❯`. La respuesta es `●`, no `⏺`.
+- Sin probar en el emulador Android (solo `mobile:web` compila y `check-mobile` verde).

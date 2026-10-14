@@ -1,0 +1,124 @@
+/* ═══ Prompt composer (Composer.jsx) ═══
+   Docked under the terminal, in the pane's flex column: the xterm above
+   shrinks and refits (its ResizeObserver), so the agent's own prompt stays
+   in view. The pane's colour is only a frame (top edge, focus ring); the
+   Send button keeps the app accent, whose contrast is known in both themes. */
+.composer {
+  --composer-accent-c: var(--composer-accent, var(--accent));
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 8px 6px;
+  background: var(--bg-secondary);
+  border-top: 2px solid var(--composer-accent-c);
+  font-family: var(--font-ui);
+}
+
+.composer.drop-over::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border: 2px dashed var(--composer-accent-c);
+  border-radius: var(--radius-md);
+  pointer-events: none;
+}
+
+/* The top edge, a few px tall, is the resize handle */
+.composer-resize {
+  position: absolute;
+  top: -5px;
+  left: 0;
+  right: 0;
+  height: 8px;
+  cursor: ns-resize;
+  z-index: 2;
+}
+body.composer-resizing,
+body.composer-resizing * { cursor: ns-resize !important; user-select: none; }
+body.composer-resizing .terminal-wrapper { pointer-events: none; }
+
+.composer-input {
+  width: 100%;
+  min-height: 0;
+  resize: none;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.45;
+  outline: none;
+  overflow-y: auto;
+}
+.composer-input::placeholder { color: var(--text-placeholder); }
+.composer-input:focus {
+  border-color: var(--composer-accent-c);
+  box-shadow: 0 0 0 1px var(--composer-accent-c);
+}
+
+.composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.composer-spacer { flex: 1; }
+
+.composer-enter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+.composer-enter input { margin: 0; accent-color: var(--accent); }
+
+.composer-hint,
+.composer-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-hint { color: var(--text-tertiary); }
+.composer-status.error { color: var(--color-danger); }
+
+.composer-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.composer-btn:hover { background: var(--overlay-subtle); color: var(--text-primary); }
+.composer-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 500;
+}
+.composer-btn.primary:hover { background: var(--accent-hover); }
+.composer-btn.primary:disabled { opacity: 0.45; cursor: default; }
+
+/* The toolbar button (in .session-log-controls) */
+.composer-toggle.open {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Android: bigger targets, no hint */
+.composer.mobile .composer-btn { padding: 10px 16px; font-size: 14px; }
+.composer.mobile .composer-enter { font-size: 13px; }
+.composer.mobile .composer-input { font-size: 15px; }

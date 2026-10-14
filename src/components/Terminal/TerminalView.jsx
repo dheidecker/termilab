@@ -25,6 +25,7 @@ import './TerminalView.css';
 import '../Keeper/Keeper.css';
 import { showToast } from '../Keeper/toast';
 import { attachImages, canAttach, isFilesDrag } from './imageAttach';
+import Composer, { ComposeButton } from './Composer';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 
@@ -90,6 +91,12 @@ export default function TerminalView({ tab }) {
   };
   attachRef.current = (items) => attachImages(termRef.current, tabLiveRef.current, items, { onStatus: showAttachStatus, paste: pasteHereOnly });
   useEffect(() => () => clearTimeout(attachTimerRef.current), []);
+  /* Prompt composer (Composer.jsx): open/closed, and a counter whose every
+     change gives it the keyboard (Ctrl+Shift+E from the terminal) */
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeFocus, setComposeFocus] = useState(0);
+  const composeKeyRef = useRef(null);
+  composeKeyRef.current = () => { setComposeOpen(true); setComposeFocus(n => n + 1); };
   /* A clipboard image (no text) from any paste entry point → attached like a
      dropped file: saved/uploaded, its path typed. Desktop only. */
   pasteImageRef.current = (!IS_ANDROID && canAttach()) ? (img) => attachRef.current([img]) : null;
@@ -402,6 +409,12 @@ export default function TerminalView({ tab }) {
       if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
         ev.preventDefault();
         term.input('\x1b\r', true);
+        return false;
+      }
+      // Ctrl+Shift+E → the prompt composer (opens it, or gives it the keyboard)
+      if (ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey && ev.code === 'KeyE') {
+        ev.preventDefault();
+        composeKeyRef.current();
         return false;
       }
       const wasDead = afterDeadKey;
@@ -960,6 +973,41 @@ export default function TerminalView({ tab }) {
     copySelection(term).then((r) => { if (r.copied) setCopiedAt(Date.now()); });
     term.clearSelection();
   };
+  /* Composer → this session only: one paste (bracketed when the program
+     asked for it), then Enter a moment later as its own key. Never broadcast;
+     on Android, past the sticky Ctrl/Alt. */
+  const sendComposed = (text, enter) => {
+    const term = termRef.current;
+    if (!term || (hasApi() && !sessionIdRef.current)) return false;
+    const here = (fn) => {
+      noBroadcastRef.current = true;
+      bypassRef.current = true;
+      try { fn(); } finally { noBroadcastRef.current = false; bypassRef.current = false; }
+    };
+    here(() => term.paste(text));
+    if (enter) setTimeout(() => { if (termRef.current === term) here(() => term.input('\r', true)); }, 120);
+    return true;
+  };
+  const closeComposer = () => {
+    setComposeOpen(false);
+    termRef.current?.focus();
+  };
+  const composer = composeOpen ? (
+    <Composer
+      tab={tab}
+      color={tabColor(tab, state.hosts)}
+      focusSignal={composeFocus}
+      mobile={IS_ANDROID}
+      onSend={sendComposed}
+      onAttach={(!IS_ANDROID && canAttach())
+        ? (items, { paste, onStatus }) => attachImages(termRef.current, tabLiveRef.current, items, { onStatus, paste })
+        : null}
+      onClose={closeComposer}
+      onFocusTerminal={() => termRef.current?.focus()}
+    />
+  ) : null;
+  const toggleComposer = () => (composeOpen ? closeComposer() : composeKeyRef.current());
+
   const mobileHeader = IS_ANDROID ? (
     <SessionHeader
       tab={tab}
@@ -1085,6 +1133,7 @@ export default function TerminalView({ tab }) {
       )}
 
       <div className="terminal-wrapper" ref={containerRef} />
+      {composer}
 
       {copiedAt > 0 && <div className="terminal-copied-hint" key={copiedAt} role="status">Copied</div>}
       {pasteAsk && (
@@ -1112,7 +1161,7 @@ export default function TerminalView({ tab }) {
           <button type="button" className="m-chip" onMouseDown={(e) => e.preventDefault()} onClick={() => termRef.current?.clearSelection()}>Cancel</button>
         </div>
       )}
-      {IS_ANDROID && <ExtraKeys modifiers={modifiers} onKey={sendKey} onPaste={pasteClipboard} />}
+      {IS_ANDROID && <ExtraKeys modifiers={modifiers} onKey={sendKey} onPaste={pasteClipboard} onCompose={toggleComposer} />}
 
       {/* ─── Bottom Bar: Status (desktop; on Android the header says it) ─── */}
       {!IS_ANDROID && <div className="terminal-bottom-bar">
@@ -1126,6 +1175,7 @@ export default function TerminalView({ tab }) {
 
         {/* ─── Session Log Controls ─── */}
         <div className="session-log-controls">
+          <ComposeButton open={composeOpen} onClick={toggleComposer} />
           <button
             className={`session-log-toggle ${isLogging ? 'active' : ''}`}
             onClick={() => {

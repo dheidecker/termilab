@@ -1,6 +1,6 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { EXTRA_KEYS, tapModifier, afterUse } from './keys';
-import { PasteIcon, ArrowLeftIcon } from '../../Icons/icons';
+import { PasteIcon, ArrowLeftIcon, PencilIcon } from '../../Icons/icons';
 
 /* The arrow glyphs (← →) are tiny in most mono fonts: draw them */
 const ARROW_TURN = { left: 0, up: 90, right: 180, down: 270 };
@@ -43,7 +43,7 @@ export function useStickyModifiers() {
    action runs on click, so a horizontal scroll of the row presses nothing. */
 const keepFocus = (e) => e.preventDefault();
 
-export default function ExtraKeys({ modifiers, onKey, onPaste }) {
+export default function ExtraKeys({ modifiers, onKey, onPaste, onCompose }) {
   const { state } = modifiers;
   return (
     <div className="m-extra-keys" role="toolbar" aria-label="Extra keys">
@@ -77,6 +77,12 @@ export default function ExtraKeys({ modifiers, onKey, onPaste }) {
         >
           <PasteIcon />
         </button>
+        {onCompose && (
+          <button type="button" tabIndex={-1} className="m-key m-key-icon" aria-label="Compose a message"
+            onMouseDown={keepFocus} onClick={onCompose}>
+            <PencilIcon />
+          </button>
+        )}
       </div>
     </div>
   );
