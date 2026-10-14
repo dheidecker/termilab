@@ -820,6 +820,10 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   carpetas no, enlaces se borran sin seguir, tope 200 entradas / 4 s.
 - **El sshd del arnés entra en tu HOME real**: UP usa `forceCommand` con `HOME` temporal y `cd` (el
   `realpath('.')` del sftp-server es el cwd). En local, `uploadService.localHome` lo redirige.
+- **`electron/navigation-guard.js`** (`guardNavigation(win)` en `main.js`): `will-navigate` solo deja
+  la propia página de la app (mismo protocolo/host/ruta; dev = el servidor de Vite) y
+  `setWindowOpenHandler` niega todo y solo pasa http(s)/mailto a `shell.openExternal` (antes abría
+  CUALQUIER url, file:// incluido). UP12 lo prueba con un `win` falso; e2e-attach con Electron real.
 - Android: `attach` y `attach:` (más `clipboard`/`clipboard:`) en la lista de omitidos del shim (M1).
   `TERMILAB_CHECK_ONLY=UP` (~5 s). Control negativo en copia: sin el check de symlink remoto → UP9;
   sin la edad → UP4/UP8; 0644 → UP2/UP6; sin `sniff` → UP3/UP7.

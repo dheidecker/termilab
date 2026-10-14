@@ -75,8 +75,10 @@ let seq = 0;
  * the terminal of `tab`: save/upload as needed, then type their paths in
  * order, space-separated. onStatus({ text, kind: 'progress'|'error' } | null)
  * drives the pane's status line. Resolves to the typed paths ([] if none).
+ * paste(text) types them (default term.paste): TerminalView passes one that
+ * skips broadcast, so the paths reach only THIS terminal's session.
  */
-export async function attachImages(term, tab, rawItems, { onStatus = () => {} } = {}) {
+export async function attachImages(term, tab, rawItems, { onStatus = () => {}, paste } = {}) {
   const a = api();
   if (!a || !term || !tab) return [];
   const items = [...(rawItems || [])].map(normalize);
@@ -126,6 +128,7 @@ export async function attachImages(term, tab, rawItems, { onStatus = () => {} } 
     return [];
   }
   onStatus(null);
-  term.paste(`${paths.map(shellQuote).join(' ')} `);
+  const text = `${paths.map(shellQuote).join(' ')} `;
+  if (typeof paste === 'function') paste(text); else term.paste(text);
   return paths;
 }

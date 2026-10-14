@@ -15,6 +15,8 @@
  *  UP9  remoto: uploads como symlink se niega (y no se escribe a traves).
  *  UP10 renderer (imageAttach.js con esbuild): comillas de shell, negativas,
  *       y TerminalView solo reacciona a arrastres 'Files' sin DRAG_MIME.
+ *  UP11 lo adjuntado se escribe solo en su terminal (nunca por broadcast).
+ *  UP12 soltar un fichero fuera de un panel no navega (renderer + main).
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -282,6 +284,89 @@ async function seccionAttach({ check, ROOT, handlers }) {
       assert.ok(/onDrop:[\s\S]{0,80}isFilesDrag\(e\)/.test(tv), 'el drop de TerminalView no filtra por isFilesDrag');
       const src = fs.readFileSync(path.join(ROOT, 'src', 'components', 'Terminal', 'imageAttach.js'), 'utf-8');
       assert.ok(/term\.paste\(/.test(src) && !/\\r['"`]/.test(src), 'imageAttach tiene que escribir con term.paste y sin Enter');
+    });
+
+    await check('UP11 lo adjuntado va solo a SU terminal: attachImages escribe con el paste del panel y onData no lo difunde (broadcast)', async () => {
+      const out = path.join(tmp, 'ia2.cjs');
+      execFileSync(path.join(ROOT, 'node_modules', '.bin', 'esbuild'), [
+        path.join(ROOT, 'src', 'components', 'Terminal', 'imageAttach.js'),
+        '--bundle', '--platform=node', '--format=cjs', `--outfile=${out}`, '--log-level=error',
+      ], { stdio: 'pipe' });
+      const ia = require(out);
+      const prevWindow = global.window;
+      global.window = { electronAPI: { attach: { saveLocal: async (items) => items.map((_, i) => `/tmp/u/clip-${i}.png`) } } };
+      try {
+        const viaTerm = [];
+        const viaPaste = [];
+        const term = { paste: (t) => viaTerm.push(t) };
+        const tab = { type: 'local-terminal' };
+        const typed = await ia.attachImages(term, tab, [{ png: png(2, 2), mime: 'image/png' }], { paste: (t) => viaPaste.push(t) });
+        assert.deepStrictEqual(typed, ['/tmp/u/clip-0.png']);
+        assert.deepStrictEqual(viaPaste, ['/tmp/u/clip-0.png '], 'la ruta no salio por el paste del panel');
+        assert.deepStrictEqual(viaTerm, [], 'attachImages no debe usar term.paste si le dan paste');
+      } finally {
+        global.window = prevWindow;
+      }
+      const tv = fs.readFileSync(path.join(ROOT, 'src', 'components', 'Terminal', 'TerminalView.jsx'), 'utf-8');
+      const gates = tv.match(/if \(broadcastRef\.current[^)]*\)/g) || [];
+      assert.strictEqual(gates.length, 2, `se esperaban 2 ramas de broadcast (ssh y local), hay ${gates.length}`);
+      for (const g of gates) assert.ok(g.includes('!noBroadcastRef.current'), `rama de broadcast sin el filtro: ${g}`);
+      assert.ok(/noBroadcastRef\.current = true;\s*try \{ t\.paste\(text\); \} finally \{ noBroadcastRef\.current = false; \}/.test(tv), 'pasteHereOnly no envuelve term.paste con el filtro');
+      assert.ok(/attachImages\([^)]*paste: pasteHereOnly/.test(tv), 'attachRef no pasa pasteHereOnly');
+      assert.ok(/pasteImageRef\.current = [^\n]*attachRef\.current\(\[img\]\)/.test(tv), 'pegar una imagen no va a attachImages');
+    });
+
+    await check('UP12 soltar un fichero fuera de un panel no navega: guardia de la ventana (renderer) y will-navigate/window.open (main)', async () => {
+      const out = path.join(tmp, 'fdg.cjs');
+      execFileSync(path.join(ROOT, 'node_modules', '.bin', 'esbuild'), [
+        path.join(ROOT, 'src', 'utils', 'fileDropGuard.js'),
+        '--bundle', '--platform=node', '--format=cjs', `--outfile=${out}`, '--log-level=error',
+      ], { stdio: 'pipe' });
+      const { installFileDropGuard } = require(out);
+      const ls = {};
+      const win = { addEventListener: (t, f) => { ls[t] = f; }, removeEventListener: (t) => { delete ls[t]; } };
+      const off = installFileDropGuard(win);
+      const ev = (types, handled = false) => ({ defaultPrevented: handled, dataTransfer: { types, dropEffect: handled ? 'copy' : 'move' }, preventDefault() { this.defaultPrevented = true; } });
+      let e = ev(['Files']); ls.dragover(e);
+      assert.ok(e.defaultPrevented && e.dataTransfer.dropEffect === 'none', 'Files sin destino: dragover sin cancelar o dropEffect != none');
+      e = ev(['Files']); ls.drop(e); assert.ok(e.defaultPrevented, 'drop de Files sin destino no cancelado');
+      e = ev(['text/uri-list']); ls.drop(e); assert.ok(e.defaultPrevented, 'un enlace soltado navegaria');
+      e = ev(['Files'], true); ls.dragover(e);
+      assert.strictEqual(e.dataTransfer.dropEffect, 'copy', 'la guardia piso el dropEffect de un destino que acepto (panel SFTP / terminal)');
+      e = ev(['application/x-termilab-pane', 'text/plain']); ls.dragover(e);
+      assert.ok(!e.defaultPrevented, 'la guardia toco un arrastre interno de panel/pestana');
+      e = ev(['application/x-termilab-sftp', 'text/plain']); ls.dragover(e);
+      assert.ok(!e.defaultPrevented, 'la guardia toco un arrastre de filas SFTP');
+      off(); assert.ok(!ls.dragover && !ls.drop);
+      const main = fs.readFileSync(path.join(ROOT, 'src', 'main.jsx'), 'utf-8');
+      assert.ok(/installFileDropGuard\(\)/.test(main), 'main.jsx no instala la guardia');
+
+      const { guardNavigation } = require(path.join(ROOT, 'electron', 'navigation-guard.js'));
+      const run = (appUrl) => {
+        const h = {}; let openHandler = null; const opened = [];
+        const w = { webContents: { on: (t, f) => { h[t] = f; }, getURL: () => appUrl, setWindowOpenHandler: (f) => { openHandler = f; } } };
+        guardNavigation(w, { openExternal: (u) => { opened.push(u); } });
+        const nav = (u) => { let prevented = false; h['will-navigate']({ preventDefault: () => { prevented = true; } }, u); return prevented; };
+        return { nav, open: (u) => openHandler({ url: u }), opened };
+      };
+      const prod = run('file:///opt/Termilab/resources/app.asar/dist/index.html');
+      assert.ok(prod.nav('file:///home/u/captura.png'), 'file:// de un fichero soltado no se denego');
+      assert.ok(prod.nav('file:///etc/passwd'));
+      assert.ok(prod.nav('https://example.com/'));
+      assert.ok(!prod.nav('file:///opt/Termilab/resources/app.asar/dist/index.html#x'), 'la propia pagina de la app se denego');
+      const dev = run('http://127.0.0.1:5173/');
+      assert.ok(!dev.nav('http://127.0.0.1:5173/'), 'recargar en dev se denego');
+      assert.ok(dev.nav('file:///tmp/a.png'));
+      assert.ok(dev.nav('http://127.0.0.1:9999/'));
+      for (const u of ['file:///etc/passwd', 'javascript:alert(1)', 'smb://x/y']) {
+        assert.deepStrictEqual(prod.open(u), { action: 'deny' });
+      }
+      assert.deepStrictEqual(prod.open('https://github.com/x'), { action: 'deny' });
+      await new Promise((r) => setImmediate(r));
+      assert.deepStrictEqual(prod.opened, ['https://github.com/x'], 'window.open: solo http(s)/mailto al navegador, nunca file://');
+      const mainJs = fs.readFileSync(path.join(ROOT, 'electron', 'main.js'), 'utf-8');
+      assert.ok(/guardNavigation\(win\)/.test(mainJs), 'main.js no aplica guardNavigation');
+      assert.ok(!/setWindowOpenHandler/.test(mainJs), 'main.js tiene otro setWindowOpenHandler (abria file:// con openExternal)');
     });
   } finally {
     up.localHome = null;

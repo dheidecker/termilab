@@ -76,7 +76,19 @@ export default function TerminalView({ tab }) {
     if (st && st.kind === 'error') attachTimerRef.current = setTimeout(() => setAttachStatus(null), 6000);
   };
   const attachRef = useRef(null);
-  attachRef.current = (items) => attachImages(termRef.current, tabLiveRef.current, items, { onStatus: showAttachStatus });
+  /* Attached paths go to THIS session only, never broadcast: term.paste
+     fires onData synchronously, and onData skips the broadcast while this
+     flag is up (the paste keeps bracketed-paste markers if the program
+     asked for them). A path of this computer/server means nothing to the
+     other sessions. */
+  const noBroadcastRef = useRef(false);
+  const pasteHereOnly = (text) => {
+    const t = termRef.current;
+    if (!t) return;
+    noBroadcastRef.current = true;
+    try { t.paste(text); } finally { noBroadcastRef.current = false; }
+  };
+  attachRef.current = (items) => attachImages(termRef.current, tabLiveRef.current, items, { onStatus: showAttachStatus, paste: pasteHereOnly });
   useEffect(() => () => clearTimeout(attachTimerRef.current), []);
   /* A clipboard image (no text) from any paste entry point → attached like a
      dropped file: saved/uploaded, its path typed. Desktop only. */
@@ -568,7 +580,7 @@ export default function TerminalView({ tab }) {
                 window.electronAPI.localShell.write(sessionIdRef.current, data);
               }
               /* Broadcast: forward input to all other terminal sessions */
-              if (broadcastRef.current) {
+              if (broadcastRef.current && !noBroadcastRef.current) {
                 const currentSid = sessionIdRef.current;
                 tabsRef.current.forEach(otherTab => {
                   const sid = liveSessionId(otherTab);
@@ -677,7 +689,7 @@ export default function TerminalView({ tab }) {
             window.electronAPI.ssh.sendData(sessionIdRef.current, data);
           }
           /* Broadcast: forward input to all other terminal sessions */
-          if (broadcastRef.current) {
+          if (broadcastRef.current && !noBroadcastRef.current) {
             const currentSid = sessionIdRef.current;
             tabsRef.current.forEach(otherTab => {
               const sid = liveSessionId(otherTab);

@@ -699,7 +699,17 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
 - **Pegar una imagen** (fusionado con el portapapeles): `pasteImageRef.current = (img) =>
   attachRef.current([img])` en TerminalView (solo escritorio con `canAttach()`); `pasteInto` → onImage
   → `attachImages`. La costura temporal `readClipboardImage()` ya no existe.
-- E2E real: `xvfb-run electron` con `HOME`/`XDG_CONFIG_HOME` temporales (dev comparte el userData
+- **Lo adjuntado NO se difunde (broadcast)**: `attachImages(..., { paste })` y TerminalView le pasa
+  `pasteHereOnly`, que sube `noBroadcastRef` alrededor de `term.paste` (onData es síncrono) y las dos
+  ramas de broadcast de onData (ssh y local) lo miran. Arnés UP11; e2e con control positivo.
+- **Soltar fuera de un panel no navega**: `src/utils/fileDropGuard.js` (instalado en `main.jsx`) cancela
+  en `window` (burbuja, DESPUÉS de los destinos reales) dragover/drop de `Files`/`text/uri-list` que
+  nadie aceptó, con `dropEffect = 'none'`; respeta `defaultPrevented` (panel SFTP, terminal) y no toca
+  arrastres con `DRAG_MIME`. Chromium solo navega si el dragover NO se canceló. Arnés UP12.
+- `scripts/e2e-attach.mjs` (sin xdotool; CDP): soltar, rechazar, imagen del portapapeles, broadcast,
+  guardias de navegación y panel Local del SFTP. Carga `dist/` por **file://** como un paquete: por
+  http Chromium ya bloquea file:// y la prueba de navegación pasaría sin guardia.
+ (dev comparte el userData
   instalado), CDP `Input.dispatchDragEvent` con `data.files:[ruta]` → `webUtils.getPathForFile` da
   la ruta de verdad. Las filas se leen de `.xterm-rows` (renderer DOM). `navigator.clipboard.write`
   con `ClipboardItem` image/png funciona bajo xvfb. Script: scratchpad de la sesión, `drop-e2e.mjs`.

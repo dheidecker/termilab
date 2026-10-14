@@ -14,6 +14,7 @@ const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 
 const { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting, keptSessionsOf, endKeptWhenClosed, captureKeptForQuit, noteKeptOnQuit } = require('./ipc-handlers');
+const { guardNavigation } = require('./navigation-guard');
 const windowRegistry = require('./window-registry');
 const sshService = require('./services/ssh-service');
 const sftpService = require('./services/sftp-service');
@@ -104,12 +105,9 @@ function createWindow(bounds = {}, { maximized = false } = {}) {
     win.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
-  // Handle external links - open in default browser
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    const { shell } = require('electron');
-    shell.openExternal(url);
-    return { action: 'deny' };
-  });
+  // Never navigate away from the app (a dropped file, a stray link); external
+  // http(s)/mailto links open in the default browser, file:// never does
+  guardNavigation(win);
 
   win.on('close', (event) => confirmClose(win, event));
 
