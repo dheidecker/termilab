@@ -396,6 +396,14 @@ export default function TerminalView({ tab }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown') return true;
       if (ev.key === 'Dead') { afterDeadKey = true; return true; }
+      /* Shift+Enter → ESC CR (Meta+Enter): a newline without sending in
+         Claude Code, Codex and other agent prompts — what their own
+         /terminal-setup configures in terminals that don't do it. */
+      if (ev.key === 'Enter' && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+        ev.preventDefault();
+        term.input('\x1b\r', true);
+        return false;
+      }
       const wasDead = afterDeadKey;
       afterDeadKey = false;
       /* Copy / paste combos first: nothing below may ever swallow them */
