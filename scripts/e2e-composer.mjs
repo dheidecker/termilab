@@ -164,12 +164,12 @@ try {
 
   /* C3 three lines, with a dead-key accent and ñ, through the real IME */
   xdo('type', '--delay', '20', 'uno');
-  xdo('key', 'Return');
+  xdo('key', 'shift+Return');
   xdo('type', '--delay', '20', 'dos ');
   xdo('key', 'dead_acute');
   xdo('key', 'a');
   xdo('key', 'ntilde');
-  xdo('key', 'Return');
+  xdo('key', 'shift+Return');
   xdo('type', '--delay', '20', 'tres');
   await sleep(300);
   const v3 = await composerValue();
@@ -200,13 +200,17 @@ try {
   await setTheme('dark');
   await sleep(300);
 
-  /* C6 Ctrl+Enter: one bracketed block, then Enter */
-  xdo('key', 'ctrl+Return');
+  /* C6 Enter: one bracketed block, then Enter */
+  xdo('key', 'Return');
   const out = await waitFor(() => { const o = readOut(); return o && o.includes('201~') ? o : null; }, 4000);
   const want = '^[[200~uno\ndos M-CM-!M-CM-1\ntres^[[201~\n';
   ok('C6 program got ONE bracketed block + Enter', out === want, JSON.stringify(readOut()));
-  ok('C6 ... composer closed, draft cleared, keyboard back in xterm', !(await c.ev(`!!document.querySelector('.composer')`))
-    && /xterm-helper-textarea/.test(await active() || '') && (await c.ev(`Object.keys(localStorage).filter(k => k.startsWith('termilab.composer.draft.')).length`)) === 0);
+  await sleep(300);
+  ok('C6 ... composer stays open and focused, empty, draft cleared', (await c.ev(`!!document.querySelector('.composer')`))
+    && /composer-input/.test(await active() || '') && (await composerValue()) === '' && (await c.ev(`Object.keys(localStorage).filter(k => k.startsWith('termilab.composer.draft.')).length`)) === 0);
+  ok('C6b Attach button present', await c.ev(`!!document.querySelector('.composer-attach')`));
+  xdo('key', 'Escape');
+  await sleep(300);
 
   /* C7 Esc keeps the draft (memory + localStorage), the button reopens it */
   xdo('key', 'ctrl+shift+e');
@@ -234,6 +238,8 @@ try {
   await click('.composer-btn.primary');
   await sleep(800);
   ok('C8 Send Enter off: pasted, no Enter yet', readOut() === want, JSON.stringify(readOut()));
+  xdo('key', 'Escape');   // the composer stays open after sending: hand the keyboard back
+  await sleep(300);
   xdo('key', 'Return');
   await waitFor(() => readOut() !== want, 2000);
   ok('C8 ... the line was waiting in the program', readOut() === `${want}^[[200~sin-enter^[[201~\n`, JSON.stringify(readOut()));

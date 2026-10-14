@@ -4,7 +4,7 @@
  * editor (mouse caret, selection, undo, IME) instead of the program's own
  * line editor.
  *
- * Ctrl+Enter (or Send) hands the whole text to the terminal as ONE paste
+ * Enter (or Send) hands the whole text to the terminal as ONE paste
  * (term.paste → bracketed paste when the program asked for it, so an agent
  * receives a single block), then Enter if "Send Enter" is on. The paste is
  * done by the owner (TerminalView), which keeps it out of broadcast.
@@ -80,6 +80,7 @@ export default function Composer({ tab, color, focusSignal, onSend, onAttach, on
   const sessionKey = tab.sessionKey || tab.id;
   const [text, setText] = useState(() => loadDraft(tab.id, sessionKey));
   const [sendEnter, setSendEnter] = useState(() => lsGet(ENTER_KEY) !== 'false');
+  const fileRef = useRef(null);
   const [fraction, setFraction] = useState(readFraction);   // null = auto-grow
   const [status, setStatus] = useState(null);
   const [dropOver, setDropOver] = useState(false);
@@ -184,12 +185,15 @@ export default function Composer({ tab, color, focusSignal, onSend, onAttach, on
     if (onSend(out, sendEnter) === false) return;
     setText('');
     saveDraft(tab.id, sessionKey, '');
-    onClose('sent');
+    /* Stays open, like a chat box: ready for the next message */
+    requestAnimationFrame(() => taRef.current?.focus());
   };
 
   const onKeyDown = (e) => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.altKey) {
+    /* Enter sends (like Claude Desktop); Shift+Enter is a new line.
+       Ctrl/Cmd+Enter also sends. */
+    if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
       e.preventDefault();
       e.stopPropagation();
       send();
@@ -279,7 +283,7 @@ export default function Composer({ tab, color, focusSignal, onSend, onAttach, on
         onChange={(e) => setText(e.target.value)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
-        placeholder={mobile ? 'Write a message…' : 'Write a message… Ctrl+Enter sends it as one block'}
+        placeholder={mobile ? 'Write a message…' : 'Write a message… Enter sends · Shift+Enter new line'}
         spellCheck
         aria-label="Message"
       />
@@ -292,10 +296,28 @@ export default function Composer({ tab, color, focusSignal, onSend, onAttach, on
           ? <span className={`composer-status${status.kind === 'error' ? ' error' : ''}`} role="status">{status.text}</span>
           : !mobile && <span className="composer-hint">Esc closes · Ctrl+Shift+E terminal</span>}
         <span className="composer-spacer" />
+        {onAttach && (
+          <>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              multiple
+              hidden
+              onChange={(e) => { const files = [...(e.target.files || [])]; e.target.value = ''; attach(files); taRef.current?.focus(); }}
+            />
+            <button type="button" className="composer-btn composer-attach" onMouseDown={(e) => e.preventDefault()} onClick={() => fileRef.current?.click()} title="Attach images (or paste / drop them here)" aria-label="Attach images">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+              </svg>
+              <span>Attach</span>
+            </button>
+          </>
+        )}
         <button type="button" className="composer-btn" onMouseDown={(e) => e.preventDefault()} onClick={() => onClose('button')} title="Close (Esc); the draft is kept">
           Close
         </button>
-        <button type="button" className="composer-btn primary" onMouseDown={(e) => e.preventDefault()} onClick={send} disabled={empty} title="Send (Ctrl+Enter)">
+        <button type="button" className="composer-btn primary" onMouseDown={(e) => e.preventDefault()} onClick={send} disabled={empty} title="Send (Enter)">
           Send
         </button>
       </div>

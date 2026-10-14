@@ -122,3 +122,9 @@ body.composer-resizing .terminal-wrapper { pointer-events: none; }
 .composer.mobile .composer-btn { padding: 10px 16px; font-size: 14px; }
 .composer.mobile .composer-enter { font-size: 13px; }
 .composer.mobile .composer-input { font-size: 15px; }
+
+.composer-attach {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
