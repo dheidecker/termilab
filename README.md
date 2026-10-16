@@ -132,16 +132,14 @@ Termilab can act as an MCP server, so Claude Code (or any MCP client) can reach 
 
 Register it with Claude Code (user scope, every project):
 
-```bash
-# Packages that install the termilab-mcp wrapper:
-claude mcp add --scope user termilab -- termilab-mcp
+| Install | Command |
+|---|---|
+| `.deb`, `.pacman` | `claude mcp add --scope user termilab -- termilab-mcp` |
+| AppImage | `claude mcp add --scope user termilab -- /path/to/Termilab-<version>.AppImage --mcp` (rename it first to a name without a version, e.g. `Termilab.AppImage`: the updater replaces a versioned file with the new version's name and the registered path breaks; an unversioned one is updated in place) |
+| Windows | `claude mcp add --scope user termilab -- "%LOCALAPPDATA%\Programs\Termilab\Termilab.exe" --mcp` (default per-user install; use your folder if you changed it) |
+| macOS | `claude mcp add --scope user termilab -- /Applications/Termilab.app/Contents/MacOS/Termilab --mcp` |
 
-# Or call the app binary directly (Linux deb/pacman paths shown):
-claude mcp add --scope user termilab -e ELECTRON_RUN_AS_NODE=1 -- /opt/Termilab/termilab /opt/Termilab/resources/app.asar/electron/agent/mcp.js
-
-# From a source checkout (with Termilab running from `npm run dev`):
-claude mcp add --scope user termilab -- node /path/to/termilab/electron/agent/mcp.js
-```
+From a source checkout, with Termilab running from `npm run dev`: `claude mcp add --scope user termilab -- node /path/to/termilab/electron/agent/mcp.js`.
 
 Any other MCP client takes the same command as a stdio server:
 
@@ -149,9 +147,8 @@ Any other MCP client takes the same command as a stdio server:
 {
   "mcpServers": {
     "termilab": {
-      "command": "/opt/Termilab/termilab",
-      "args": ["/opt/Termilab/resources/app.asar/electron/agent/mcp.js"],
-      "env": { "ELECTRON_RUN_AS_NODE": "1" }
+      "command": "termilab-mcp",
+      "args": []
     }
   }
 }

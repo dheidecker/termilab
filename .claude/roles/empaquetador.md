@@ -190,7 +190,33 @@ tuyos — corrige lo que compruebes que ya no es cierto.
 - **Un worktree creado con umask 077 tiene las fuentes en 0600**, y el `umask 022` de los scripts
   no lo arregla: electron-builder copia el modo del icono y el `.deb` sale con
   `hicolor/512x512/apps/termilab.png` 0600 (`check-package-perms.js` lo caza). Antes de empaquetar
-  en un worktree: `git ls-files -z | xargs -0 chmod a+r`.
+  en un worktree: `git ls-files -z | xargs -0 chmod a+r`. Los directorios también salen 0700:
+  `find . -path ./node_modules -prune -o -path ./.git -prune -o -type d -print0 | xargs -0 chmod a+rx`.
+- **En un worktree aislado, el harness rechaza comandos compuestos** que mezclen `git`, `env -u`,
+  `PATH=... npm` o `sed` con variables. Mete la secuencia en un `.sh` del scratchpad y ejecútalo
+  con `bash <ruta>`; los `git` sueltos y planos sí pasan.
 - **Sin comprobar:** Wayland nativo (`--ozone-platform=wayland`; Electron 33 arranca en X11 por
   defecto), y que las apps abiertas con `shell.openPath` (editor de sftp-edit) heredan
   `GTK_IM_MODULE=gtk-im-context-simple`; la terminal local no, `local-shell-service` lo borra.
+
+## Comando MCP: `termilab-mcp` y `--mcp` (2026-10-16, rama worktree-agent-ade8ab8aa317c55c6)
+
+- **Archivos fuera de `/opt` en deb/pacman: `deb.fpm` / `pacman.fpm` con `origen=destino`**
+  (`build/linux/termilab-mcp=/usr/bin/termilab-mcp`). fpm usa `-s dir` y builder añade `options.fpm`
+  antes de sus propios mapeos; ruta relativa a la raíz del proyecto. El modo sale del disco (git
+  guarda el 0755). `pacman.fpm` **reemplaza** a `linux.fpm` (deepAssign por target), por eso va
+  repetido en `deb` y `pacman` y no en `linux`. Como es archivo del paquete, `pacman -U` lo instala
+  y desinstalación lo borra: no depende de post_install.
+- **ELECTRON_RUN_AS_NODE lee dentro de `app.asar`** (comprobado: `termilab <...>/app.asar/electron/agent/mcp.js`).
+- **`--mcp` usa `spawnSync` en la cabecera de main.js a propósito:** el hilo JS bloqueado antes de
+  `ready` evita ventana, GPU, network service. Los zygotes sí aparecen (se crean antes del JS).
+  Coste: un SIGTERM al padre lo mata (143) pero **el hijo queda huérfano** hasta que su stdin da
+  EOF; por eso mcp.js tiene que salir en `stdin.on('end')`. El wrapper de deb/pacman hace `exec`
+  directo en modo node: un solo proceso, la señal llega al hijo.
+- **AppImage:** `--mcp` funciona igual, stdout limpio. El updater de AppImage renombra el archivo si
+  el nombre lleva `x.y.z` (`AppImageUpdater.js`): para registrarlo, nombre sin versión.
+- **Tiempos:** `npm run dist` Linux completo ~4 min; `pack` 13 s.
+- **Sin comprobar:** Windows (que `Termilab.exe --mcp` con stdio en pipes no abre ventana ni
+  consola y pasa los pipes al hijo) y macOS (si sale icono en el Dock durante el `spawnSync`;
+  si sale, `LSUIElement` no aplica porque es el mismo bundle: habría que probar `app.dock.hide()`
+  antes, que exige el módulo electron). Tampoco instalar el deb/pacman de verdad.

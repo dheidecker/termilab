@@ -150,6 +150,8 @@ const NOT_RUNNING = 'Termilab is not running. Open Termilab first, then try agai
 /* ── Talking to Termilab ──────────────────────────────────── */
 
 let seq = 0;
+/** Sockets to Termilab still open: closed when we exit (stdin ended, signal). */
+const openSockets = new Set();
 function callTermilab(method, params, { timeoutMs = 120000 } = {}) {
   const dir = findUserDataDir();
   const p = agentPaths(dir);
@@ -162,6 +164,8 @@ function callTermilab(method, params, { timeoutMs = 120000 } = {}) {
   return new Promise((resolve, reject) => {
     const id = ++seq;
     const sock = net.connect(p.socket);
+    openSockets.add(sock);
+    sock.on('close', () => openSockets.delete(sock));
     let buf = '';
     let settled = false;
     const done = (err, val) => {
@@ -265,13 +269,24 @@ async function handle(msg, state = {}) {
   }
 }
 
+/* The client went away (stdin ended) or we were told to stop: drop what is in
+   flight and leave now, so a dead parent never leaves us behind. */
+function shutdown(code = 0) {
+  for (const s of openSockets) { try { s.destroy(); } catch (_) { /* gone */ } }
+  openSockets.clear();
+  process.exit(code);
+}
+
 function main() {
+  /* stdout is the JSON-RPC channel: anything else that prints goes to stderr */
+  const toErr = (...a) => process.stderr.write(`${a.map(String).join(' ')}\n`);
+  console.log = toErr; console.info = toErr; console.debug = toErr; console.warn = toErr;
+  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => shutdown(0));
+  process.stdin.on('end', () => shutdown(0));
+  process.stdin.on('error', () => shutdown(0));
   const state = {};
   const out = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
   const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-  let pending = 0;
-  let ended = false;
-  const maybeExit = () => { if (ended && pending === 0) process.exit(0); };
   rl.on('line', (line) => {
     if (!line.trim()) return;
     let msg;
@@ -281,15 +296,13 @@ function main() {
     }
     const batch = Array.isArray(msg) ? msg : [msg];
     for (const m of batch) {
-      pending++;
       handle(m, state)
         .then((res) => { if (res) out(res); })
-        .catch((e) => { if (m && m.id !== undefined) out({ jsonrpc: '2.0', id: m.id, error: { code: -32603, message: e.message } }); })
-        .finally(() => { pending--; maybeExit(); });
+        .catch((e) => { if (m && m.id !== undefined) out({ jsonrpc: '2.0', id: m.id, error: { code: -32603, message: e.message } }); });
     }
   });
-  rl.on('close', () => { ended = true; maybeExit(); });
-  process.stdout.on('error', () => process.exit(0));
+  rl.on('close', () => shutdown(0));
+  process.stdout.on('error', () => shutdown(0));
 }
 
 module.exports = { handle, TOOLS, SUPPORTED, main, callTermilab };

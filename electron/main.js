@@ -1,3 +1,20 @@
+/* `termilab --mcp [args]`: run the MCP server (electron/agent/mcp.js) instead
+   of the GUI, so AppImage, Termilab.exe and the mac binary all register the
+   same way. It re-runs this binary in node mode (ELECTRON_RUN_AS_NODE) with
+   stdio inherited; spawnSync blocks before `ready`, so no window and no GPU
+   process ever start, and nothing of ours touches stdout (MCP stdio). deb and
+   pacman ship /usr/bin/termilab-mcp, which skips this hop. */
+if (process.argv.includes('--mcp')) {
+  const { spawnSync } = require('child_process');
+  const rest = process.argv.slice(process.argv.indexOf('--mcp') + 1);
+  const r = spawnSync(process.execPath, [require('path').join(__dirname, 'agent', 'mcp.js'), ...rest], {
+    stdio: 'inherit',
+    windowsHide: true,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
+  process.exit(r.status ?? 1);
+}
+
 /* Linux: type through GTK's built-in input method, not IBus. IBus on X11
    intermittently stops delivering keys to Chromium (spaces vanish, Shift+letter
    stuck in a preedit, inputs stop typing). gtk-im-context-simple still does

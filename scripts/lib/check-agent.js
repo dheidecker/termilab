@@ -454,6 +454,27 @@ async function seccionAgent({ check, ROOT }) {
       assert.ok(!/this\._resolve\(p\.host\)/.test(src), 'una herramienta resuelve el host sin pasar por _target');
     });
 
+    await check('AG22 mcp.js sale ya al cerrarse stdin (con un run_command en vuelo) y con SIGTERM', async () => {
+      const exitIn = (c) => new Promise((resolve) => {
+        if (c.child.exitCode !== null) return resolve(c.child.exitCode);
+        const t = setTimeout(() => resolve('sigue vivo'), 2000);
+        c.child.once('exit', (code) => { clearTimeout(t); resolve(code); });
+      });
+      const a = mcpClient(ROOT, { TERMILAB_USER_DATA: dir });
+      a.request('tools/call', { name: 'run_command', arguments: { host: 'local', command: 'sleep 20' } }).catch(() => {});
+      await new Promise(r => setTimeout(r, 300));
+      const t0 = Date.now();
+      a.child.stdin.end();
+      assert.strictEqual(await exitIn(a), 0, 'no salio al cerrar stdin');
+      assert.ok(Date.now() - t0 < 1500, `tardo ${Date.now() - t0} ms`);
+      const b = mcpClient(ROOT, { TERMILAB_USER_DATA: dir });
+      await b.request('ping', {});
+      b.child.kill('SIGTERM');
+      const code = await exitIn(b);
+      assert.ok(code === 0 || code === null, `SIGTERM: ${code}`);
+      assert.deepStrictEqual([...a.stray, ...b.stray], [], 'stdout trajo algo que no es JSON-RPC');
+    });
+
     await check('AG21 Termilab cerrado: herramientas dicen "Open Termilab first", socket borrado', async () => {
       await agent.stop();
       assert.ok(!fs.existsSync(sock), 'el socket sigue en disco');
