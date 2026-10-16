@@ -121,6 +121,44 @@ Download the file for your platform from the [latest release](https://github.com
 | Android (arm64) | `Termilab-<version>-android-arm64.apk` | Allow "install unknown apps" for your browser once. Later updates come from the app. |
 | macOS (Intel and Apple silicon) | `Termilab-<version>-universal.dmg` | Built on a Mac with `npm run dist:mac:universal`. Without signing and notarization, macOS asks for confirmation on first launch and in-app updates are not available. |
 
+## Using Termilab from AI agents
+
+Termilab can act as an MCP server, so Claude Code (or any MCP client) can reach your saved hosts **without ever seeing a credential**: the agent names a host and a command, Termilab connects with the password or key it already holds and returns the output.
+
+- Tools: `list_hosts` (name, group, tags, OS, user, hostname/port, never secrets), `run_command` (exit code, stdout, stderr; 256 KB cap per stream, default timeout 60 s), `open_shell` / `send_input` / `read_output` / `close_shell` (interactive pty, closed after 15 min idle), `read_file` / `write_file` (SFTP, 4 MB cap). The host `local` is this computer, in your login shell.
+- Termilab must be running. The MCP server talks to it over a local socket only it and you can open (`<userData>/agent.sock`, mode 0600, plus a token in `<userData>/agent-token`; a named pipe on Windows). Nothing listens on the network.
+- Host keys are never accepted on an agent's behalf: a host Termilab has not trusted yet, or whose key changed, fails until you connect to it once from Termilab.
+- Every agent action is listed in **Logs** (tool, host, command, exit code, duration; never the output). The Sessions dock shows an `agent` badge while an agent has a shell open.
+
+Register it with Claude Code (user scope, every project):
+
+```bash
+# Packages that install the termilab-mcp wrapper:
+claude mcp add --scope user termilab -- termilab-mcp
+
+# Or call the app binary directly (Linux deb/pacman paths shown):
+claude mcp add --scope user termilab -e ELECTRON_RUN_AS_NODE=1 -- /opt/Termilab/termilab /opt/Termilab/resources/app.asar/electron/agent/mcp.js
+
+# From a source checkout (with Termilab running from `npm run dev`):
+claude mcp add --scope user termilab -- node /path/to/termilab/electron/agent/mcp.js
+```
+
+Any other MCP client takes the same command as a stdio server:
+
+```json
+{
+  "mcpServers": {
+    "termilab": {
+      "command": "/opt/Termilab/termilab",
+      "args": ["/opt/Termilab/resources/app.asar/electron/agent/mcp.js"],
+      "env": { "ELECTRON_RUN_AS_NODE": "1" }
+    }
+  }
+}
+```
+
+On macOS the binary is `/Applications/Termilab.app/Contents/MacOS/Termilab` and the script `/Applications/Termilab.app/Contents/Resources/app.asar/electron/agent/mcp.js`. If Termilab runs with a non-default `--user-data-dir`, pass the same folder to the MCP server as `TERMILAB_USER_DATA`.
+
 ## Self-hosting the sync service
 
 The sync service lives in `server/`: a Node API and a Postgres database, run with Docker Compose.

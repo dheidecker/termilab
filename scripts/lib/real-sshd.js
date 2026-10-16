@@ -97,6 +97,8 @@ async function startRealSshd(opts = {}) {
     sftpServer,
     user: os.userInfo().username,
     privateKey: fs.readFileSync(userKey, 'utf-8'),
+    /* "ssh-ed25519 AAAA… comment": a known_hosts line is `[127.0.0.1]:<port> ${hostPublicKey}` */
+    hostPublicKey: fs.readFileSync(`${hostKey}.pub`, 'utf-8').trim(),
     pid: child.pid,
     stop: () => new Promise((resolve) => {
       const done = () => { fs.rmSync(dir, { recursive: true, force: true }); resolve(); };

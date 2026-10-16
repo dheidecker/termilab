@@ -841,3 +841,12 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
 - e2e-composer C3 (tecla muerta ´ por el IME en xvfb) falló en 1 de 4 corridas con este cambio
   (la primera tras arrancar xvfb) y pasó en las otras 3: parece intermitente del IME. Reintenta
   antes de buscar un bug, y si se repite compáralo con la base (`git stash`).
+
+## Agentes de IA vía MCP (rama `feat/mcp`, 2026-10-16)
+
+- Puente nuevo `window.electronAPI.agents` (`status`, `logs`, `clearLogs`, `onStatus`/`removeStatusListener`,
+  push `agent:status {shells:[{session_id, host, kind, startedAt}]}`). Omitido en Android (`agents` /
+  `agent:` en el shim y en `EXPECTED_OMITTED`).
+- Logs mezcla las filas `type:'agent'` (archivo propio de main, no `connection-logs`): sin reconectar ni
+  marcador, columna de usuario "AI agent". "Clear history" borra las dos. AgentsDock pinta el badge
+  `agent` en la cabecera mientras haya shells de agente abiertas. No se ha mirado con los ojos.

@@ -878,3 +878,37 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   selecciona el fichero. No es nuestro; la e2e acepta "una carpeta que contiene el script".
 - `TERMILAB_CHECK_ONLY=PL` (~5 s, con sshd real para PL7). Control negativo en copia: sin el bit x →
   PL5; sin la regla `host:path` → PL2; contextmenu sin captura → PL8.
+
+## API para agentes de IA / MCP (rama `feat/mcp`, 2026-10-16, arnés AG1–AG21)
+
+- `electron/agent/`: `agent-service.js` (socket + herramientas), `mcp.js` (servidor MCP stdio, **sin
+  dependencias**, sin `electron`), `paths.js`, `local-exec.js`, `agent-log.js`. Lo arranca **solo
+  `main.js`** (`whenReady`), no `ipc-handlers`: el bundle de Android también requiere ipc-handlers y no
+  debe escuchar nada. `ipc-handlers` solo registra `agent:status|logs|clear-logs` y el `broadcast`.
+- **Política en UNA función** `agentMayUse(target)` (hoy permite todo, decisión del dueño: sin
+  interruptor ni exclusiones por host por ahora). Toda herramienta con host pasa por `_target()`; AG20
+  lo mira en el fuente. Si vuelve el interruptor, va ahí.
+- Socket: `process.umask(0o177)` alrededor de `listen()` (el bind es síncrono dentro de listen) + chmod
+  después; userData se aprieta a 0700 si estaba más abierto. Un socket que **contesta** no se roba
+  (dev junto a la app instalada comparten userData): `start()` devuelve `listening:false`.
+- **Host keys: verificador propio y estricto**, no `hostKeyService.createVerifier` (ese pregunta a la
+  ventana). Solo `decide()==='accept'`; nunca escribe known hosts. AG7/AG8 comparan el almacén antes y
+  después. `algorithmsFor` sí se reutiliza.
+- Log de agentes en `<userData>/data/agent-logs.json` (0600, local), **no** en `connection-logs`: esa
+  colección sube en claro al servidor y un comando puede llevar cualquier cosa. Nunca la salida ni el
+  contenido de write_file (AG18 busca un valor que solo aparece en la salida).
+- `list_hosts` construye cada fila campo a campo (lista blanca): nunca `...host`. AG5 rechaza campos
+  desconocidos; AG19 busca contraseña, passphrase, líneas de la clave privada y el token en transcript
+  MCP, resultados, log, consola y pushes. Control negativo hecho en copia (verifier que acepta todo →
+  AG7/AG8; sin token → AG2; umask 022 → AG1; secretos en la fila → AG5/AG19; sin tope → AG9; sin
+  escape NNP → AG17).
+- "local" con NNP: `systemd-run --user --pipe --wait` (unidad `termilab-agent-*`, no `termilab-shell-*`:
+  N5 cuenta esas). AG17 lanza `scripts/lib/agent-local-driver.js` con `setpriv --no-new-privs` y exige
+  `self=1` antes de mirar el comando. node-pty 1.1 es N-API: carga en Node a pelo (AG16 usa pty real).
+- MCP dual: `initialize` (legacy, eco de la versión si es 2024-11-05…2025-11-25, si no 2025-11-25) y
+  moderno 2026-07-28 (`server/discover`, `_meta["io.modelcontextprotocol/protocolVersion"]`, `resultType`,
+  -32022 con `supported`). stdout = solo JSON-RPC; el resto a stderr.
+- Probado empaquetado: `ELECTRON_RUN_AS_NODE=1 linux-unpacked/termilab resources/app.asar/electron/agent/mcp.js`
+  funciona (`require` desde el asar). `node scripts/e2e-agent.mjs [linux-unpacked]` = Electron real bajo
+  xvfb + sshd real + MCP. Para empaquetar sin pisar `release/`: `-c.directories.output=<scratch>`.
+- `TERMILAB_CHECK_ONLY=AG` (~15 s). `real-sshd.js` devuelve ahora `hostPublicKey` (para sembrar known hosts).

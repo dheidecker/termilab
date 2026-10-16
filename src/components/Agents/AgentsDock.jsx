@@ -59,6 +59,17 @@ export default function AgentsDock({ onClose }) {
     return () => clearInterval(id);
   }, []);
 
+  /* ─── AI agent shells (termilab-mcp open_shell): main's agent-service ─── */
+  const [agentShells, setAgentShells] = useState([]);
+  useEffect(() => {
+    const api = window.electronAPI?.agents;
+    if (!api) return undefined;
+    let alive = true;
+    api.status?.().then(s => { if (alive) setAgentShells(s?.shells || []); }).catch(() => {});
+    const l = api.onStatus?.((s) => setAgentShells(s?.shells || []));
+    return () => { alive = false; api.removeStatusListener?.(l); };
+  }, []);
+
   /* ─── Background: kept sessions with no tab ─── */
   const bg = state.backgroundSessions || [];
   const hasLocalBg = bg.some(r => r.kind === 'local');
@@ -386,6 +397,15 @@ export default function AgentsDock({ onClose }) {
     >
       <div className="agents-dock-head">
         <span className="agents-dock-title">Sessions</span>
+        {agentShells.length > 0 && (
+          <span
+            className="agents-dock-agent-badge"
+            title={`AI agent shell${agentShells.length === 1 ? '' : 's'} open: ${agentShells.map(s => s.host).join(', ')}`}
+            aria-label={`${agentShells.length} AI agent shell${agentShells.length === 1 ? '' : 's'} open`}
+          >
+            agent{agentShells.length > 1 ? ` ${agentShells.length}` : ''}
+          </span>
+        )}
         {(waiting > 0 || done > 0) && (
           <span className="agents-dock-summary">
             {waiting > 0 && <span className="agents-dock-waiting">{waiting} waiting</span>}

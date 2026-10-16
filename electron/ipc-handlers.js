@@ -21,6 +21,7 @@ const backgroundSessions = require('./services/background-sessions');
 const uploadService = require('./services/upload-service');
 const claudeHistory = require('./services/claude-history');
 const openPathService = require('./services/open-path-service');
+const agentService = require('./agent/agent-service');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -412,6 +413,15 @@ function registerIpcHandlers(mainWindow) {
   ipcMain.handle('logs:clear', wrapHandler(async () => {
     return await connectionLogService.clear();
   }));
+
+  // ─── AI agents (electron/agent/): what they ran, and their open shells ───
+  agentService.broadcast = (channel, data) => windowRegistry.broadcast(channel, data);
+
+  ipcMain.handle('agent:status', wrapHandler(async () => agentService.status()));
+
+  ipcMain.handle('agent:logs', wrapHandler(async () => agentService.log.list()));
+
+  ipcMain.handle('agent:clear-logs', wrapHandler(async () => agentService.log.clear()));
 
   ipcMain.on('ssh:send-data', (event, sessionId, data) => {
     if (!mayUse(event, sessionId, 'ssh:send-data')) return;
@@ -1127,6 +1137,7 @@ function removeIpcHandlers() {
     'ssh:keeper-foreground', 'ssh:keeper-end', 'ssh:keeper-list', 'ssh:keeper-kill',
     'known-hosts:list', 'known-hosts:delete', 'known-hosts:import',
     'logs:list', 'logs:clear',
+    'agent:status', 'agent:logs', 'agent:clear-logs',
     'sftp:list', 'sftp:realpath', 'sftp:stat', 'sftp:mkdir', 'sftp:create-file',
     'sftp:rename', 'sftp:delete', 'sftp:chmod',
     'sftp:transfer-start', 'sftp:transfer-cancel',

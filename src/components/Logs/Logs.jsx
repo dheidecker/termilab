@@ -17,6 +17,10 @@ import './Logs.css';
  * A row reconnects: to the saved host if there is one (by id, else by
  * user@host:port), otherwise as a quick connect. The bookmark saves an unsaved
  * connection as a new host, without credentials.
+ *
+ * AI agent actions (termilab-mcp, electron/agent/) are listed here too, from
+ * their own local file: tool, host, command and exit code — never the output.
+ * They are not connections, so a click does nothing.
  */
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -47,7 +51,9 @@ export default function Logs() {
   const reload = useCallback(async () => {
     try {
       const list = await listConnectionLogs();
-      setItems(Array.isArray(list) ? list : []);
+      let agent = [];
+      try { agent = (await window.electronAPI?.agents?.logs?.()) || []; } catch { agent = []; }
+      setItems([...(Array.isArray(list) ? list : []), ...(Array.isArray(agent) ? agent : [])]);
       setError(null);
     } catch (err) {
       setItems([]);
@@ -68,7 +74,7 @@ export default function Logs() {
 
   /* The saved host behind an entry: same id, else same user@host:port. */
   const savedHostFor = useCallback((entry) => {
-    if (entry.type === 'local') return null;
+    if (entry.type === 'local' || entry.type === 'agent') return null;
     const byId = entry.hostId && hosts.find(h => h.id === entry.hostId);
     if (byId) return byId;
     const key = endpointKey(entry);
@@ -84,6 +90,7 @@ export default function Logs() {
   }, [items, newestFirst]);
 
   const reconnect = async (entry) => {
+    if (entry.type === 'agent') return;
     if (entry.type === 'local') { if (FEATURES.localTerminal) openLocalTerminal(); return; }
     const saved = savedHostFor(entry);
     const host = saved || parseQuickConnect(`${entry.username}@${entry.hostname}:${entry.port || 22}`);
@@ -124,13 +131,34 @@ export default function Logs() {
     if (!window.confirm(`Clear the whole connection history on this ${MACHINE}? This cannot be undone.`)) return;
     try {
       await clearConnectionLogs();
+      await window.electronAPI?.agents?.clearLogs?.().catch(() => {});
       setItems([]);
     } catch (err) {
       setError(err?.message || 'Could not clear the history');
     }
   };
 
+  const renderAgentCell = (entry) => {
+    const exit = entry.exitCode === undefined || entry.exitCode === null ? '' : ` → exit ${entry.exitCode}`;
+    const secs = entry.durationMs >= 1000 ? ` · ${(entry.durationMs / 1000).toFixed(1)} s` : '';
+    const what = entry.command ? `${entry.tool}: ${entry.command}` : entry.tool;
+    return (
+      <div className="lg-host">
+        <div className="hv-icon lg-icon hv-icon-muted"><TerminalIcon /></div>
+        <div className="hv-card-text">
+          <div className="hv-card-label">
+            {entry.host || 'local'} <span className="lg-agent-badge">agent</span>
+          </div>
+          <div className={`hv-card-sub ${entry.ok ? '' : 'lg-agent-failed'}`} title={entry.error ? `${what}\n${entry.error}` : what}>
+            {what}{entry.ok ? `${exit}${secs}` : ` → ${entry.error || 'failed'}`}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderHostCell = (entry, saved) => {
+    if (entry.type === 'agent') return renderAgentCell(entry);
     if (entry.type === 'local') {
       return (
         <div className="lg-host">
@@ -184,7 +212,7 @@ export default function Logs() {
           <div className="hv-empty">
             <div className="hv-empty-icon"><ClockIcon /></div>
             <h3>No connections yet</h3>
-            <p>Every SSH, SFTP and local terminal session you open on this {MACHINE} shows up here, with when it started and ended. Nothing you type is recorded.</p>
+            <p>Every SSH, SFTP and local terminal session you open on this {MACHINE} shows up here, with when it started and ended. Nothing you type is recorded. What AI agents run through Termilab shows up here too (the command, never its output).</p>
           </div>
         ) : (
           <table className="lg-table">
@@ -209,26 +237,32 @@ export default function Logs() {
               {rows.map(entry => {
                 const saved = savedHostFor(entry);
                 const span = formatSpan(entry.startedAt, entry.endedAt);
-                const isSaved = entry.type === 'local' || !!saved;
+                const isSaved = entry.type === 'local' || entry.type === 'agent' || !!saved;
                 return (
                   <tr
                     key={entry.id}
                     tabIndex={0}
                     onClick={() => reconnect(entry)}
                     onKeyDown={(e) => { if (e.key === 'Enter') reconnect(entry); }}
-                    title={entry.type === 'local' ? 'Open a local terminal' : `Connect to ${entry.username}@${entry.hostname}${(Number(entry.port) || 22) !== 22 ? `:${entry.port}` : ''}`}
+                    title={entry.type === 'agent' ? undefined : entry.type === 'local' ? 'Open a local terminal' : `Connect to ${entry.username}@${entry.hostname}${(Number(entry.port) || 22) !== 22 ? `:${entry.port}` : ''}`}
                   >
                     <td className="lg-col-date">
                       <div className="lg-main">{span.date}</div>
                       <div className="lg-sub" title={entry.endedAt ? undefined : 'No end time recorded'}>{span.time}</div>
                     </td>
                     <td className="lg-col-user">
-                      <div className={`lg-main ${entry.email ? '' : 'lg-muted'}`}>{entry.email || 'Not signed in'}</div>
-                      <div className="lg-sub">{entry.deviceName ? `• ${entry.deviceName}` : ''}</div>
+                      {entry.type === 'agent' ? (
+                        <div className="lg-main">AI agent</div>
+                      ) : (
+                        <>
+                          <div className={`lg-main ${entry.email ? '' : 'lg-muted'}`}>{entry.email || 'Not signed in'}</div>
+                          <div className="lg-sub">{entry.deviceName ? `• ${entry.deviceName}` : ''}</div>
+                        </>
+                      )}
                     </td>
                     <td className="lg-col-host">{renderHostCell(entry, saved)}</td>
                     <td className="lg-col-saved">
-                      {entry.type !== 'local' && (
+                      {entry.type !== 'local' && entry.type !== 'agent' && (
                         <button
                           className={`lg-bookmark ${isSaved ? 'saved' : ''}`}
                           onClick={(e) => { e.stopPropagation(); save(entry); }}

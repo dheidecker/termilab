@@ -164,3 +164,23 @@
   width: 17px;
   height: 17px;
 }
+
+/* AI agent actions (termilab-mcp) */
+.lg-agent-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  vertical-align: middle;
+  color: var(--accent);
+  background: var(--accent-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.lg-agent-failed {
+  color: var(--color-danger);
+}

@@ -342,3 +342,18 @@ body.agents-dock-resizing .app-view { pointer-events: none; }
 }
 
 .agents-dock-empty-inline { padding: 8px 8px 4px; }
+
+/* An AI agent (termilab-mcp) has an interactive shell open */
+.agents-dock-agent-badge {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: var(--accent-muted);
+  cursor: default;
+}

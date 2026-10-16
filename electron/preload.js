@@ -278,6 +278,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
     clear: () => invoke('logs:clear'),
   },
 
+  // ─── AI agents (termilab-mcp → electron/agent/agent-service.js) ───
+  agents: {
+    /* {listening, shells: [{session_id, host, kind, startedAt}]} */
+    status: () => invoke('agent:status'),
+    /* [{id, type:'agent', tool, host, command?, exitCode?, ok, error?, durationMs, startedAt, endedAt}] */
+    logs: () => invoke('agent:logs'),
+    clearLogs: () => invoke('agent:clear-logs'),
+    onStatus: (callback) => {
+      const listener = (event, payload) => callback(payload);
+      ipcRenderer.on('agent:status', listener);
+      return listener;
+    },
+    removeStatusListener: (listener) => {
+      if (listener) ipcRenderer.removeListener('agent:status', listener);
+      else ipcRenderer.removeAllListeners('agent:status');
+    },
+  },
+
   // ─── Port Forwarding (Active Tunnels) ─────────────────
   portForward: {
     /* Rule ids only: main resolves the host and its credentials itself.

@@ -26,6 +26,7 @@ const syncService = require('./services/sync-service');
 const hostKeyService = require('./services/host-key-service');
 const connectionLogService = require('./services/connection-log-service');
 const workspaceService = require('./services/workspace-service');
+const agentService = require('./agent/agent-service');
 
 // Every open window (keeps them from being garbage collected). Several since
 // multi-window; what goes to which one is electron/window-registry.js.
@@ -416,6 +417,11 @@ app.whenReady().then(async () => {
   }
   launched = true;
   setupAutoUpdater();
+  /* Local API for AI agents (termilab-mcp): a 0600 unix socket / named pipe
+     in userData, never TCP. Another Termilab already serving it (a dev run
+     next to the installed app) keeps it. */
+  agentService.start({ userDataDir: app.getPath('userData') })
+    .catch(err => console.error('[Main] Agent API not started:', err.message));
 
   // Back to the window: pick up what other devices changed meanwhile.
   app.on('browser-window-focus', () => syncService.onFocus());
@@ -480,6 +486,7 @@ app.on('before-quit', async (event) => {
     await sshService.disconnectAll();
     sftpService.closeAll();
     await portForwardService.stopAll();
+    await agentService.stop();
     await localShellService.killAll();
     syncService.stop();
     removeIpcHandlers();
