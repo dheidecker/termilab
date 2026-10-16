@@ -15,7 +15,7 @@ import ExtraKeys, { useStickyModifiers } from './mobile/ExtraKeys';
 import SessionHeader from './mobile/SessionHeader';
 import { applyModifiers, keySequence } from './mobile/keys';
 import { attachTouch, readPinchedFont, writePinchedFont, FONT_EVENT } from './mobile/touch';
-import { pasteInto, copySelection } from './clipboardPaste';
+import { pasteInto, copySelection, writeText as writeClipboardText } from './clipboardPaste';
 import { sessionStatus } from '../Mobile/sessions';
 import { liveSessionId } from '../SplitPane/sessions';
 import { registerTerminal, adoptedReady } from '../SplitPane/windowMove';
@@ -442,6 +442,31 @@ export default function TerminalView({ tab }) {
     term.parser.registerOscHandler(99, (data) => {
       const body = (data || '').split(';').slice(1).join(';');
       attention('osc', oscText(body));
+      return true;
+    });
+
+    /* OSC 52: programs that draw their own selection (Claude Code's
+       full-screen UI, tmux, vim, neovim with clipboard=unnamedplus over ssh)
+       copy by sending `ESC ] 52 ; <c|p|s…> ; <base64> BEL` to the terminal.
+       Without this the copy never reached the system clipboard. Writes only:
+       reading the clipboard back ('?') is refused — a remote program must
+       never be able to read what the user copied elsewhere. */
+    term.parser.registerOscHandler(52, (data) => {
+      const i = (data || '').indexOf(';');
+      if (i < 0) return true;
+      const targets = data.slice(0, i) || 'c';
+      const b64 = data.slice(i + 1);
+      if (b64 === '?' || b64.length > 1400000) return true;
+      let text = '';
+      try {
+        const bin = atob(b64);
+        const bytes = Uint8Array.from(bin, ch => ch.charCodeAt(0));
+        text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+      } catch (_) { return true; }
+      if (!text) return true;
+      const clipboard = /[cs0-7]/.test(targets) || !/p/.test(targets);
+      const selection = /p/.test(targets);
+      writeClipboardText(text, { clipboard, selection }).then((ok) => { if (ok && !disposed) setCopiedAt(Date.now()); }).catch(() => {});
       return true;
     });
 
