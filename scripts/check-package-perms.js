@@ -20,6 +20,10 @@ if (fs.existsSync(deb)) {
     if (mode[0] === '-' && mode[7] !== 'r') { bad++; if (bad <= 5) console.error('not world-readable:', line); }
   }
   console.log(`${path.basename(deb)}: ${list.length} entries, ${bad} not world-readable`);
+  // the MCP wrapper (build/linux/termilab-mcp): a git checkout can lose the x bit
+  if (!list.some(l => /^-rwxr-xr-x .* \.\/usr\/bin\/termilab-mcp$/.test(l))) {
+    console.error('usr/bin/termilab-mcp missing or not 0755'); bad++;
+  }
 } else {
   console.error(`missing ${deb}`);
   process.exit(2);

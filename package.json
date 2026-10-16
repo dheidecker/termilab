@@ -98,6 +98,11 @@
         }
       }
     },
+    "deb": {
+      "fpm": [
+        "build/linux/termilab-mcp=/usr/bin/termilab-mcp"
+      ]
+    },
     "pacman": {
       "depends": [
         "gtk3",
@@ -114,7 +119,8 @@
       ],
       "fpm": [
         "--description",
-        "Termilab — A modern SSH client for managing your servers"
+        "Termilab — A modern SSH client for managing your servers",
+        "build/linux/termilab-mcp=/usr/bin/termilab-mcp"
       ]
     },
     "mac": {

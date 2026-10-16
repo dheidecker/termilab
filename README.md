@@ -121,6 +121,18 @@ Download the file for your platform from the [latest release](https://github.com
 | Android (arm64) | `Termilab-<version>-android-arm64.apk` | Allow "install unknown apps" for your browser once. Later updates come from the app. |
 | macOS (Intel and Apple silicon) | `Termilab-<version>-universal.dmg` | Built on a Mac with `npm run dist:mac:universal`. Without signing and notarization, macOS asks for confirmation on first launch and in-app updates are not available. |
 
+### MCP server for AI agents
+
+The installed app doubles as a stdio MCP server (`--mcp` runs it instead of the GUI; it talks to the
+running Termilab). Register it with Claude Code:
+
+| Install | Command |
+|---|---|
+| `.deb`, `.pacman` | `claude mcp add termilab -- termilab-mcp` |
+| AppImage | `claude mcp add termilab -- /path/to/Termilab-<version>.AppImage --mcp` (rename it first to a name without a version, e.g. `Termilab.AppImage`: the updater replaces a versioned file with the new version's name and the registered path breaks; an unversioned one is updated in place) |
+| Windows | `claude mcp add termilab -- "%LOCALAPPDATA%\Programs\Termilab\Termilab.exe" --mcp` (default per-user install; use your folder if you changed it) |
+| macOS | `claude mcp add termilab -- /Applications/Termilab.app/Contents/MacOS/Termilab --mcp` |
+
 ## Self-hosting the sync service
 
 The sync service lives in `server/`: a Node API and a Postgres database, run with Docker Compose.
