@@ -175,6 +175,18 @@ Over SFTP (or the local disk for `local`). Paths are absolute or relative to the
 
 Text comes back as utf-8, other files as base64 (see `encoding`). Reads default to 256 KB (`max_bytes` up to 4 MB, `truncated: true` if cut); writes up to 4 MB and replace the whole file. To change a config: read it, edit, write it back, then verify (for example `nginx -t`).
 
+#### Destructive commands need the user's approval
+
+You may run anything, except operations that destroy a project or a database: those pause until the user clicks **Run once** in Termilab (up to 2 minutes). This applies to `run_command` and to lines typed with `send_input`, on every host including `local`, also behind `sudo`, `sh -c`, `ssh`, `docker exec`, pipes and heredocs:
+
+- Recursive deletes (`rm -r`, `find … -delete`, `find … -exec rm`) of anything that is not `/tmp`, `/var/tmp`, `node_modules`, `.cache`, `dist`, `build`, `__pycache__` or `vendor` (home, `/srv`, `/var/www`, `/opt`, `/var/lib`, a project folder, `.`, a variable).
+- `git reset --hard`, `git clean -fdx`, force push (`--force`, `-f`, `--force-with-lease`, `+ref`) to main/master or without naming the branch.
+- SQL `DROP DATABASE|SCHEMA|TABLE`, `TRUNCATE`, `DELETE FROM` without `WHERE`; `dropdb`, `mysqladmin drop`; Mongo `dropDatabase()` / `.drop()`; Redis `FLUSHALL` / `FLUSHDB`.
+- Database resets: `artisan migrate:fresh|refresh|reset`, `db:wipe`, Rails `db:drop|reset|schema:load`, `prisma migrate reset`, `prisma db push --force-reset`, Django `flush` / `reset_db`, `sequelize db:drop`, `knex migrate:rollback --all`, `typeorm schema:drop`.
+- Data volumes: `docker volume rm|prune`, `docker system prune --volumes`, `docker compose down -v`, `podman volume rm|prune`.
+
+If the user approves, exactly that command runs, that once. If the result is "Blocked: this command was classified as … and the user did not approve it", stop: do not retry it, rephrase it, split it up or reach the same result another way. Tell the user what you wanted to do and why, and let them decide.
+
 #### Errors and what to do
 
 - "Termilab is not running": ask the user to open Termilab, then retry.
@@ -182,6 +194,7 @@ Text comes back as utf-8, other files as base64 (see `encoding`). Reads default 
 - "No host named ...": call `list_hosts` and use an exact name or id.
 - "matches N hosts": use the `id` instead of the name.
 - Authentication failed: the credentials saved in Termilab are wrong; ask the user to fix the host in Termilab.
+- "Blocked: …": the user did not approve a destructive command (see above). Do not retry or work around it; ask the user.
 
 Every call is recorded in Termilab's Logs (tool, host, command, exit code, duration; never the output or file contents).
 
@@ -208,6 +221,27 @@ The directory change and the `RELEASE` variable from step 4 are still in effect 
 ### Permissions
 
 On every host the agent has exactly the permissions of that host's saved user: if the user is root, or can use sudo, so can the agent. It never sees the password or the key. The host `local` is this computer, running as you, in your login shell; the same rules apply, including that it can only be used while Termilab is open.
+
+## Destructive commands need your approval
+
+Agents can run anything through Termilab without asking, **except** operations that destroy a project or a database. Those pause, and Termilab shows a dialog in the focused window (it comes to the front, with a desktop notification, if you were elsewhere):
+
+> *Claude Code wants to run a destructive command on produccion*: the category, the reason, and the exact command in full.
+
+**Block** has the focus (Escape blocks too); **Run once** lets exactly that command run, that one time, and nothing is remembered. With no answer in 2 minutes, or no Termilab window to ask in, it is blocked. A blocked call returns to the agent as `Blocked: this command was classified as <category> and the user did not approve it. Do not retry or work around it; ask the user.` Both outcomes are recorded in Logs (`run_command (approved)` / `run_command (blocked)`, with the category). The rule is always on; there is no setting.
+
+It applies to `run_command` and to every line typed with `send_input` (keystrokes are collected until Enter, so a command typed in pieces is judged whole; a blocked line is cleared from the remote prompt), on every host including `local`. Termilab reads the command the way a shell does, so it also catches it behind `sudo`/`env`/`nice`/`timeout`, inside `sh -c '…'`, `bash -lc "…"`, `eval`, `su -c`, `ssh other-host '…'`, `docker exec` / `kubectl exec`, `xargs`, after `;` `&&` `||` `|` or a newline, in `( … )` and `$( … )`, and SQL that reaches a database client through `-e`/`-c`/`--eval`/`--query`, a pipe, a heredoc or a here-string.
+
+| Category | What counts |
+|---|---|
+| Project files or git history | `rm -r` / `-rf` / `--recursive`, `rimraf`, `find … -delete`, `find … -exec rm` on anything that is not under `/tmp`, `/var/tmp`, `node_modules`, `.cache`, `dist`, `build`, `__pycache__`, `vendor` (or `.next`, `.turbo`, `coverage` and similar caches): `/`, `~`, `$HOME`, `/home/*`, `/root`, `/var/www`, `/srv`, `/opt`, `/var/lib`, `.`, a project folder, a path built from a variable or a glob. `git reset --hard`; `git clean -f` with `-x`/`-X`; `git push --force` / `-f` / `--force-with-lease` / `+ref` to main or master, or without naming the branch; deleting main/master on the remote. |
+| Database drop or wipe | SQL `DROP DATABASE`, `DROP SCHEMA`, `DROP TABLE`, `TRUNCATE`, `DELETE FROM` without `WHERE` (or with `WHERE 1=1`); `dropdb`; `mysqladmin … drop`; Mongo `dropDatabase()`, `.drop()`, `deleteMany({})`; Redis `FLUSHALL`, `FLUSHDB`. |
+| Database reset | Laravel `artisan migrate:fresh`, `migrate:refresh`, `migrate:reset`, `db:wipe`; Rails `db:drop`, `db:reset`, `db:schema:load` (`rails`, `rake`, `bin/rails`); `prisma migrate reset`, `prisma db push --force-reset`; Django `flush`, `reset_db`; `sequelize db:drop`; `knex migrate:rollback --all`; `typeorm schema:drop`. |
+| Data volume removal | `docker volume rm` / `prune`, `docker system prune --volumes`, `docker compose down -v` / `--volumes`, `docker-compose down -v`, `podman volume rm` / `prune`. |
+
+Read-only lookalikes pass without a prompt: `grep -i drop`, `cat migration.sql`, `echo "drop table"`, SQL written into a file with a heredoc, `docker volume ls`, `git reset --soft`, `DELETE FROM t WHERE id=1`, `rm -rf node_modules`.
+
+What it cannot see: a script the agent wrote and then runs (`bash cleanup.sh`, `psql -f drop.sql`, `mysql < drop.sql`), a command assembled at run time (decoded from base64, read from a variable), shell aliases and functions, a program that deletes by itself (a Python one-liner), and line editing with the cursor keys in an interactive shell. It is a safety net against an agent's mistakes, not a sandbox.
 
 ## Command line reference
 
@@ -287,7 +321,7 @@ Every call, from MCP or from the command line, is recorded in Termilab under **L
 ## Current limitations
 
 - **Windows and macOS are untested.** The `--cli` entry point and the named-pipe transport on Windows are implemented but have not been run on those systems yet. Linux (deb, pacman, AppImage) is tested.
-- **No per-host policy yet.** Any host saved in Termilab, plus `local`, can be used by any agent or script running as your user while Termilab is open. There is no switch to turn the API off and no way to exclude a host. Only register Termilab with agents you trust with all of those hosts.
+- **No per-host policy yet.** Any host saved in Termilab, plus `local`, can be used by any agent or script running as your user while Termilab is open. There is no switch to turn the API off and no way to exclude a host. Only register Termilab with agents you trust with all of those hosts. The only stop is the approval of destructive commands (above).
 - **Long-running commands are not cancelled** when the caller goes away: if an MCP client or `termilab-cli` is killed during a `run_command`, the command keeps running on the server until it finishes or reaches its timeout.
 - **No streaming.** `run` prints the output when the command finishes; for live output use an interactive shell through MCP.
 - **Host keys are trusted only from Termilab**, by design. A new server needs one manual connection before agents can use it.

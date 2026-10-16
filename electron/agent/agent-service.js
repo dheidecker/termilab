@@ -33,6 +33,8 @@ const { decide } = require('../services/known-hosts');
 const { agentPaths } = require('./paths');
 const { AgentLog } = require('./agent-log');
 const localExec = require('./local-exec');
+const destructive = require('./destructive');
+const approvals = require('./approval');
 
 const LIMITS = {
   output: 256 * 1024,          // run_command, each of stdout / stderr
@@ -52,11 +54,52 @@ const IDLE_MS = 15 * 60 * 1000;
 const LOCAL_ID = 'local';
 
 /**
- * The one place that decides whether an agent may use a host. Allow-all for
- * now (owner's call); a master switch or per-host opt-out goes here.
+ * The one place that decides what an agent may do (owner's rule, option B):
+ * any host, any command, EXCEPT destructive operations on projects and
+ * databases (electron/agent/destructive.js), which need the user's explicit
+ * approval in Termilab: { ok: true, confirm: {category, label, reason, match} }.
+ * Always on, no setting. A master switch or per-host opt-out goes here too.
+ *
+ *   agentMayUse(target)                              may the agent use this host?
+ *   agentMayUse(target, { tool, command, typed })    and run this? (typed: a
+ *     send_input line, which may be going to a database prompt)
  */
-// eslint-disable-next-line no-unused-vars
-function agentMayUse(_target) { return { ok: true }; }
+function agentMayUse(target, action = null) {
+  if (!action || typeof action.command !== 'string') return { ok: true };
+  const hostName = target && target.name;
+  const d = destructive.classify(action.command, { host: hostName })
+    || (action.typed ? destructive.classifyDbText(action.command) : null);
+  return d ? { ok: true, confirm: d } : { ok: true };
+}
+
+/* What a run of keystrokes leaves on the line: complete lines (Enter) and the unfinished rest */
+const TYPED_MAX = 256 * 1024;
+function typedLines(partial, data) {
+  let cur = partial;
+  const lines = [];
+  let reset = false;
+  for (let i = 0; i < data.length; i++) {
+    const c = data[i];
+    if (c === '\r' || c === '\n') {
+      lines.push(cur);
+      cur = '';
+      if (c === '\r' && data[i + 1] === '\n') i++;
+      continue;
+    }
+    if (c === '\x03' || c === '\x15') { cur = ''; if (c === '\x03') reset = true; continue; }   // Ctrl-C, Ctrl-U
+    if (c === '\x7f' || c === '\b') { cur = cur.slice(0, -1); continue; }
+    if (c === '\x1b') {
+      const m = data.slice(i).match(/^\x1b(\[[0-9;?]*[ -/]*[@-~]|O.|.)?/);
+      i += (m ? m[0].length : 1) - 1;
+      continue;
+    }
+    if (c === '\t') { cur += ' '; continue; }
+    if (c < ' ') continue;
+    cur += c;
+  }
+  if (cur.length > TYPED_MAX) cur = cur.slice(-TYPED_MAX);
+  return { lines, rest: cur, reset };
+}
 
 class AgentError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -97,6 +140,7 @@ class AgentService {
     /** session_id -> shell entry */
     this.shells = new Map();
     this.broadcast = null;      // (channel, data) => void, set by ipc-handlers
+    this.approver = approvals;  // ask({client, host, tool, command, category, ...}) -> {approved, reason}
     this.idleMs = IDLE_MS;
     this.limits = { ...LIMITS };
     this._sweep = null;
@@ -183,6 +227,8 @@ class AgentService {
   async stop() {
     clearInterval(this._sweep);
     this._sweep = null;
+    /* A destructive command still waiting for the user is blocked, not left hanging for 2 minutes */
+    try { if (this.approver && typeof this.approver.rejectAll === 'function') this.approver.rejectAll(); } catch (_) { /* ignore */ }
     for (const id of [...this.shells.keys()]) this._closeShell(id, 'quit');
     for (const c of this._conns) { try { c.destroy(); } catch (_) { /* gone */ } }
     this._conns.clear();
@@ -238,7 +284,9 @@ class AgentService {
       return;
     }
     try {
-      const result = await this.call(req.method, req.params || {});
+      /* `client` (the MCP client's name) only labels the approval prompt; it grants nothing */
+      const ctx = { client: typeof req.client === 'string' ? req.client.slice(0, 80) : null };
+      const result = await this.call(req.method, req.params || {}, ctx);
       reply({ result });
     } catch (err) {
       reply({ error: { code: err.code || 'error', message: err.message || String(err) } });
@@ -248,14 +296,14 @@ class AgentService {
   // ─── Dispatch ───────────────────────────────────────────
 
   /** Same entry the socket uses; the harness calls it directly too. */
-  async call(method, params) {
+  async call(method, params, ctx = {}) {
     if (!params || typeof params !== 'object') params = {};
     switch (method) {
       case 'hello': return { app: 'termilab', pid: process.pid, platform: process.platform };
       case 'list_hosts': return this.listHosts();
-      case 'run_command': return this.runCommand(params);
+      case 'run_command': return this.runCommand(params, ctx);
       case 'open_shell': return this.openShell(params);
-      case 'send_input': return this.sendInput(params);
+      case 'send_input': return this.sendInput(params, ctx);
       case 'read_output': return this.readOutput(params);
       case 'close_shell': return this.closeShellTool(params);
       case 'read_file': return this.readFile(params);
@@ -351,6 +399,37 @@ class AgentService {
     const policy = agentMayUse(t);
     if (!policy.ok) fail(policy.message || `Agents may not use "${t.name}".`, 'refused');
     return t;
+  }
+
+  /**
+   * The command half of agentMayUse: a destructive command waits here for the
+   * user's Run once / Block (approval.js). Approved -> returns and the caller
+   * runs exactly that, once. Anything else -> throws 'blocked'. Both outcomes
+   * go to the agent log as "<tool> (approved|blocked)" with the category.
+   */
+  async _authorize(t, tool, command, ctx = {}, { typed = false, cwd = null } = {}) {
+    const policy = agentMayUse(t, { tool, command, typed });
+    if (!policy.ok) fail(policy.message || `Agents may not do that on "${t.name}".`, 'refused');
+    if (!policy.confirm) return null;
+    const d = policy.confirm;
+    const t0 = Date.now();
+    let answer;
+    try {
+      answer = await this.approver.ask({
+        client: ctx && ctx.client, host: t.name, tool, command, cwd: cwd || null,
+        category: d.category, label: d.label, reason: d.reason,
+      });
+    } catch (err) {
+      answer = { approved: false, reason: 'error' };
+    }
+    const entry = { ...this._logInfo(t), command, category: d.category, durationMs: Date.now() - t0, startedAt: new Date(t0).toISOString() };
+    if (answer && answer.approved === true) {
+      await this.log.add({ tool: `${tool} (approved)`, ...entry, ok: true });
+      return d;
+    }
+    const why = { timeout: 'no answer within 2 minutes', 'no-window': 'no Termilab window could ask the user' }[answer && answer.reason] || 'the user blocked it';
+    await this.log.add({ tool: `${tool} (blocked)`, ...entry, ok: false, error: `${d.label}: ${why}` });
+    return fail(`Blocked: this command was classified as ${d.label} and the user did not approve it. Do not retry or work around it; ask the user.`, 'blocked');
   }
 
   /* The connection config, credentials included. Stays in this process. */
@@ -532,7 +611,7 @@ class AgentService {
 
   // ─── Tools ──────────────────────────────────────────────
 
-  async runCommand(p) {
+  async runCommand(p, ctx = {}) {
     if (typeof p.command !== 'string' || !p.command.trim()) fail('Missing "command".', 'invalid');
     if (p.command.length > this.limits.command) fail(`"command" is longer than ${this.limits.command} characters.`, 'invalid');
     if (p.cwd !== undefined && p.cwd !== null && typeof p.cwd !== 'string') fail('"cwd" must be a string.', 'invalid');
@@ -540,6 +619,7 @@ class AgentService {
     if (!Number.isFinite(secs) || secs <= 0) fail('"timeout_s" must be a positive number of seconds.', 'invalid');
     secs = Math.min(secs, this.limits.timeoutMaxS);
     const t = await this._target(p.host);
+    await this._authorize(t, 'run_command', p.command, ctx, { cwd: p.cwd });
     const t0 = Date.now();
     return this._logged('run_command', t, (r) => ({ command: p.command, exitCode: r ? r.exit_code : undefined }), async () => {
       let r;
@@ -622,15 +702,69 @@ class AgentService {
     return entry;
   }
 
-  async sendInput(p) {
+  async sendInput(p, ctx = {}) {
     const entry = this._shell(p.session_id);
     if (typeof p.data !== 'string') fail('"data" must be a string (use "\\r" for Enter).', 'invalid');
     if (p.data.length > this.limits.input) fail(`"data" is longer than ${this.limits.input} characters.`, 'invalid');
     if (entry.closed) fail('That shell has exited. Read its last output with read_output, or open a new one.', 'closed');
-    if (entry.pty) entry.pty.write(p.data);
-    else entry.stream.write(p.data);
-    await this.log.add({ tool: 'send_input', ...this._logInfo(entry.target), command: p.data, ok: true, durationMs: 0 });
-    return { ok: true, bytes: Buffer.byteLength(p.data) };
+    /* One at a time per shell: lines are judged in the order they are typed */
+    const run = (entry.inputChain || Promise.resolve()).then(() => this._typeInto(entry, p.data, ctx));
+    entry.inputChain = run.catch(() => {});
+    return run;
+  }
+
+  /**
+   * send_input, judged line by line: keystrokes without Enter wait in
+   * entry.typed (so "rm -rf /sr" + "v\n" is seen whole), and a line that opens
+   * a quote or heredoc waits in entry.block until it closes, and lines that
+   * may be one SQL statement in a database prompt wait in entry.sqlBuf until
+   * one ends with ";" ("DELETE FROM t WHERE" + "true;"). Nothing is written
+   * before the verdict; blocked -> nothing is written, and whatever was typed
+   * earlier on the remote side (a half line, an open heredoc, a statement in
+   * psql's buffer) is cancelled with Ctrl-C.
+   */
+  async _typeInto(entry, data, ctx) {
+    if (entry.closed) fail('That shell has exited. Read its last output with read_output, or open a new one.', 'closed');
+    const hadTyped = !!(entry.typed || entry.block || entry.sqlBuf);
+    const { lines, rest, reset } = typedLines(entry.typed || '', data);
+    let block = reset ? '' : (entry.block || '');
+    let sqlBuf = reset ? '' : (entry.sqlBuf || '');
+    let flagged = null;
+    const judge = (text) => !!agentMayUse(entry.target, { tool: 'send_input', command: text, typed: true }).confirm;
+    for (const line of lines) {
+      block = block ? `${block}\n${line}` : line;
+      if (destructive.isIncomplete(block) && block.length < TYPED_MAX) continue;
+      if (flagged === null && judge(block)) flagged = block;
+      if (/;\s*$/.test(block)) {
+        if (flagged === null && sqlBuf && judge(`${sqlBuf}\n${block}`)) flagged = `${sqlBuf}\n${block}`;
+        sqlBuf = '';
+      } else if (block.trim()) {
+        sqlBuf = (sqlBuf ? `${sqlBuf}\n${block}` : block).slice(-TYPED_MAX);
+      }
+      block = '';
+    }
+    if (flagged !== null) {
+      try {
+        await this._authorize(entry.target, 'send_input', flagged, ctx, { typed: true });
+      } catch (err) {
+        entry.typed = '';
+        entry.block = '';
+        entry.sqlBuf = '';
+        if (hadTyped && !entry.closed) {
+          try { if (entry.pty) entry.pty.write('\x03'); else entry.stream.write('\x03'); } catch (_) { /* gone */ }
+        }
+        throw err;
+      }
+      if (entry.closed) fail('That shell has exited. Read its last output with read_output, or open a new one.', 'closed');
+      sqlBuf = '';
+    }
+    entry.typed = rest;
+    entry.block = block;
+    entry.sqlBuf = sqlBuf;
+    if (entry.pty) entry.pty.write(data);
+    else entry.stream.write(data);
+    await this.log.add({ tool: 'send_input', ...this._logInfo(entry.target), command: data, ok: true, durationMs: 0 });
+    return { ok: true, bytes: Buffer.byteLength(data) };
   }
 
   async readOutput(p) {
@@ -787,4 +921,5 @@ class AgentService {
 module.exports = new AgentService();
 module.exports.AgentService = AgentService;
 module.exports.agentMayUse = agentMayUse;
+module.exports.typedLines = typedLines;
 module.exports.LIMITS = LIMITS;

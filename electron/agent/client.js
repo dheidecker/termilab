@@ -19,7 +19,7 @@ let seq = 0;
 /** Sockets to Termilab still open: closeAll() drops them (stdin ended, signal). */
 const openSockets = new Set();
 
-function callTermilab(method, params, { timeoutMs = 120000 } = {}) {
+function callTermilab(method, params, { timeoutMs = 120000, client = null } = {}) {
   const p = agentPaths(findUserDataDir());
   let token;
   try {
@@ -43,7 +43,8 @@ function callTermilab(method, params, { timeoutMs = 120000 } = {}) {
     };
     const timer = setTimeout(() => done(codedError('timeout', 'Termilab did not answer in time.')), timeoutMs);
     sock.setEncoding('utf-8');
-    sock.on('connect', () => sock.write(`${JSON.stringify({ id, token, method, params })}\n`));
+    /* client: who is asking (MCP clientInfo name, "termilab-cli"), shown when the user must approve */
+    sock.on('connect', () => sock.write(`${JSON.stringify({ id, token, method, params, ...(client ? { client } : {}) })}\n`));
     sock.on('data', (d) => {
       buf += d;
       const nl = buf.indexOf('\n');
@@ -61,10 +62,13 @@ function callTermilab(method, params, { timeoutMs = 120000 } = {}) {
   });
 }
 
+/* A destructive command waits up to this long for the user's Run once / Block in Termilab */
+const APPROVAL_WAIT_MS = 120000;
+
 /* How long to wait for run_command: Termilab enforces the command timeout itself. */
 function runTimeoutMs(timeoutS) {
   const secs = Number(timeoutS) > 0 ? Math.min(Number(timeoutS), 3600) : 60;
-  return (secs + 60) * 1000;
+  return (secs + 60) * 1000 + APPROVAL_WAIT_MS;
 }
 
 function closeAll() {
@@ -72,4 +76,4 @@ function closeAll() {
   openSockets.clear();
 }
 
-module.exports = { callTermilab, runTimeoutMs, closeAll, NOT_RUNNING };
+module.exports = { callTermilab, runTimeoutMs, closeAll, NOT_RUNNING, APPROVAL_WAIT_MS };

@@ -22,6 +22,7 @@ const uploadService = require('./services/upload-service');
 const claudeHistory = require('./services/claude-history');
 const openPathService = require('./services/open-path-service');
 const agentService = require('./agent/agent-service');
+const agentApprovals = require('./agent/approval');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -164,6 +165,8 @@ function attachWindow(win) {
     broadcastAgents();
     // A prompt nobody can answer any more is a rejection, not a 2-minute hang.
     hostKeyService.rejectFor(wc);
+    // Same for an agent's destructive command waiting on this window: another window, or Block.
+    agentApprovals.rejectFor(wc);
     const edits = editOwnersByWindow.get(wc) || new Set();
     const transfers = transfersByWindow.get(wc) || new Set();
     editOwnersByWindow.delete(wc);
@@ -193,6 +196,36 @@ function setBadge() {
   try { if (app && typeof app.setBadgeCount === 'function') app.setBadgeCount(total); } catch (_) { /* unsupported */ }
   return total;
 }
+/* An agent's destructive command is waiting for the user: if the window that
+   asks is not in front, bring it there and post a desktop notification. */
+function presentApproval(entry, payload) {
+  const win = entry && entry.win;
+  if (!win) return;
+  let focused = false;
+  try { focused = !win.isDestroyed() && typeof win.isFocused === 'function' && win.isFocused(); } catch (_) { /* gone */ }
+  if (focused) return;
+  try {
+    if (typeof win.isMinimized === 'function' && win.isMinimized()) win.restore();
+    if (typeof win.show === 'function') win.show();
+    if (typeof win.focus === 'function') win.focus();
+    if (app && typeof app.focus === 'function') app.focus({ steal: true });
+    if (process.platform !== 'darwin' && typeof win.flashFrame === 'function') win.flashFrame(true);
+    else if (app && app.dock && typeof app.dock.bounce === 'function') app.dock.bounce('critical');
+  } catch (_) { /* not supported here */ }
+  try {
+    const { Notification } = require('electron');
+    if (Notification && typeof Notification.isSupported === 'function' && Notification.isSupported()) {
+      const n = new Notification({
+        title: 'Termilab: approval needed',
+        body: `${payload.client || 'An AI agent'} wants to run a destructive command on ${payload.host}.`,
+        urgency: 'critical',
+      });
+      n.on('click', () => { try { if (!win.isDestroyed()) { win.show(); win.focus(); } } catch (_) { /* gone */ } });
+      n.show();
+    }
+  } catch (_) { /* no notifications here */ }
+}
+
 function stopFlash(win) {
   if (process.platform === 'darwin') return;
   try { if (win && !win.isDestroyed() && typeof win.flashFrame === 'function') win.flashFrame(false); } catch (_) { /* gone */ }
@@ -314,6 +347,8 @@ function registerIpcHandlers(mainWindow) {
   portForwardService.setMainWindow(windowRegistry.broadcastSink);
   syncService.setMainWindow(windowRegistry.broadcastSink);
   hostKeyService.setRouter(windowRegistry);
+  agentApprovals.setRouter(windowRegistry);
+  agentApprovals.present = presentApproval;
   if (mainWindow) attachWindow(mainWindow);
   syncService.start();
 
@@ -422,6 +457,14 @@ function registerIpcHandlers(mainWindow) {
   ipcMain.handle('agent:logs', wrapHandler(async () => agentService.log.list()));
 
   ipcMain.handle('agent:clear-logs', wrapHandler(async () => agentService.log.clear()));
+
+  // Answer to an 'agent:approval-prompt' push (a destructive command). Only the
+  // window that shows the prompt can answer it; anything but approve === true blocks.
+  ipcMain.handle('agent:approval-response', wrapHandler(async (event, payload) => {
+    const { requestId, approve } = payload || {};
+    if (typeof requestId !== 'string') throw new Error('Missing requestId');
+    return agentApprovals.respond(requestId, approve === true, event && event.sender);
+  }));
 
   ipcMain.on('ssh:send-data', (event, sessionId, data) => {
     if (!mayUse(event, sessionId, 'ssh:send-data')) return;
@@ -1137,7 +1180,7 @@ function removeIpcHandlers() {
     'ssh:keeper-foreground', 'ssh:keeper-end', 'ssh:keeper-list', 'ssh:keeper-kill',
     'known-hosts:list', 'known-hosts:delete', 'known-hosts:import',
     'logs:list', 'logs:clear',
-    'agent:status', 'agent:logs', 'agent:clear-logs',
+    'agent:status', 'agent:logs', 'agent:clear-logs', 'agent:approval-response',
     'sftp:list', 'sftp:realpath', 'sftp:stat', 'sftp:mkdir', 'sftp:create-file',
     'sftp:rename', 'sftp:delete', 'sftp:chmod',
     'sftp:transfer-start', 'sftp:transfer-cancel',

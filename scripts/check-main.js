@@ -51,6 +51,10 @@
  *     MCP por stdio (electron/agent/mcp.js), run_command contra sshd real,
  *     host keys nunca aceptadas, topes, shells, "local" sin NNP, ningun secreto.
  *     Solo esta seccion: TERMILAB_CHECK_ONLY=AG.
+ *  15. COMANDOS DESTRUCTIVOS de agentes (DX*, scripts/lib/check-destructive.js):
+ *     tabla de electron/agent/destructive.js, aprobacion Run once / Block con
+ *     un renderer falso, run_command / send_input de verdad en "local".
+ *     Solo esta seccion: TERMILAB_CHECK_ONLY=DX.
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -1442,6 +1446,14 @@ async function main() {
     process.exit(failures ? 1 : 0);
   }
 
+  // TERMILAB_CHECK_ONLY=DX: solo el grafo + comandos destructivos de agentes (aprobacion)
+  if (process.env.TERMILAB_CHECK_ONLY === 'DX') {
+    await require('./lib/check-destructive').seccionDestructive({ check, ROOT });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo DX)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // TERMILAB_CHECK_ONLY=KP: solo el grafo + la seccion KP (iterar sobre el keeper)
   if (process.env.TERMILAB_CHECK_ONLY === 'KP') {
     await require('./lib/check-keeper').seccionKeeper({ check, ROOT, handlers });
@@ -1478,6 +1490,8 @@ async function main() {
   await require('./lib/check-claude-history').seccionClaudeHistory({ check, ROOT, handlers });
   // ── AG. Agentes de IA: socket local + MCP por stdio, sshd real, sin secretos ──
   await require('./lib/check-agent').seccionAgent({ check, ROOT });
+  // ── DX. Comandos destructivos de agentes: clasificador + Run once / Block ──
+  await require('./lib/check-destructive').seccionDestructive({ check, ROOT });
 
   // ── R/A. Restaurar el espacio de trabajo; reconexion automatica ──
   await require('./lib/check-workspace').seccionWorkspace({ check, ROOT });

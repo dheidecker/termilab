@@ -4,7 +4,10 @@
  *   <userData>/data/agent-logs.json   (0600, this computer only, never synced)
  *
  * Entry: { id, type: 'agent', tool, host, hostId, hostname?, port?, username?,
- *          command?, exitCode?, ok, error?, durationMs, startedAt, endedAt }
+ *          command?, exitCode?, category?, ok, error?, durationMs, startedAt, endedAt }
+ *
+ * A destructive command adds one more entry with the user's decision:
+ * tool "run_command (approved)" / "send_input (blocked)", plus `category`.
  *
  * Never the output, never file contents. A deliberate separate file, not the
  * `connection-logs` collection: that one syncs as plaintext to the server,
@@ -73,6 +76,8 @@ class AgentLog {
       entry.command = c.length > MAX_COMMAND ? `${c.slice(0, MAX_COMMAND)}…` : c;
     }
     if (info.exitCode !== undefined) entry.exitCode = info.exitCode;
+    /* destructive.js category of a command that needed the user's approval */
+    if (info.category) entry.category = String(info.category).slice(0, 40);
     if (info.error) entry.error = String(info.error).slice(0, 300);
     return this._serial(async () => {
       const list = await this._read();

@@ -1,0 +1,63 @@
+/* AgentApproval.css — an AI agent's destructive command waiting for the user.
+   Reuses the host key dialog's shell (.hkp-*); above it (6000): it can open
+   while a host key prompt is up. */
+
+.aap-overlay {
+  z-index: 6100;
+}
+
+.aap-modal {
+  width: 640px;
+}
+
+.aap-host {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.aap-command-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.aap-command-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.aap-cwd code {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.aap-command {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: 38vh;
+  overflow: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.aap-command:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.aap-foot {
+  min-height: 1em;
+}

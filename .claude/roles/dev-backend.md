@@ -937,3 +937,33 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
 - Controles negativos hechos en copia (necesita `electron scripts docs src server/api package.json` +
   symlink de `node_modules`, o el arnés revienta antes de AG): código de salida fijo → AG24/AG25; sin
   descripción → AG31; doc desviada → AG32.
+
+## Comandos destructivos de agentes: aprobación del usuario (opción B, 2026-10-16, arnés DX1–DX11)
+
+- **Regla del dueño:** un agente puede correr todo, MENOS lo destructivo para proyectos y bases de datos,
+  que espera "Run once" del usuario. Siempre activa, sin ajuste. `electron/agent/destructive.js` es puro
+  (`classify(cmd)`, `classifyDbText(text)`, `isIncomplete(src)`): un lexer de shell propio (comillas,
+  `$( )`, backticks, heredocs, `<<<`, grupos) + desenvuelve sudo/env/nice/timeout/npx/xargs, `sh -c`,
+  `ssh host '…'`, `eval`, `su -c`, `docker/kubectl exec`. Tabla en `scripts/lib/destructive-cases.js`
+  (164 positivos / 92 negativos): **añade el caso a la tabla antes de tocar una regla**.
+- Política en `agentMayUse(target, {tool, command, typed})`; `_target()` sigue llamándola SIN acción
+  (AG20 mira ese texto literal). El comando pasa por `_authorize()` justo después de `_target()` en
+  `runCommand`, y por `_typeInto()` en `send_input`. Bloqueado → `AgentError('blocked')` con el texto
+  exacto que pide el dueño; log `"<tool> (approved|blocked)"` + `category` (agent-log.js lo copia).
+- `approval.js` (broker, sin electron): ventana enfocada (si no, la primera), timeout 120 s, solo
+  responde la ventana que pregunta (`event.sender`), `rejectFor(wc)` al cerrar pasa el aviso a otra,
+  `agentService.stop()` → `rejectAll()` (si no, salir de la app espera 2 min por el timer sin unref).
+  Traer al frente + `Notification` van en `presentApproval` de ipc-handlers.
+- **Timeouts del cliente:** `runTimeoutMs` y el de `send_input` en mcp.js suman `APPROVAL_WAIT_MS`
+  (client.js). Sin eso el MCP corta a los 120 s mientras el usuario aún lee el diálogo.
+- `send_input`: teclas sin Enter esperan en `entry.typed`; heredoc/comilla abierta en `entry.block`;
+  líneas sin `;` en `entry.sqlBuf` (`DELETE FROM t WHERE` + `true;` en psql). Al bloquear se manda
+  **Ctrl-C**, no Ctrl-U: lo ya tecleado (media línea, heredoc abierto, sentencia en el búfer de psql) se
+  completaría con el siguiente envío inofensivo. Controles negativos hechos en copia: política
+  allow-all → DX8–10 rojos; sin Ctrl-C → DX10; sin sqlBuf → DX10.
+- **Esta máquina tiene `/usr/bin/dropdb` de verdad.** `scripts/e2e-approval.mjs` pone un `dropdb` falso
+  delante en el PATH de la sesión con `ForceCommand` de real-sshd; nunca pruebes "Run once" con un
+  binario real. e2e: `npm run build && node scripts/e2e-approval.mjs <dir-capturas>`.
+- Huecos conocidos (documentados en docs/agents.md): scripts escritos y luego ejecutados (`bash x.sh`,
+  `psql -f`, `mysql < f`), comandos armados en ejecución (base64, variables), alias/funciones,
+  programas que borran solos, edición de línea con flechas en una shell interactiva.
