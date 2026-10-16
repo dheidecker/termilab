@@ -50,6 +50,9 @@ device through a small service you deploy yourself (`server/`).
 - Local terminal tabs next to SSH sessions.
 - Several windows: detach a tab into its own window, move tabs between windows (drag or menu), Ctrl+Shift+N for a new window. Moving a tab keeps the same session and its scrollback.
 - Typing is sent straight to the terminal, independent of the system input method; on Linux Termilab uses GTK's simple input method instead of IBus, so dead-key accents work and keys are never swallowed.
+- Copy and paste through the system clipboard, reliable even when the window is not focused: Ctrl+Shift+C/V, Ctrl/Shift+Insert, copy on select, right-click, and on Linux middle-click pastes the primary selection. Programs that draw their own selection (Claude Code, tmux, vim) copy through OSC 52; requests to read the clipboard are refused.
+- Pasting several lines into a program that would run them one by one asks first; large pastes arrive complete.
+- Ctrl+click a file path printed in the terminal (`src/app.js:42`, compiler errors, `git status`) to open it in your editor, at the line in VS Code. Remote files are downloaded and uploaded again on save. Right-click a path to open its folder in SFTP or copy it. Nothing is ever executed.
 
 ### Sessions that survive
 
@@ -62,10 +65,15 @@ device through a small service you deploy yourself (`server/`).
 
 ### AI coding agents
 
+- Attach images for the agent: drop an image on a terminal or paste a screenshot, and Termilab types its path. In an SSH terminal the image is uploaded first to `~/.termilab/uploads/` on that server; uploads are removed after three days.
+- Compose box (Ctrl+Shift+E): a text box under the terminal for long messages, with normal editing, accents and images. Enter sends it to the agent as one message and the box stays open; Shift+Enter is a new line. It shows Claude Code's suggested reply (Tab accepts it) and the options of a question Claude is asking, answerable with a click or Alt+number.
+- Shift+Enter in the terminal inserts a new line in Claude Code and other agent prompts instead of sending.
+- Quick-answer buttons when an agent asks for permission (Yes, Yes always, No, Cancel), larger on Android. Clicking the desktop notification jumps to that terminal.
+- Conversations: the Sessions panel lists the Claude Code conversations on the focused host or this computer, with the first message and the project; one click resumes it with `claude --resume`. Nothing is stored or synced.
 - Detects Claude Code, Codex, Gemini CLI, opencode and Aider in any terminal and shows whether each is working, waiting for you, or done, on its tab and pane.
 - A soft chime when an agent finishes and a different one when it needs your input (a permission or yes/no prompt), with desktop notifications when Termilab is in the background.
 - Visual alerts: the pane's border pulses and keeps a thin ring until you look at it, the tab shows a done or waiting badge, and the taskbar icon flashes with the number of unseen terminals.
-- Sessions panel: a dock next to the sidebar listing every open session across all windows, with agent state, alias and host. Click to jump to a session; right-click to rename, recolour, mute or close it.
+- Sessions panel: a dock next to the sidebar listing every open session across all windows, with agent state, alias and host. Click to jump to a session; right-click to rename, recolour, mute or close it. Sessions kept running in the background stay listed under Background, across restarts, until you end them.
 - Sound, notifications and visual alerts can each be turned off in Settings, and any terminal can be muted on its own.
 
 ### SFTP
