@@ -13,6 +13,9 @@
  *  - ningun secreto (contrasena, passphrase, clave privada) en ningun
  *    resultado, log, consola ni push a ventanas
  *
+ *  - termilab-cli (AG23-AG30) y que el MCP se explique solo (AG31-AG33):
+ *    scripts/lib/check-agent-cli.js
+ *
  * Solo esta seccion: TERMILAB_CHECK_ONLY=AG node scripts/check-main.js
  */
 const assert = require('assert');
@@ -23,6 +26,7 @@ const os = require('os');
 const path = require('path');
 const { spawn, execFileSync } = require('child_process');
 const { startRealSshd } = require('./real-sshd');
+const cliChecks = require('./check-agent-cli');
 
 const SECRET_PW = 'centinela-contrasena-AG-9f3k';
 const SECRET_PP = 'centinela-passphrase-AG-7q2z';
@@ -433,6 +437,9 @@ async function seccionAgent({ check, ROOT }) {
       assert.strictEqual(ag.length, list.length);
     });
 
+    /* AG23-AG29: termilab-cli contra el mismo servicio (antes de AG19: su salida entra en la busqueda) */
+    if (sshd) await cliChecks.checksCliRunning({ check, ROOT, dir, files, sshd, salida });
+
     await check('AG19 ningun secreto en resultados, transcript MCP, logs, consola ni pushes', async () => {
       await agent.log.flush();
       const logRaw = fs.readFileSync(path.join(dir, 'data', 'agent-logs.json'), 'utf-8');
@@ -475,6 +482,8 @@ async function seccionAgent({ check, ROOT }) {
       assert.deepStrictEqual([...a.stray, ...b.stray], [], 'stdout trajo algo que no es JSON-RPC');
     });
 
+    await cliChecks.checksSelfDescribing({ check, ROOT });
+
     await check('AG21 Termilab cerrado: herramientas dicen "Open Termilab first", socket borrado', async () => {
       await agent.stop();
       assert.ok(!fs.existsSync(sock), 'el socket sigue en disco');
@@ -490,6 +499,7 @@ async function seccionAgent({ check, ROOT }) {
         assert.ok(r3.isError && /Open Termilab first/.test(textOf(r3)));
       } finally { await nodir.close(); }
     });
+    await cliChecks.checkCliNotRunning({ check, ROOT, dir });
   } finally {
     console.error = realErr; console.log = realLog; console.warn = realWarn;
     try { await agent.stop(); } catch (_) { /* ya parado */ }

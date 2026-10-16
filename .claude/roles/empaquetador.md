@@ -220,3 +220,18 @@ tuyos — corrige lo que compruebes que ya no es cierto.
   consola y pasa los pipes al hijo) y macOS (si sale icono en el Dock durante el `spawnSync`;
   si sale, `LSUIElement` no aplica porque es el mismo bundle: habría que probar `app.dock.hide()`
   antes, que exige el módulo electron). Tampoco instalar el deb/pacman de verdad.
+
+## Comando `termilab-cli` y `--cli` (2026-10-16, rama feat/mcp)
+
+- `/usr/bin/termilab-cli` = `build/linux/termilab-cli` por el mismo `deb.fpm`/`pacman.fpm`
+  (`origen=destino`, en los dos targets). `termilab-mcp` ahora es `exec /usr/bin/termilab-cli mcp`.
+  `check-package-perms.js` exige los dos 0755; `TERMILAB_DEB=<ruta>` lo apunta a un .deb fuera de
+  `release/` (control negativo: el 1.9.1 sin el CLI da rojo).
+- `main.js`: **gana el PRIMERO de `--cli`/`--mcp`** en argv (`--cli run web echo --mcp` ejecuta un
+  comando). Mismo `spawnSync` + `ELECTRON_RUN_AS_NODE` en la cabecera.
+- Comprobado: `electron . --cli ...` y `linux-unpacked/termilab --cli ...` **sin DISPLAY** y sin
+  `--no-sandbox` funcionan, stderr vacío; un `--` en los argumentos funciona (e2e lo usa).
+  `node scripts/e2e-agent.mjs [release/linux-unpacked]` prueba hosts/run/124/mcp por `--cli`.
+- Deb a un directorio aparte: `npx electron-builder --linux deb -c.directories.output=<scratch>`
+  (~1 min); el wrapper se prueba sin instalar con `dpkg-deb -x` + `sed` de `/opt/Termilab`.
+- **Sin comprobar:** `Termilab.exe --cli` (consola/pipes en Windows) y el binario de mac.

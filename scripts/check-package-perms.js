@@ -11,7 +11,7 @@ const path = require('path');
 
 const release = path.join(__dirname, '..', 'release');
 const { version } = require('../package.json');
-const deb = path.join(release, `termilab_${version}_amd64.deb`);
+const deb = process.env.TERMILAB_DEB || path.join(release, `termilab_${version}_amd64.deb`);
 let bad = 0;
 if (fs.existsSync(deb)) {
   const list = execFileSync('dpkg-deb', ['-c', deb], { encoding: 'utf-8' }).split('\n').filter(Boolean);
@@ -20,9 +20,11 @@ if (fs.existsSync(deb)) {
     if (mode[0] === '-' && mode[7] !== 'r') { bad++; if (bad <= 5) console.error('not world-readable:', line); }
   }
   console.log(`${path.basename(deb)}: ${list.length} entries, ${bad} not world-readable`);
-  // the MCP wrapper (build/linux/termilab-mcp): a git checkout can lose the x bit
-  if (!list.some(l => /^-rwxr-xr-x .* \.\/usr\/bin\/termilab-mcp$/.test(l))) {
-    console.error('usr/bin/termilab-mcp missing or not 0755'); bad++;
+  // the wrappers (build/linux/termilab-cli, termilab-mcp): a git checkout can lose the x bit
+  for (const bin of ['termilab-cli', 'termilab-mcp']) {
+    if (!list.some(l => new RegExp(`^-rwxr-xr-x .* \\./usr/bin/${bin}$`).test(l))) {
+      console.error(`usr/bin/${bin} missing or not 0755`); bad++;
+    }
   }
 } else {
   console.error(`missing ${deb}`);

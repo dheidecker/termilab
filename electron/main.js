@@ -1,18 +1,23 @@
-/* `termilab --mcp [args]`: run the MCP server (electron/agent/mcp.js) instead
-   of the GUI, so AppImage, Termilab.exe and the mac binary all register the
-   same way. It re-runs this binary in node mode (ELECTRON_RUN_AS_NODE) with
-   stdio inherited; spawnSync blocks before `ready`, so no window and no GPU
-   process ever start, and nothing of ours touches stdout (MCP stdio). deb and
-   pacman ship /usr/bin/termilab-mcp, which skips this hop. */
-if (process.argv.includes('--mcp')) {
-  const { spawnSync } = require('child_process');
-  const rest = process.argv.slice(process.argv.indexOf('--mcp') + 1);
-  const r = spawnSync(process.execPath, [require('path').join(__dirname, 'agent', 'mcp.js'), ...rest], {
-    stdio: 'inherit',
-    windowsHide: true,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-  });
-  process.exit(r.status ?? 1);
+/* `termilab --cli <args>` / `termilab --mcp [args]`: run the command line
+   (electron/agent/cli.js) or the MCP server (electron/agent/mcp.js) instead
+   of the GUI, so AppImage, Termilab.exe and the mac binary all have the same
+   entry points. It re-runs this binary in node mode (ELECTRON_RUN_AS_NODE)
+   with stdio inherited; spawnSync blocks before `ready`, so no window and no
+   GPU process ever start, and nothing of ours touches stdout. The FIRST of the
+   two flags wins: `--cli run web echo --mcp` runs a command, not the server.
+   deb and pacman ship /usr/bin/termilab-cli and termilab-mcp, which skip this hop. */
+{
+  const at = process.argv.findIndex(a => a === '--cli' || a === '--mcp');
+  if (at >= 0) {
+    const { spawnSync } = require('child_process');
+    const script = process.argv[at] === '--cli' ? 'cli.js' : 'mcp.js';
+    const r = spawnSync(process.execPath, [require('path').join(__dirname, 'agent', script), ...process.argv.slice(at + 1)], {
+      stdio: 'inherit',
+      windowsHide: true,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    });
+    process.exit(r.status ?? 1);
+  }
 }
 
 /* Linux: type through GTK's built-in input method, not IBus. IBus on X11

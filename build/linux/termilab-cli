@@ -1,0 +1,6 @@
+#!/bin/sh
+# Termilab command line for scripts, bots and MCP clients:
+#   termilab-cli hosts | run | read | write | mcp | guide   (termilab-cli --help)
+# Shipped as a package file (not made by after-install) so it survives pacman
+# upgrades, which have no post_upgrade. Node mode directly, no GUI process.
+ELECTRON_RUN_AS_NODE=1 exec /opt/Termilab/termilab /opt/Termilab/resources/app.asar/electron/agent/cli.js "$@"

@@ -5,8 +5,9 @@
  * The agent never sees a credential: it names a host, Termilab connects.
  *
  * Run it:
- *   dev:       node electron/agent/mcp.js
- *   packaged:  ELECTRON_RUN_AS_NODE=1 <termilab binary> <resources>/app.asar/electron/agent/mcp.js
+ *   termilab-cli mcp          (deb/pacman; cli.js hands over to main() here)
+ *   <termilab binary> --mcp   (any package)
+ *   node electron/agent/mcp.js (source checkout)
  *
  * No dependencies (Node built-ins only). Speaks newline-delimited JSON-RPC 2.0
  * on stdin/stdout, dual-era:
@@ -17,11 +18,10 @@
  *
  * Env: TERMILAB_USER_DATA  Termilab's userData folder (default: the usual one)
  */
-const fs = require('fs');
-const net = require('net');
 const path = require('path');
 const readline = require('readline');
-const { agentPaths, findUserDataDir } = require('./paths');
+const { callTermilab, runTimeoutMs, closeAll } = require('./client');
+const { GUIDE } = require('./guide');
 
 const SERVER_INFO = { name: 'termilab', title: 'Termilab', version: readVersion() };
 const MODERN = ['2026-07-28'];
@@ -29,171 +29,174 @@ const LEGACY = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const SUPPORTED = [...MODERN, ...LEGACY];
 const META_VERSION = 'io.modelcontextprotocol/protocolVersion';
 
-const INSTRUCTIONS = 'Termilab runs commands on the user\'s saved SSH hosts (and on this computer as host "local") '
-  + 'with the credentials stored in Termilab; you never see or need them. Call list_hosts first and use a '
-  + 'host name or id from it. run_command is for one-shot commands; open_shell/send_input/read_output for '
-  + 'interactive programs. A host-key error means the user must connect to that host once from Termilab. '
-  + 'Every call is recorded in Termilab\'s Logs.';
+const INSTRUCTIONS = [
+  'Termilab is the SSH client on the user\'s computer. It runs commands and edits files on the user\'s saved servers '
+    + 'with the credentials it already holds: you never see a password or key, do not need one, and must not ask for one.',
+  'Workflow:',
+  '1. Call list_hosts first. Use a host "name" or "id" from it in every call. "local" is this computer. '
+    + 'available:false means the host cannot be used now; relay its note to the user.',
+  '2. One-off commands: run_command, e.g. {"host":"produccion","command":"docker ps","cwd":"/srv/app"}. Every call is a '
+    + 'fresh login as that host\'s user: cd, variables and sudo sessions do not carry over, so pass cwd. No terminal: a '
+    + 'prompt (sudo password, [Y/n]) hangs until timeout_s (default 60). Output capped at 256 KB per stream; filter remotely.',
+  '3. Navigation, multi-step or interactive work (cd, env vars, sudo prompts, [Y/n], deploy scripts): open_shell -> '
+    + 'send_input (end each command with "\\n") -> read_output (call again with wait_ms until the output stops growing and '
+    + 'the prompt is back) -> answer prompts with send_input -> close_shell. Idle shells close after 15 minutes. '
+    + 'If sudo asks for a password, stop and tell the user; never guess one.',
+  '4. Files: read_file / write_file over SFTP (paths absolute or ~/relative; 4 MB max; write replaces the whole file).',
+  'You act with exactly that host user\'s permissions (root or sudo included): be as careful as the user would be.',
+  'Errors: "Termilab is not running" -> ask the user to open Termilab. Host key not trusted or CHANGED -> ask the user to '
+    + 'connect to that host once from Termilab and check the key; agents can never accept host keys, never work around it. '
+    + '"No host named" -> call list_hosts. "matches N hosts" -> use the id. Authentication failed -> the user must fix the '
+    + 'host in Termilab.',
+  'Every call is recorded in Termilab\'s Logs. Full guide: resource termilab://guide.',
+].join('\n');
 
 function readVersion() {
   try { return require(path.join(__dirname, '..', '..', 'package.json')).version || '0'; } catch (_) { return '0'; }
 }
 
-const HOST = { type: 'string', description: 'Host name or id from list_hosts, or "local" for this computer.' };
+const HOST = { type: 'string', description: 'Host "name" or "id" from list_hosts (names are case-insensitive), or "local" for this computer. Example: "produccion".' };
+const SESSION = { type: 'string', description: 'The session_id returned by open_shell, e.g. "sh_3f9a...".' };
+const PATH = { type: 'string', description: 'File path on that host: absolute ("/etc/nginx/nginx.conf") or relative to the home directory ("~/app/.env" or "app/.env").' };
 const TOOLS = [
   {
     name: 'list_hosts',
     title: 'List hosts',
-    description: 'The hosts saved in Termilab: name, id, group, tags, os, user, hostname, port and whether it is usable now. Never includes credentials.',
-    inputSchema: { type: 'object', additionalProperties: false },
-    annotations: { readOnlyHint: true, openWorldHint: false },
+    description: 'Call this first. Lists the hosts saved in Termilab plus "local" (this computer): name, id, group, tags, os, user, hostname, port, auth, and available (false = cannot be used now; note says why, tell the user). Use name or id in the other tools. Never includes credentials. Takes no arguments: {}.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
     name: 'run_command',
     title: 'Run a command',
-    description: 'Run one shell command on a host over a fresh SSH connection (or locally for "local") and return exit_code, stdout, stderr. Output is capped at 256 KB per stream (truncated: true). No tty: for prompts use open_shell.',
+    description: 'Run one shell command on a host and wait for it: a fresh SSH login as that host\'s user each call (local: the user\'s login shell), so cd, variables and sudo sessions do not persist; use cwd. Returns exit_code, stdout, stderr, timed_out, truncated, signal, duration_ms. stdout and stderr are capped at 256 KB each (truncated: true). No terminal: commands that prompt hang until the timeout; use non-interactive flags or open_shell. Example: {"host":"produccion","command":"docker ps","cwd":"/srv/app"}.',
     inputSchema: {
       type: 'object',
       properties: {
         host: HOST,
-        command: { type: 'string', description: 'The command line, run by the user\'s login shell on that host.' },
-        timeout_s: { type: 'number', description: 'Seconds before the command is killed (default 60, max 3600).' },
-        cwd: { type: 'string', description: 'Directory to run in (~ allowed). Default: home.' },
+        command: { type: 'string', description: 'The command line, run by the login shell of that host; pipes and redirections work. Up to 64 KB. Example: "journalctl -u nginx -n 100 | grep -i error".' },
+        timeout_s: { type: 'number', description: 'Seconds before the command is killed and timed_out is true. Default 60, maximum 3600.' },
+        cwd: { type: 'string', description: 'Directory to run in: absolute ("/srv/app") or under home ("~/app"). Default: the home directory.' },
       },
       required: ['host', 'command'],
       additionalProperties: false,
     },
-    annotations: { destructiveHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   },
   {
     name: 'open_shell',
     title: 'Open an interactive shell',
-    description: 'Open an interactive shell (with a pty) on a host. Returns session_id. Closed after 15 minutes without use.',
-    inputSchema: {
-      type: 'object',
-      properties: { host: HOST, cols: { type: 'integer' }, rows: { type: 'integer' } },
-      required: ['host'],
-      additionalProperties: false,
-    },
-    annotations: { destructiveHint: true, openWorldHint: true },
-  },
-  {
-    name: 'send_input',
-    title: 'Type into a shell',
-    description: 'Send keystrokes to an open shell. Include "\\r" (or "\\n") to press Enter; "\\u0003" is Ctrl-C.',
-    inputSchema: {
-      type: 'object',
-      properties: { session_id: { type: 'string' }, data: { type: 'string' } },
-      required: ['session_id', 'data'],
-      additionalProperties: false,
-    },
-    annotations: { destructiveHint: true },
-  },
-  {
-    name: 'read_output',
-    title: 'Read shell output',
-    description: 'Output of an open shell since the last read (raw terminal text, may include escape codes). Waits up to wait_ms (default 1000, max 30000) for output to arrive. closed: true once the shell exited.',
-    inputSchema: {
-      type: 'object',
-      properties: { session_id: { type: 'string' }, wait_ms: { type: 'integer' } },
-      required: ['session_id'],
-      additionalProperties: false,
-    },
-    annotations: { readOnlyHint: true },
-  },
-  {
-    name: 'close_shell',
-    title: 'Close a shell',
-    description: 'Close an interactive shell opened with open_shell.',
-    inputSchema: {
-      type: 'object',
-      properties: { session_id: { type: 'string' } },
-      required: ['session_id'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'read_file',
-    title: 'Read a file',
-    description: 'Read a file on a host over SFTP (or locally). Text comes back as utf-8, anything else as base64 (see encoding). Default cap 256 KB (max_bytes up to 4 MB).',
-    inputSchema: {
-      type: 'object',
-      properties: { host: HOST, path: { type: 'string', description: 'Absolute, or relative to home (~ allowed).' }, max_bytes: { type: 'integer' } },
-      required: ['host', 'path'],
-      additionalProperties: false,
-    },
-    annotations: { readOnlyHint: true, openWorldHint: true },
-  },
-  {
-    name: 'write_file',
-    title: 'Write a file',
-    description: 'Create or overwrite a file on a host over SFTP (or locally). Up to 4 MB. mode is octal, e.g. "644".',
+    description: 'Open a persistent interactive shell with a terminal (pty) on a host, for navigation and multi-step or interactive work (cd, environment variables, sudo or [Y/n] prompts, deploy scripts, REPLs). Returns session_id. Then: send_input to type, read_output to see the result, close_shell when done. Closed automatically after 15 minutes without use. Example: {"host":"produccion"}.',
     inputSchema: {
       type: 'object',
       properties: {
         host: HOST,
-        path: { type: 'string', description: 'Absolute, or relative to home (~ allowed).' },
-        content: { type: 'string' },
-        encoding: { type: 'string', enum: ['utf-8', 'base64'], description: 'How content is encoded (default utf-8).' },
-        mode: { type: 'string', description: 'Permissions in octal, e.g. "600".' },
+        cols: { type: 'integer', description: 'Terminal width in columns. Default 120 (20 to 500).' },
+        rows: { type: 'integer', description: 'Terminal height in rows. Default 40 (5 to 200).' },
+      },
+      required: ['host'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  {
+    name: 'send_input',
+    title: 'Type into a shell',
+    description: 'Type into a shell opened with open_shell, exactly as keystrokes. End a command with "\\n" to press Enter; "\\u0003" is Ctrl-C, "\\u0004" Ctrl-D. Returns immediately: call read_output to see what happened. Example: {"session_id":"sh_...","data":"cd /srv/app && git pull\\n"}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: SESSION,
+        data: { type: 'string', description: 'The keystrokes to send, up to 64 KB. Include "\\n" at the end to run a command or answer a prompt ("y\\n").' },
+      },
+      required: ['session_id', 'data'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  },
+  {
+    name: 'read_output',
+    title: 'Read shell output',
+    description: 'Output of a shell from open_shell since the last read (raw terminal text, may include escape codes). Waits up to wait_ms for new output. Call it repeatedly until the output stops growing and the prompt (or a question) is back. closed: true and exit_code once the shell has exited. Up to 1 MB of unread output is kept. Example: {"session_id":"sh_...","wait_ms":3000}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: SESSION,
+        wait_ms: { type: 'integer', description: 'Milliseconds to wait for output to arrive. Default 1000, maximum 30000.' },
+      },
+      required: ['session_id'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
+    name: 'close_shell',
+    title: 'Close a shell',
+    description: 'Close a shell opened with open_shell (ends whatever runs in it). Do this when the work is done. Example: {"session_id":"sh_..."}.',
+    inputSchema: {
+      type: 'object',
+      properties: { session_id: SESSION },
+      required: ['session_id'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: 'read_file',
+    title: 'Read a file',
+    description: 'Read a file on a host over SFTP (local: from this computer\'s disk). Returns content, encoding ("utf-8" for text, "base64" otherwise), size and truncated. Reads the first 256 KB by default (max_bytes up to 4 MB). Example: {"host":"produccion","path":"/etc/nginx/nginx.conf"}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        host: HOST,
+        path: PATH,
+        max_bytes: { type: 'integer', description: 'Read at most this many bytes. Default 262144 (256 KB), maximum 4194304 (4 MB).' },
+      },
+      required: ['host', 'path'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  {
+    name: 'write_file',
+    title: 'Write a file',
+    description: 'Create or overwrite a whole file on a host over SFTP (local: on this computer). Up to 4 MB. To edit, read_file first, change it, write it back, then verify (e.g. "nginx -t"). Returns bytes_written. Example: {"host":"produccion","path":"~/app/.env","content":"PORT=8080\\n","mode":"600"}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        host: HOST,
+        path: PATH,
+        content: { type: 'string', description: 'The complete new content of the file (it replaces what is there), encoded as said by encoding.' },
+        encoding: { type: 'string', enum: ['utf-8', 'base64'], description: 'How content is encoded: "utf-8" for text (default) or "base64" for binary data.' },
+        mode: { type: 'string', description: 'Permissions as an octal string, e.g. "644" or "600". Default: keep the existing mode, or the server default for a new file.' },
       },
       required: ['host', 'path', 'content'],
       additionalProperties: false,
     },
-    annotations: { destructiveHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   },
 ];
 const TOOL_NAMES = new Set(TOOLS.map(t => t.name));
 
-const NOT_RUNNING = 'Termilab is not running. Open Termilab first, then try again.';
+/* The full agent guide (guide.js), for clients that read resources or prompts */
+const GUIDE_URI = 'termilab://guide';
+const RESOURCES = [{
+  uri: GUIDE_URI,
+  name: 'guide',
+  title: 'How to use Termilab as an AI agent',
+  description: 'Workflow, tools, examples and error handling for working on the user\'s servers through Termilab.',
+  mimeType: 'text/markdown',
+}];
+const PROMPT_NAME = 'termilab_usage';
+const PROMPTS = [{
+  name: PROMPT_NAME,
+  title: 'Use Termilab',
+  description: 'Puts the Termilab agent guide in the conversation: how to list hosts, run commands, use interactive shells and edit files.',
+  arguments: [],
+}];
+const CAPABILITIES = { tools: { listChanged: false }, resources: { listChanged: false }, prompts: { listChanged: false } };
 
-/* ── Talking to Termilab ──────────────────────────────────── */
-
-let seq = 0;
-/** Sockets to Termilab still open: closed when we exit (stdin ended, signal). */
-const openSockets = new Set();
-function callTermilab(method, params, { timeoutMs = 120000 } = {}) {
-  const dir = findUserDataDir();
-  const p = agentPaths(dir);
-  let token;
-  try {
-    token = fs.readFileSync(p.token, 'utf-8').trim();
-  } catch (_) {
-    return Promise.reject(new Error(NOT_RUNNING));
-  }
-  return new Promise((resolve, reject) => {
-    const id = ++seq;
-    const sock = net.connect(p.socket);
-    openSockets.add(sock);
-    sock.on('close', () => openSockets.delete(sock));
-    let buf = '';
-    let settled = false;
-    const done = (err, val) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      sock.destroy();
-      if (err) reject(err); else resolve(val);
-    };
-    const timer = setTimeout(() => done(new Error('Termilab did not answer in time.')), timeoutMs);
-    sock.setEncoding('utf-8');
-    sock.on('connect', () => sock.write(`${JSON.stringify({ id, token, method, params })}\n`));
-    sock.on('data', (d) => {
-      buf += d;
-      const nl = buf.indexOf('\n');
-      if (nl < 0) return;
-      let msg;
-      try { msg = JSON.parse(buf.slice(0, nl)); } catch (_) { done(new Error('Bad answer from Termilab.')); return; }
-      if (msg.error) done(new Error(msg.error.message || 'Termilab refused the request.'));
-      else done(null, msg.result);
-    });
-    sock.on('error', (err) => {
-      if (['ENOENT', 'ECONNREFUSED', 'ENOTSOCK', 'EPIPE'].includes(err.code)) done(new Error(NOT_RUNNING));
-      else done(new Error(`Could not reach Termilab: ${err.message}`));
-    });
-    sock.on('close', () => done(new Error('Termilab closed the connection.')));
-  });
-}
+/* Talking to Termilab: the shared socket client (client.js) */
 
 /* ── MCP ──────────────────────────────────────────────────── */
 
@@ -212,8 +215,7 @@ const toolError = (message, modern) => ({
 async function callTool(name, args) {
   const a = args && typeof args === 'object' ? args : {};
   /* Termilab enforces its own command timeout; give it room to answer */
-  const secs = Number(a.timeout_s) > 0 ? Math.min(Number(a.timeout_s), 3600) : 60;
-  const timeoutMs = name === 'run_command' ? (secs + 60) * 1000 : 120000;
+  const timeoutMs = name === 'run_command' ? runTimeoutMs(a.timeout_s) : 120000;
   return callTermilab(name, a, { timeoutMs });
 }
 
@@ -241,13 +243,13 @@ async function handle(msg, state = {}) {
       const want = params.protocolVersion;
       const version = LEGACY.includes(want) ? want : LEGACY[0];
       state.version = version;
-      return ok({ protocolVersion: version, capabilities: { tools: { listChanged: false } }, serverInfo: SERVER_INFO, instructions: INSTRUCTIONS });
+      return ok({ protocolVersion: version, capabilities: CAPABILITIES, serverInfo: SERVER_INFO, instructions: INSTRUCTIONS });
     }
     case 'server/discover':
       return ok({
         resultType: 'complete',
         supportedVersions: SUPPORTED,
-        capabilities: { tools: {} },
+        capabilities: CAPABILITIES,
         _meta: { 'io.modelcontextprotocol/serverInfo': SERVER_INFO },
         instructions: INSTRUCTIONS,
       });
@@ -255,6 +257,22 @@ async function handle(msg, state = {}) {
       return ok(modern ? { resultType: 'complete' } : {});
     case 'tools/list':
       return ok({ ...(modern ? { resultType: 'complete' } : {}), tools: TOOLS });
+    case 'resources/list':
+      return ok({ ...(modern ? { resultType: 'complete' } : {}), resources: RESOURCES });
+    case 'resources/templates/list':
+      return ok({ ...(modern ? { resultType: 'complete' } : {}), resourceTemplates: [] });
+    case 'resources/read':
+      if (params.uri !== GUIDE_URI) return err(-32002, `Resource not found: ${params.uri}`, { uri: params.uri });
+      return ok({ ...(modern ? { resultType: 'complete' } : {}), contents: [{ uri: GUIDE_URI, mimeType: 'text/markdown', text: GUIDE }] });
+    case 'prompts/list':
+      return ok({ ...(modern ? { resultType: 'complete' } : {}), prompts: PROMPTS });
+    case 'prompts/get':
+      if (params.name !== PROMPT_NAME) return err(-32602, `Unknown prompt: ${params.name}`);
+      return ok({
+        ...(modern ? { resultType: 'complete' } : {}),
+        description: PROMPTS[0].description,
+        messages: [{ role: 'user', content: { type: 'text', text: `Use the Termilab MCP tools to work on my servers, following this guide.\n\n${GUIDE}` } }],
+      });
     case 'tools/call': {
       const name = params.name;
       if (!TOOL_NAMES.has(name)) return err(-32602, `Unknown tool: ${name}`);
@@ -272,8 +290,7 @@ async function handle(msg, state = {}) {
 /* The client went away (stdin ended) or we were told to stop: drop what is in
    flight and leave now, so a dead parent never leaves us behind. */
 function shutdown(code = 0) {
-  for (const s of openSockets) { try { s.destroy(); } catch (_) { /* gone */ } }
-  openSockets.clear();
+  closeAll();
   process.exit(code);
 }
 
@@ -305,6 +322,6 @@ function main() {
   process.stdout.on('error', () => shutdown(0));
 }
 
-module.exports = { handle, TOOLS, SUPPORTED, main, callTermilab };
+module.exports = { handle, TOOLS, SUPPORTED, INSTRUCTIONS, main, callTermilab };
 
 if (require.main === module) main();

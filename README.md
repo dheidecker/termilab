@@ -123,38 +123,14 @@ Download the file for your platform from the [latest release](https://github.com
 
 ## Using Termilab from AI agents
 
-Termilab can act as an MCP server, so Claude Code (or any MCP client) can reach your saved hosts **without ever seeing a credential**: the agent names a host and a command, Termilab connects with the password or key it already holds and returns the output.
+AI agents, bots and scripts can use the hosts saved in Termilab **without ever seeing a credential**: the caller names a host and a command, and the running Termilab connects with the password or key it already holds.
 
-- Tools: `list_hosts` (name, group, tags, OS, user, hostname/port, never secrets), `run_command` (exit code, stdout, stderr; 256 KB cap per stream, default timeout 60 s), `open_shell` / `send_input` / `read_output` / `close_shell` (interactive pty, closed after 15 min idle), `read_file` / `write_file` (SFTP, 4 MB cap). The host `local` is this computer, in your login shell.
-- Termilab must be running. The MCP server talks to it over a local socket only it and you can open (`<userData>/agent.sock`, mode 0600, plus a token in `<userData>/agent-token`; a named pipe on Windows). Nothing listens on the network.
-- Host keys are never accepted on an agent's behalf: a host Termilab has not trusted yet, or whose key changed, fails until you connect to it once from Termilab.
-- Every agent action is listed in **Logs** (tool, host, command, exit code, duration; never the output). The Sessions dock shows an `agent` badge while an agent has a shell open.
+- **MCP server** for Claude Code, Codex CLI, Gemini CLI, Cursor and other MCP clients: `claude mcp add --scope user termilab -- termilab-cli mcp`.
+- **Command line** for scripts: `termilab-cli hosts`, `termilab-cli run <host> <command>` (exits with the remote exit code), `termilab-cli read` / `write`.
+- deb and pacman install `termilab-cli` in `/usr/bin`; AppImage, Windows and macOS use the app binary with `--cli` (for example `Termilab.AppImage --cli hosts`).
+- Termilab must be open, and each host's key must have been trusted once from Termilab. Every action is listed in **Logs**.
 
-Register it with Claude Code (user scope, every project):
-
-| Install | Command |
-|---|---|
-| `.deb`, `.pacman` | `claude mcp add --scope user termilab -- termilab-mcp` |
-| AppImage | `claude mcp add --scope user termilab -- /path/to/Termilab-<version>.AppImage --mcp` (rename it first to a name without a version, e.g. `Termilab.AppImage`: the updater replaces a versioned file with the new version's name and the registered path breaks; an unversioned one is updated in place) |
-| Windows | `claude mcp add --scope user termilab -- "%LOCALAPPDATA%\Programs\Termilab\Termilab.exe" --mcp` (default per-user install; use your folder if you changed it) |
-| macOS | `claude mcp add --scope user termilab -- /Applications/Termilab.app/Contents/MacOS/Termilab --mcp` |
-
-From a source checkout, with Termilab running from `npm run dev`: `claude mcp add --scope user termilab -- node /path/to/termilab/electron/agent/mcp.js`.
-
-Any other MCP client takes the same command as a stdio server:
-
-```json
-{
-  "mcpServers": {
-    "termilab": {
-      "command": "termilab-mcp",
-      "args": []
-    }
-  }
-}
-```
-
-On macOS the binary is `/Applications/Termilab.app/Contents/MacOS/Termilab` and the script `/Applications/Termilab.app/Contents/Resources/app.asar/electron/agent/mcp.js`. If Termilab runs with a non-default `--user-data-dir`, pass the same folder to the MCP server as `TERMILAB_USER_DATA`.
+Setup for each client, the full command reference, what agents can do on a server, and the current limitations: [docs/agents.md](docs/agents.md).
 
 ## Self-hosting the sync service
 

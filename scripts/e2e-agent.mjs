@@ -6,7 +6,10 @@
  *
  *   ELECTRON_RUN_AS_NODE=1 <termilab binary> <...>/electron/agent/mcp.js
  *
- * initialize -> tools/list -> list_hosts -> run_command `uname -a` on the sshd.
+ * initialize -> tools/list -> list_hosts -> run_command `uname -a` on the sshd,
+ * then the command line through the app binary's `--cli` flag (the AppImage /
+ * Windows / mac entry point): `--cli hosts`, `--cli run` with the remote exit
+ * code, `--cli run --timeout` -> 124, `--cli mcp`.
  *
  *   node scripts/e2e-agent.mjs                       # dev tree (needs `npm run build`)
  *   node scripts/e2e-agent.mjs release/linux-unpacked # packaged (`npm run pack`): mcp.js from app.asar
@@ -105,11 +108,35 @@ try {
   console.log(`run_command uname -a on E2E sshd -> exit ${r.exit_code}, ${r.duration_ms} ms\n  ${r.stdout.trim()}`);
   if (r.exit_code !== 0 || !/Linux/.test(r.stdout)) fail('unexpected run_command result');
 
+  /* termilab-cli through `<binary> --cli`: no ELECTRON_RUN_AS_NODE, main.js does the hop */
+  const cliEnv = { ...process.env, TERMILAB_USER_DATA: userData };
+  delete cliEnv.ELECTRON_RUN_AS_NODE;
+  const viaCli = (args, input = '') => new Promise((resolve) => {
+    const c = spawn(electronBin, [...(packaged ? [] : [ROOT]), '--cli', ...args], { env: cliEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+    let so = ''; let se = ''; const t0 = Date.now();
+    c.stdout.on('data', d => { so += d; }); c.stderr.on('data', d => { se += d; });
+    c.on('close', code => resolve({ code, stdout: so, stderr: se, ms: Date.now() - t0 }));
+    c.stdin.end(input);
+  });
+  const ch = await viaCli(['hosts']);
+  console.log(`--cli hosts -> exit ${ch.code}\n${ch.stdout.trimEnd().split('\n').map(l => `  ${l}`).join('\n')}`);
+  if (ch.code !== 0 || !/E2E sshd/.test(ch.stdout)) fail(`--cli hosts: ${ch.stderr}`);
+  const cr = await viaCli(['run', '--cwd', '/tmp', 'E2E sshd', '--', 'pwd; echo to-stderr >&2; exit 5']);
+  console.log(`--cli run 'pwd; echo to-stderr >&2; exit 5' -> exit ${cr.code}, stdout ${JSON.stringify(cr.stdout)}, stderr ${JSON.stringify(cr.stderr)}`);
+  if (cr.code !== 5 || cr.stdout !== '/tmp\n' || cr.stderr !== 'to-stderr\n') fail('unexpected --cli run result');
+  const ct = await viaCli(['run', '--timeout', '1', 'E2E sshd', 'sleep 30']);
+  console.log(`--cli run --timeout 1 'sleep 30' -> exit ${ct.code} in ${ct.ms} ms`);
+  if (ct.code !== 124) fail(`--cli timeout: ${ct.code} ${ct.stderr}`);
+  const cm = await viaCli(['mcp'], `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } })}\n`);
+  const first = JSON.parse(cm.stdout.split('\n')[0]);
+  console.log(`--cli mcp initialize -> ${first.result.serverInfo.name} ${first.result.protocolVersion}, instructions ${first.result.instructions.length} chars, exit ${cm.code}`);
+  if (cm.code !== 0 || cm.stdout.trim().split('\n').length !== 1) fail('--cli mcp: stdout carried something other than one JSON-RPC line');
+
   await sleep(300);
   const logs = JSON.parse(fs.readFileSync(path.join(data, 'agent-logs.json'), 'utf-8'));
   const e = logs.find(x => x.tool === 'run_command');
   console.log(`agent log -> ${JSON.stringify({ type: e.type, tool: e.tool, host: e.host, command: e.command, exitCode: e.exitCode, durationMs: e.durationMs })}`);
-  const all = JSON.stringify([init, tools, hosts, run]) + fs.readFileSync(path.join(data, 'agent-logs.json'), 'utf-8');
+  const all = JSON.stringify([init, tools, hosts, run, ch, cr, ct, cm]) + fs.readFileSync(path.join(data, 'agent-logs.json'), 'utf-8');
   const keyLine = sshd.privateKey.split('\n').find(l => l.length > 40 && !l.startsWith('-----'));
   if (all.includes(keyLine)) fail('private key material in MCP output or log');
   console.log('no key material in MCP output or agent log');

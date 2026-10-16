@@ -1,5 +1,4 @@
 #!/bin/sh
 # Termilab MCP server over stdio: claude mcp add termilab -- termilab-mcp
-# Shipped as a package file (not made by after-install) so it survives pacman
-# upgrades, which have no post_upgrade. Node mode directly, no GUI process.
-ELECTRON_RUN_AS_NODE=1 exec /opt/Termilab/termilab /opt/Termilab/resources/app.asar/electron/agent/mcp.js "$@"
+# Same as `termilab-cli mcp`; kept so existing registrations keep working.
+exec /usr/bin/termilab-cli mcp "$@"

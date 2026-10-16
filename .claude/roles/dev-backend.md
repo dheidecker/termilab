@@ -916,3 +916,24 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   hecho). Lo que ya corre en Termilab (un `sleep` local/remoto) NO se cancela al cortarse el socket: hueco.
   `console.*` se redirige a stderr en `main()`: stdout es solo JSON-RPC.
 - `TERMILAB_CHECK_ONLY=AG` (~15 s). `real-sshd.js` devuelve ahora `hostPublicKey` (para sembrar known hosts).
+
+## termilab-cli y MCP autodescriptivo (rama `feat/mcp`, 2026-10-16, arnés AG23–AG33)
+
+- **Un solo cliente del socket: `electron/agent/client.js`** (`callTermilab`, `runTimeoutMs`, `closeAll`).
+  El `Error` lleva `code` del servicio (`not-found`, `host-key`, `auth`...) o `not-running`. AG33 rechaza
+  `net` en `mcp.js`/`cli.js`. El texto `NOT_RUNNING` lo miran AG21 y AG30: no lo cambies a la ligera.
+- **`cli.js`**: `run` sale con el código remoto, 124 timeout, 128+N señal, 125 si no pudo ejecutarse
+  (convención de `env`/`docker run`), 2 uso. Opciones solo ANTES del comando: tras `<host>` la primera
+  palabra no-opción arranca el comando y el resto pasa tal cual (`run web ls -la`). Sale con
+  `process.exitCode`, nunca `process.exit()`: con stdout en un pipe se corta la salida.
+- **En el arnés, el CLI con `spawn` asíncrono, NUNCA `spawnSync`:** el servicio escucha en el mismo
+  proceso del arnés; un `spawnSync` bloquea su bucle y el CLI espera para siempre.
+- **La guía para agentes vive en `electron/agent/guide.js`** (recurso `termilab://guide`, prompt
+  `termilab_usage`, `termilab-cli guide`). `docs/agents.md` la lleva copiada entre marcadores
+  `agent-guide:start/end` con los títulos dos niveles abajo; AG32 exige que sean idénticas. Edita
+  guide.js y regenera el bloque (sustituir `^(#+) ` por `\1## `).
+- `instructions` del MCP ≤ 2.500 caracteres y mencionando cada herramienta (AG31), igual en
+  `initialize` y `server/discover`. Cada propiedad del inputSchema necesita `description`.
+- Controles negativos hechos en copia (necesita `electron scripts docs src server/api package.json` +
+  symlink de `node_modules`, o el arnés revienta antes de AG): código de salida fijo → AG24/AG25; sin
+  descripción → AG31; doc desviada → AG32.
