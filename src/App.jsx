@@ -20,6 +20,7 @@ import Logs from './components/Logs/Logs';
 import AgentsDock from './components/Agents/AgentsDock';
 import { useSessionRequests } from './components/Agents/sessionActions';
 import HostKeyPrompt from './components/HostKeyPrompt/HostKeyPrompt';
+import AgentApproval from './components/AgentApproval/AgentApproval';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
 import { FEATURES, IS_ANDROID } from './platform';
 import { useBackFallback } from './hooks/useBackHandler';
@@ -261,6 +262,8 @@ function AppContent() {
       {hostFormOpen && <HostForm />}
       {/* Main asks here when a server's host key is unknown or changed */}
       <HostKeyPrompt />
+      {/* An AI agent's destructive command waits here for Run once / Block */}
+      <AgentApproval />
     </div>
   );
 }

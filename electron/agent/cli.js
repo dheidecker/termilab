@@ -228,7 +228,7 @@ async function cmdRun(argv) {
   if (opts.cwd !== undefined) params.cwd = opts.cwd;
   let r;
   try {
-    r = await callTermilab('run_command', params, { timeoutMs: runTimeoutMs(params.timeout_s) });
+    r = await callTermilab('run_command', params, { timeoutMs: runTimeoutMs(params.timeout_s), client: 'termilab-cli' });
   } catch (e) {
     err(await explain(e, host));
     return EXIT_RUN_FAILED;

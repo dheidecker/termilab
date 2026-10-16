@@ -20,7 +20,7 @@
  */
 const path = require('path');
 const readline = require('readline');
-const { callTermilab, runTimeoutMs, closeAll } = require('./client');
+const { callTermilab, runTimeoutMs, closeAll, APPROVAL_WAIT_MS } = require('./client');
 const { GUIDE } = require('./guide');
 
 const SERVER_INFO = { name: 'termilab', title: 'Termilab', version: readVersion() };
@@ -36,7 +36,7 @@ const INSTRUCTIONS = [
   '1. Call list_hosts first. Use a host "name" or "id" from it in every call. "local" is this computer. '
     + 'available:false means the host cannot be used now; relay its note to the user.',
   '2. One-off commands: run_command, e.g. {"host":"produccion","command":"docker ps","cwd":"/srv/app"}. Every call is a '
-    + 'fresh login as that host\'s user: cd, variables and sudo sessions do not carry over, so pass cwd. No terminal: a '
+    + 'fresh session on a shared connection, as that host\'s user: cd, variables and sudo sessions do not carry over, so pass cwd. No terminal: a '
     + 'prompt (sudo password, [Y/n]) hangs until timeout_s (default 60). Output capped at 256 KB per stream; filter remotely.',
   '3. Navigation, multi-step or interactive work (cd, env vars, sudo prompts, [Y/n], deploy scripts): open_shell -> '
     + 'send_input (end each command with "\\n") -> read_output (call again with wait_ms until the output stops growing and '
@@ -44,6 +44,10 @@ const INSTRUCTIONS = [
     + 'If sudo asks for a password, stop and tell the user; never guess one.',
   '4. Files: read_file / write_file over SFTP (paths absolute or ~/relative; 4 MB max; write replaces the whole file).',
   'You act with exactly that host user\'s permissions (root or sudo included): be as careful as the user would be.',
+  'Destructive commands need the user\'s approval: recursive deletes of project/home/system dirs, git reset --hard, '
+    + 'git clean -fdx, force push to main/master, DROP/TRUNCATE/DELETE without WHERE, dropdb, FLUSHALL, migrate:fresh, '
+    + 'db:drop, prisma migrate reset, docker volume rm, compose down -v. The call waits (up to 2 min) while Termilab asks '
+    + 'the user. "Blocked: ..." = the user said no: do not retry, rephrase or work around it; ask the user.',
   'Errors: "Termilab is not running" -> ask the user to open Termilab. Host key not trusted or CHANGED -> ask the user to '
     + 'connect to that host once from Termilab and check the key; agents can never accept host keys, never work around it. '
     + '"No host named" -> call list_hosts. "matches N hosts" -> use the id. Authentication failed -> the user must fix the '
@@ -69,7 +73,7 @@ const TOOLS = [
   {
     name: 'run_command',
     title: 'Run a command',
-    description: 'Run one shell command on a host and wait for it: a fresh SSH login as that host\'s user each call (local: the user\'s login shell), so cd, variables and sudo sessions do not persist; use cwd. Returns exit_code, stdout, stderr, timed_out, truncated, signal, duration_ms. stdout and stderr are capped at 256 KB each (truncated: true). No terminal: commands that prompt hang until the timeout; use non-interactive flags or open_shell. Example: {"host":"produccion","command":"docker ps","cwd":"/srv/app"}.',
+    description: 'Run one shell command on a host and wait for it: a fresh session on a shared connection, as that host\'s user, each call (local: the user\'s login shell), so cd, variables and sudo sessions do not persist; use cwd. Returns exit_code, stdout, stderr, timed_out, truncated, signal, duration_ms. stdout and stderr are capped at 256 KB each (truncated: true). No terminal: commands that prompt hang until the timeout; use non-interactive flags or open_shell. Destructive commands (recursive delete of a project or home dir, git reset --hard, force push to main, DROP/TRUNCATE, dropdb, migrate:fresh, docker volume rm, compose down -v) wait for the user to approve them in Termilab; "Blocked" means do not retry. Example: {"host":"produccion","command":"docker ps","cwd":"/srv/app"}.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -102,7 +106,7 @@ const TOOLS = [
   {
     name: 'send_input',
     title: 'Type into a shell',
-    description: 'Type into a shell opened with open_shell, exactly as keystrokes. End a command with "\\n" to press Enter; "\\u0003" is Ctrl-C, "\\u0004" Ctrl-D. Returns immediately: call read_output to see what happened. Example: {"session_id":"sh_...","data":"cd /srv/app && git pull\\n"}.',
+    description: 'Type into a shell opened with open_shell, exactly as keystrokes. End a command with "\\n" to press Enter; "\\u0003" is Ctrl-C, "\\u0004" Ctrl-D. Returns immediately: call read_output to see what happened. A destructive line (same rules as run_command, plus DROP/TRUNCATE/FLUSHALL typed into a database prompt) waits for the user to approve it in Termilab; "Blocked" means do not retry. Example: {"session_id":"sh_...","data":"cd /srv/app && git pull\\n"}.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -212,11 +216,19 @@ const toolError = (message, modern) => ({
   isError: true,
 });
 
-async function callTool(name, args) {
+async function callTool(name, args, client) {
   const a = args && typeof args === 'object' ? args : {};
-  /* Termilab enforces its own command timeout; give it room to answer */
-  const timeoutMs = name === 'run_command' ? runTimeoutMs(a.timeout_s) : 120000;
-  return callTermilab(name, a, { timeoutMs });
+  /* Termilab enforces its own command timeout; give it room to answer (and the user to approve) */
+  const timeoutMs = name === 'run_command' ? runTimeoutMs(a.timeout_s) : 120000 + (name === 'send_input' ? APPROVAL_WAIT_MS : 0);
+  return callTermilab(name, a, { timeoutMs, client });
+}
+
+/* The MCP client's name (initialize clientInfo, or the modern per-request _meta), for the approval prompt */
+const CLIENT_INFO = 'io.modelcontextprotocol/clientInfo';
+function clientName(info) {
+  if (!info || typeof info !== 'object') return null;
+  const n = typeof info.title === 'string' && info.title.trim() ? info.title : info.name;
+  return typeof n === 'string' && n.trim() ? n.trim().slice(0, 80) : null;
 }
 
 /**
@@ -243,6 +255,7 @@ async function handle(msg, state = {}) {
       const want = params.protocolVersion;
       const version = LEGACY.includes(want) ? want : LEGACY[0];
       state.version = version;
+      state.client = clientName(params.clientInfo) || state.client || null;
       return ok({ protocolVersion: version, capabilities: CAPABILITIES, serverInfo: SERVER_INFO, instructions: INSTRUCTIONS });
     }
     case 'server/discover':
@@ -277,7 +290,8 @@ async function handle(msg, state = {}) {
       const name = params.name;
       if (!TOOL_NAMES.has(name)) return err(-32602, `Unknown tool: ${name}`);
       try {
-        return ok(toolResult(await callTool(name, params.arguments), modern));
+        const client = clientName(meta && meta[CLIENT_INFO]) || state.client || null;
+        return ok(toolResult(await callTool(name, params.arguments, client), modern));
       } catch (e) {
         return ok(toolError(e.message || String(e), modern));
       }

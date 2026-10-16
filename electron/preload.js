@@ -294,6 +294,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
       if (listener) ipcRenderer.removeListener('agent:status', listener);
       else ipcRenderer.removeAllListeners('agent:status');
     },
+    /* A destructive command waits for the user (electron/agent/approval.js). Main pushes
+         {requestId, client, host, tool, category, label, reason, command, cwd?, timeoutMs}
+       and blocks it after timeoutMs (2 min) unless respondApproval(requestId, true).
+       'agent:approval-cancel' {requestId, reason} = main gave up: close the dialog.
+       One subscriber (AgentApproval). */
+    onApprovalPrompt: (callback) => {
+      const listener = (event, payload) => callback(payload);
+      ipcRenderer.on('agent:approval-prompt', listener);
+      return listener;
+    },
+    onApprovalCancel: (callback) => {
+      const listener = (event, payload) => callback(payload);
+      ipcRenderer.on('agent:approval-cancel', listener);
+      return listener;
+    },
+    removeApprovalListener: (listener) => {
+      if (!listener) return;
+      ipcRenderer.removeListener('agent:approval-prompt', listener);
+      ipcRenderer.removeListener('agent:approval-cancel', listener);
+    },
+    respondApproval: (requestId, approve) => invoke('agent:approval-response', { requestId, approve: approve === true }),
   },
 
   // ─── Port Forwarding (Active Tunnels) ─────────────────

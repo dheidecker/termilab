@@ -46,6 +46,18 @@ Over SFTP (or the local disk for \`local\`). Paths are absolute or relative to t
 
 Text comes back as utf-8, other files as base64 (see \`encoding\`). Reads default to 256 KB (\`max_bytes\` up to 4 MB, \`truncated: true\` if cut); writes up to 4 MB and replace the whole file. To change a config: read it, edit, write it back, then verify (for example \`nginx -t\`).
 
+## Destructive commands need the user's approval
+
+You may run anything, except operations that destroy a project or a database: those pause until the user clicks **Run once** in Termilab (up to 2 minutes). This applies to \`run_command\` and to lines typed with \`send_input\`, on every host including \`local\`, also behind \`sudo\`, \`sh -c\`, \`ssh\`, \`docker exec\`, pipes and heredocs:
+
+- Recursive deletes (\`rm -r\`, \`find … -delete\`, \`find … -exec rm\`) of anything that is not \`/tmp\`, \`/var/tmp\`, \`node_modules\`, \`.cache\`, \`dist\`, \`build\`, \`__pycache__\` or \`vendor\` (home, \`/srv\`, \`/var/www\`, \`/opt\`, \`/var/lib\`, a project folder, \`.\`, a variable).
+- \`git reset --hard\`, \`git clean -fdx\`, force push (\`--force\`, \`-f\`, \`--force-with-lease\`, \`+ref\`) to main/master or without naming the branch.
+- SQL \`DROP DATABASE|SCHEMA|TABLE\`, \`TRUNCATE\`, \`DELETE FROM\` without \`WHERE\`; \`dropdb\`, \`mysqladmin drop\`; Mongo \`dropDatabase()\` / \`.drop()\`; Redis \`FLUSHALL\` / \`FLUSHDB\`.
+- Database resets: \`artisan migrate:fresh|refresh|reset\`, \`db:wipe\`, Rails \`db:drop|reset|schema:load\`, \`prisma migrate reset\`, \`prisma db push --force-reset\`, Django \`flush\` / \`reset_db\`, \`sequelize db:drop\`, \`knex migrate:rollback --all\`, \`typeorm schema:drop\`.
+- Data volumes: \`docker volume rm|prune\`, \`docker system prune --volumes\`, \`docker compose down -v\`, \`podman volume rm|prune\`.
+
+If the user approves, exactly that command runs, that once. If the result is "Blocked: this command was classified as … and the user did not approve it", stop: do not retry it, rephrase it, split it up or reach the same result another way. Tell the user what you wanted to do and why, and let them decide.
+
 ## Errors and what to do
 
 - "Termilab is not running": ask the user to open Termilab, then retry.
@@ -54,6 +66,7 @@ Text comes back as utf-8, other files as base64 (see \`encoding\`). Reads defaul
 - "matches N hosts": use the \`id\` instead of the name.
 - Authentication failed: the credentials saved in Termilab are wrong; ask the user to fix the host in Termilab.
 - "Connection to ... was lost while ...": the network or the server dropped mid-call and it was NOT retried. The command may or may not have run: check its effect before running it again.
+- "Blocked: …": the user did not approve a destructive command (see above). Do not retry or work around it; ask the user.
 
 Every call is recorded in Termilab's Logs (tool, host, command, exit code, duration; never the output or file contents).
 

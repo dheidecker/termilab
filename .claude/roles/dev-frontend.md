@@ -850,3 +850,13 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
 - Logs mezcla las filas `type:'agent'` (archivo propio de main, no `connection-logs`): sin reconectar ni
   marcador, columna de usuario "AI agent". "Clear history" borra las dos. AgentsDock pinta el badge
   `agent` en la cabecera mientras haya shells de agente abiertas. No se ha mirado con los ojos.
+
+## Aprobación de comandos destructivos de agentes (2026-10-16)
+
+- `src/components/AgentApproval/` (montado en `App` junto a `HostKeyPrompt`, solo escritorio): único
+  suscriptor de `agent:approval-prompt`/`-cancel` vía `electronAPI.agents.onApprovalPrompt`. Reusa las
+  clases `.hkp-*` del diálogo de host key (importa su CSS) y va por encima (z-index 6100).
+- Foco por defecto en **Block** (requisito, no estilo); Escape = Block; "Run once" rojo. El comando va
+  entero en un `<pre>` con scroll (`max-height: 38vh`).
+- Trampa vista en la captura: la cuenta atrás salía "2:01" porque `now` se inicializa al montar la app;
+  hay que `setNow(Date.now())` al llegar cada aviso. Mirado con los ojos vía CDP (scripts/e2e-approval.mjs).
