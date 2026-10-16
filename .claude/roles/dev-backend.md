@@ -911,4 +911,8 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
 - Probado empaquetado: `ELECTRON_RUN_AS_NODE=1 linux-unpacked/termilab resources/app.asar/electron/agent/mcp.js`
   funciona (`require` desde el asar). `node scripts/e2e-agent.mjs [linux-unpacked]` = Electron real bajo
   xvfb + sshd real + MCP. Para empaquetar sin pisar `release/`: `-c.directories.output=<scratch>`.
+- `mcp.js` sale YA (exit 0, sockets destruidos) al cerrarse stdin y con SIGTERM/SIGINT/SIGHUP, aunque haya
+  una llamada en vuelo: el lanzador `--mcp` puede morir y el hijo no debe quedarse (AG22, control negativo
+  hecho). Lo que ya corre en Termilab (un `sleep` local/remoto) NO se cancela al cortarse el socket: hueco.
+  `console.*` se redirige a stderr en `main()`: stdout es solo JSON-RPC.
 - `TERMILAB_CHECK_ONLY=AG` (~15 s). `real-sshd.js` devuelve ahora `hostPublicKey` (para sembrar known hosts).
