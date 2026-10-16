@@ -937,3 +937,34 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
 - Controles negativos hechos en copia (necesita `electron scripts docs src server/api package.json` +
   symlink de `node_modules`, o el arnés revienta antes de AG): código de salida fijo → AG24/AG25; sin
   descripción → AG31; doc desviada → AG32.
+
+## Pool de conexiones de agentes (rama `feat/agent-pool-guard`, 2026-10-16, arnés AGP1–AGP9)
+
+- `electron/agent/conn-pool.js`: una conexión ssh2 por host (clave = id del host + `fingerprint()` de
+  hostname/puerto/usuario/tipo/keyId y SHA-256 de clave/passphrase/contraseña; en el pool solo el hash).
+  Huella distinta = conexión vieja **retirada** (sin canales nuevos, se cierra al acabar su último canal),
+  no matada: lo que corría en ella termina bien (AGP6). exec/shell = canal nuevo; read/write = UN canal
+  SFTP por conexión, reutilizado (se reabre si se cierra o falla sin código SFTP numérico).
+- **El sshd de OpenSSH libera la sesión DESPUÉS de que el cliente ve el `close`**: reabrir justo al
+  cerrar choca con MaxSessions (medido: 20 de 80 rechazados, "no more sessions"). Tras el primer
+  rechazo la conexión queda `lowered` y cada hueco libre espera `settleMs` (150 ms) antes de darse.
+- **El callback de `client.exec` llega tras abrir el canal Y la petición exec**, más tarde que un
+  rechazo de un canal posterior. Bajar el límite a "lo abierto" en ese momento daba 0 y fallaba (AGP3
+  rojo intermitente). Ahora se espera a que todas las peticiones pendientes (`e.opening`) contesten y
+  se cuenta solo lo concedido (`e.opened`); el hueco no se suelta hasta decidir.
+- Caída: `client 'close'` llega antes que el `close` de los canales, así que en el `close` del stream
+  `ch.lost()` ya es true. En vuelo sin `exit` = `connection-lost` (texto fijo, AGP7 lo mira), nunca
+  reintento; con `exit` recibido se devuelve el resultado. En cola / sin empezar = un reintento.
+  `Not connected` / `No response from server` = caída. Un login fallido NO es caída: todos los que
+  esperaban reciben ese error y no se reintenta (un fallo de auth no debe multiplicar intentos).
+- Timeout de `run_command`: KILL + close del canal, y si el servidor no lo cierra en 1,5 s (algo
+  hereda las pipes: `sleep` huérfano) se contesta y se **retira** la conexión. Antes se hacía
+  `client.end()`, que ahora mataría las demás llamadas. La cola cuenta para el timeout; el login no.
+- Shells: ya no se escucha `client.on('close'|'error')` por shell (fuga de listeners en el cliente
+  compartido); basta el `close` del stream. Cerrar = `end('exit\n')` + `close()` del canal.
+- Contar logins en el arnés: `startRealSshd({ logLevel: 'INFO', extra: ['MaxSessions 4'] })` y
+  `log()` → líneas "Accepted publickey". Matar la conexión en el servidor = SIGKILL a los procesos
+  `sshd: ...` descendientes del sshd del arnés (no a los comandos). Controles negativos hechos:
+  sin reintento por rechazo → AGP3; sin reintento por caída → AGP8; sin pool → AGP1–8.
+- Pendiente fuera de alcance: `mcp.js` (descripción de run_command e instructions) aún dice "fresh
+  SSH login"; correcto sería "fresh session". No se tocó por el trabajo paralelo del guard.

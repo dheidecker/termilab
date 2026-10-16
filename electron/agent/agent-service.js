@@ -33,6 +33,7 @@ const { decide } = require('../services/known-hosts');
 const { agentPaths } = require('./paths');
 const { AgentLog } = require('./agent-log');
 const localExec = require('./local-exec');
+const { ConnPool, fingerprint } = require('./conn-pool');
 
 const LIMITS = {
   output: 256 * 1024,          // run_command, each of stdout / stderr
@@ -102,6 +103,8 @@ class AgentService {
     this._sweep = null;
     this._conns = new Set();
     this.log = new AgentLog(() => path.join(this._userData(), 'data'));
+    /* One SSH connection per host, shared by every agent call (conn-pool.js) */
+    this.pool = new ConnPool({ connect: conn => this._connect(conn) });
   }
 
   _userData() {
@@ -143,6 +146,7 @@ class AgentService {
   async start({ userDataDir } = {}) {
     if (this.server) return { listening: true, socket: this.paths.socket };
     if (userDataDir) this.userDataDir = userDataDir;
+    this.pool.stopped = false;
     const dir = this._userData();
     this.paths = agentPaths(dir);
     const posix = process.platform !== 'win32';
@@ -184,6 +188,7 @@ class AgentService {
     clearInterval(this._sweep);
     this._sweep = null;
     for (const id of [...this.shells.keys()]) this._closeShell(id, 'quit');
+    this.pool.closeAll();
     for (const c of this._conns) { try { c.destroy(); } catch (_) { /* gone */ } }
     this._conns.clear();
     const server = this.server;
@@ -440,7 +445,7 @@ class AgentService {
         username: conn.username,
         readyTimeout: this.limits.connectMs,
         keepaliveInterval: 15000,
-        keepaliveCountMax: 3,
+        keepaliveCountMax: 4,
         tryKeyboard: !!conn.password,
         hostVerifier,
       };
@@ -461,59 +466,83 @@ class AgentService {
     });
   }
 
-  async _withClient(t, fn) {
-    const client = await this._connect(await this._credentials(t));
+  /* What the pool needs to find (or open) this host's connection. Credentials stay in this process. */
+  async _poolSpec(t) {
+    const conn = await this._credentials(t);
+    return { key: t.id, fp: fingerprint(t.host, conn), label: t.name, conn };
+  }
+
+  _lostError(t, what) {
+    return new AgentError('connection-lost', `Connection to ${t.name} was lost while ${what}; it may or may not have completed.`);
+  }
+
+  /* A channel on the pooled connection; `what` words the "could not start" error. */
+  async _channel(t, open, deadline, what) {
+    const spec = await this._poolSpec(t);
     try {
-      return await fn(client);
-    } finally {
-      try { client.end(); } catch (_) { /* ignore */ }
+      return await this.pool.channel(spec, open, deadline);
+    } catch (err) {
+      if (err instanceof AgentError || err.code === 'timeout') throw new AgentError(err.code, err.message);
+      throw new AgentError('ssh', `${what}: ${err.message}`);
     }
   }
 
-  _exec(client, command, timeoutMs) {
+  /* ch = a pooled exec channel. In flight when the connection drops = error, never a retry. */
+  _exec(ch, t, timeoutMs) {
     const max = this.limits.output;
+    const stream = ch.stream;
     return new Promise((resolve, reject) => {
-      client.exec(command, (err, stream) => {
-        if (err) { reject(new AgentError('ssh', `Could not start the command: ${err.message}`)); return; }
-        /* zlib/transport teardown can throw from close() (see keeper-service.run) */
-        const destroy = stream.destroy;
-        stream.destroy = function guarded(...a) { try { return destroy.apply(this, a); } catch (_) { return this; } };
-        const out = { stdout: [], stderr: [] };
-        const len = { stdout: 0, stderr: 0 };
-        const total = { stdout: 0, stderr: 0 };
-        let code = null; let signal = null; let timedOut = false;
-        const take = (name) => (d) => {
-          total[name] += d.length;
-          const room = max - len[name];
-          if (room <= 0) return;
-          const part = d.length > room ? d.subarray(0, room) : d;
-          out[name].push(part);
-          len[name] += part.length;
-        };
-        stream.on('data', take('stdout'));
-        stream.stderr.on('data', take('stderr'));
-        stream.on('exit', (c, s) => { code = typeof c === 'number' ? c : null; signal = s || null; });
-        const timer = setTimeout(() => {
-          timedOut = true;
-          try { stream.signal('KILL'); } catch (_) { /* not supported */ }
-          try { stream.close(); } catch (_) { /* gone */ }
-          setTimeout(() => { try { client.end(); } catch (_) { /* gone */ } }, 500).unref();
-        }, timeoutMs);
-        stream.on('close', () => {
-          clearTimeout(timer);
-          resolve({
-            exit_code: code,
-            signal,
-            stdout: Buffer.concat(out.stdout).toString('utf-8'),
-            stderr: Buffer.concat(out.stderr).toString('utf-8'),
-            truncated: total.stdout > max || total.stderr > max,
-            stdout_bytes: total.stdout,
-            stderr_bytes: total.stderr,
-            timed_out: timedOut,
-          });
+      /* zlib/transport teardown can throw from close() (see keeper-service.run) */
+      const destroy = stream.destroy;
+      stream.destroy = function guarded(...a) { try { return destroy.apply(this, a); } catch (_) { return this; } };
+      const out = { stdout: [], stderr: [] };
+      const len = { stdout: 0, stderr: 0 };
+      const total = { stdout: 0, stderr: 0 };
+      let code = null; let signal = null; let timedOut = false; let settled = false;
+      let stuck = null;
+      const take = (name) => (d) => {
+        total[name] += d.length;
+        const room = max - len[name];
+        if (room <= 0) return;
+        const part = d.length > room ? d.subarray(0, room) : d;
+        out[name].push(part);
+        len[name] += part.length;
+      };
+      stream.on('data', take('stdout'));
+      stream.stderr.on('data', take('stderr'));
+      stream.on('exit', (c, s) => { code = typeof c === 'number' ? c : null; signal = s || null; });
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(stuck);
+        if (!timedOut && code === null && signal === null && ch.lost()) {
+          reject(this._lostError(t, 'the command was running'));
+          return;
+        }
+        resolve({
+          exit_code: code,
+          signal,
+          stdout: Buffer.concat(out.stdout).toString('utf-8'),
+          stderr: Buffer.concat(out.stderr).toString('utf-8'),
+          truncated: total.stdout > max || total.stderr > max,
+          stdout_bytes: total.stdout,
+          stderr_bytes: total.stderr,
+          timed_out: timedOut,
         });
-        try { stream.end(); } catch (_) { /* ignore */ }
-      });
+      };
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try { stream.signal('KILL'); } catch (_) { /* not supported */ }
+        try { stream.close(); } catch (_) { /* gone */ }
+        /* The server keeps the channel while something still holds its pipes:
+           answer now, and stop giving this connection new channels (it closes
+           once that channel finally does). */
+        stuck = setTimeout(() => { ch.retire(); finish(); }, 1500);
+        if (stuck.unref) stuck.unref();
+      }, timeoutMs);
+      stream.on('close', finish);
+      try { stream.end(); } catch (_) { /* ignore */ }
     });
   }
 
@@ -546,7 +575,10 @@ class AgentService {
       if (t.kind === 'local') {
         r = await localExec.runLocal({ command: p.command, cwd: p.cwd || undefined, timeoutMs: secs * 1000, maxBytes: this.limits.output });
       } else {
-        r = await this._withClient(t, c => this._exec(c, `${remoteCd(p.cwd)}${p.command}`, secs * 1000));
+        const cmd = `${remoteCd(p.cwd)}${p.command}`;
+        /* The timeout covers waiting for a free channel too, not the login */
+        const ch = await this._channel(t, (c, cb) => c.exec(cmd, cb), t0 + secs * 1000, 'Could not start the command');
+        r = await this._exec(ch, t, Math.max(1, secs * 1000 - ch.waitedMs));
       }
       return { host: t.name, ...r, duration_ms: Date.now() - t0 };
     });
@@ -573,18 +605,17 @@ class AgentService {
         pty.onData(onData);
         pty.onExit(({ exitCode }) => this._shellClosed(entry, exitCode));
       } else {
-        const client = await this._connect(await this._credentials(t));
-        entry.client = client;
-        const stream = await new Promise((resolve, reject) => {
-          client.shell({ term: 'xterm-256color', cols, rows }, (err, s) => (err ? reject(new AgentError('ssh', `Could not open a shell: ${err.message}`)) : resolve(s)));
-        }).catch((err) => { try { client.end(); } catch (_) { /* ignore */ } throw err; });
+        /* A channel on the pooled connection: while it is open the connection stays in use */
+        const ch = await this._channel(t, (c, cb) => c.shell({ term: 'xterm-256color', cols, rows }, cb),
+          Date.now() + this.limits.timeoutDefaultS * 1000, 'Could not open a shell');
+        const stream = ch.stream;
+        entry.channel = ch;
         entry.stream = stream;
         stream.on('data', onData);
         stream.stderr.on('data', onData);
         stream.on('exit', (c) => { entry.exitCode = typeof c === 'number' ? c : null; });
+        /* ssh2 closes every channel when the socket goes: this covers a dropped connection too */
         stream.on('close', () => this._shellClosed(entry, entry.exitCode));
-        client.on('close', () => this._shellClosed(entry, entry.exitCode));
-        client.on('error', () => this._shellClosed(entry, entry.exitCode));
       }
       this.shells.set(id, entry);
       this._emitStatus();
@@ -611,7 +642,8 @@ class AgentService {
     const tail = entry.decoder.end();
     if (tail) this._shellData(entry, tail);
     for (const w of [...entry.waiters]) w();
-    try { if (entry.client) entry.client.end(); } catch (_) { /* gone */ }
+    /* The connection is shared: only this shell's channel goes */
+    try { if (entry.stream) entry.stream.close(); } catch (_) { /* gone */ }
     this._emitStatus();
   }
 
@@ -670,8 +702,9 @@ class AgentService {
         entry.pty.kill();
         if (entry.unit) localExec.stopUnit(entry.unit);
       } else {
+        /* Only this channel: the connection is shared with other agent calls */
         try { entry.stream.end('exit\n'); } catch (_) { /* gone */ }
-        entry.client.end();
+        try { entry.stream.close(); } catch (_) { /* gone */ }
       }
     } catch (_) { /* gone */ }
     if (!entry.closed) {
@@ -710,8 +743,29 @@ class AgentService {
 
   // ─── Files ──────────────────────────────────────────────
 
-  _sftp(client) {
-    return new Promise((resolve, reject) => client.sftp((err, s) => (err ? reject(new AgentError('sftp', `SFTP is not available on this host: ${err.message}`)) : resolve(s))));
+  /*
+   * fn(sftp) on the host's shared SFTP channel. A drop while it runs is an
+   * error (not retried); an SFTP failure that is not a file status (no
+   * numeric code) discards the channel so the next call opens a fresh one.
+   */
+  async _withSftp(t, what, fn) {
+    const spec = await this._poolSpec(t);
+    let s;
+    try {
+      s = await this.pool.sftp(spec, Date.now() + this.limits.timeoutDefaultS * 1000);
+    } catch (err) {
+      if (err instanceof AgentError || err.code === 'timeout') throw new AgentError(err.code, err.message);
+      throw new AgentError('sftp', `SFTP is not available on this host: ${err.message}`);
+    }
+    try {
+      return await fn(s.sftp);
+    } catch (err) {
+      if (s.lost()) throw this._lostError(t, what);
+      if (!(err instanceof AgentError) && typeof err.code !== 'number') s.discard();
+      throw err;
+    } finally {
+      s.done();
+    }
   }
 
   async _remotePath(sftp, p) {
@@ -737,8 +791,7 @@ class AgentService {
           return { host: t.name, path: file, size: st.size, truncated: st.size > bytesRead, ...decodeText(buf.subarray(0, bytesRead)) };
         } finally { await fh.close(); }
       }
-      return this._withClient(t, async (client) => {
-        const sftp = await this._sftp(client);
+      return this._withSftp(t, `reading ${p.path}`, async (sftp) => {
         const file = await this._remotePath(sftp, p.path);
         const call = (fn, ...a) => new Promise((resolve, reject) => sftp[fn](...a, (e, ...r) => (e ? reject(e) : resolve(r))));
         const [st] = await call('stat', file).catch(e => fail(`${file}: ${e.message}`, 'not-found'));
@@ -773,8 +826,7 @@ class AgentService {
         if (mode !== null) await fsp.chmod(file, mode);
         return { host: t.name, path: file, bytes_written: data.length };
       }
-      return this._withClient(t, async (client) => {
-        const sftp = await this._sftp(client);
+      return this._withSftp(t, `writing ${p.path}`, async (sftp) => {
         const file = await this._remotePath(sftp, p.path);
         await new Promise((resolve, reject) => sftp.writeFile(file, data, mode === null ? {} : { mode }, e => (e ? reject(new AgentError('sftp', `${file}: ${e.message}`)) : resolve())));
         if (mode !== null) await new Promise((resolve, reject) => sftp.chmod(file, mode, e => (e ? reject(new AgentError('sftp', `chmod ${file}: ${e.message}`)) : resolve())));

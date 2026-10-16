@@ -53,6 +53,9 @@ function waitForPort(port, timeoutMs, child) {
  *   command in $SSH_ORIGINAL_COMMAND, subsystems included). The keeper suite
  *   uses it to point HOME at a temp folder and to fake uname / noexec.
  * opts.noSftp: no Subsystem line, so an SFTP request is refused.
+ * opts.logLevel: sshd LogLevel (default ERROR). With INFO, `log()` has one
+ *   "Accepted publickey" line per login (the agent pool counts them).
+ * opts.extra: more sshd_config lines (e.g. ['MaxSessions 4']).
  */
 async function startRealSshd(opts = {}) {
   if (!fs.existsSync(SSHD)) throw new Error(`${SSHD} not found`);
@@ -77,7 +80,8 @@ async function startRealSshd(opts = {}) {
     'PubkeyAuthentication yes',
     ...(opts.noSftp ? [] : [`Subsystem sftp ${sftpServer}`]),
     ...(opts.forceCommand ? [`ForceCommand ${opts.forceCommand}`] : []),
-    'LogLevel ERROR',
+    ...(opts.extra || []),
+    `LogLevel ${opts.logLevel || 'ERROR'}`,
   ].join('\n');
   const configFile = path.join(dir, 'sshd_config');
   fs.writeFileSync(configFile, `${config}\n`);
@@ -100,6 +104,8 @@ async function startRealSshd(opts = {}) {
     /* "ssh-ed25519 AAAA… comment": a known_hosts line is `[127.0.0.1]:<port> ${hostPublicKey}` */
     hostPublicKey: fs.readFileSync(`${hostKey}.pub`, 'utf-8').trim(),
     pid: child.pid,
+    /* everything sshd (and its per-connection children) wrote to stderr so far */
+    log: () => stderr,
     stop: () => new Promise((resolve) => {
       const done = () => { fs.rmSync(dir, { recursive: true, force: true }); resolve(); };
       if (child.exitCode !== null) return done();

@@ -18,7 +18,7 @@ Termilab is an SSH client running on the user's computer. Through it you can wor
 
 ## One-off commands: run_command
 
-Each call is a fresh login: nothing (current directory, variables, sudo session) carries over to the next call. Use \`cwd\` instead of \`cd\`.
+Each call runs in a fresh session: nothing (current directory, variables, sudo session) carries over to the next call. Use \`cwd\` instead of \`cd\`.
 
     run_command {"host": "produccion", "command": "docker ps", "cwd": "/srv/app"}
 
@@ -53,6 +53,7 @@ Text comes back as utf-8, other files as base64 (see \`encoding\`). Reads defaul
 - "No host named ...": call \`list_hosts\` and use an exact name or id.
 - "matches N hosts": use the \`id\` instead of the name.
 - Authentication failed: the credentials saved in Termilab are wrong; ask the user to fix the host in Termilab.
+- "Connection to ... was lost while ...": the network or the server dropped mid-call and it was NOT retried. The command may or may not have run: check its effect before running it again.
 
 Every call is recorded in Termilab's Logs (tool, host, command, exit code, duration; never the output or file contents).
 

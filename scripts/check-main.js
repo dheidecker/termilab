@@ -50,7 +50,8 @@
  *  14. AGENTES DE IA (AG*, scripts/lib/check-agent.js): socket 0600 + token,
  *     MCP por stdio (electron/agent/mcp.js), run_command contra sshd real,
  *     host keys nunca aceptadas, topes, shells, "local" sin NNP, ningun secreto.
- *     Solo esta seccion: TERMILAB_CHECK_ONLY=AG.
+ *     Solo esta seccion: TERMILAB_CHECK_ONLY=AG. AGP* (check-agent-pool.js): una
+ *     conexion SSH por host para los agentes (cola, MaxSessions, caidas, inactividad).
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -1437,6 +1438,7 @@ async function main() {
   // TERMILAB_CHECK_ONLY=AG: solo el grafo + la API para agentes de IA (MCP)
   if (process.env.TERMILAB_CHECK_ONLY === 'AG') {
     await require('./lib/check-agent').seccionAgent({ check, ROOT });
+    await require('./lib/check-agent-pool').seccionAgentPool({ check, ROOT });
     console.log(results.join('\n'));
     console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo AG)');
     process.exit(failures ? 1 : 0);
@@ -1478,6 +1480,7 @@ async function main() {
   await require('./lib/check-claude-history').seccionClaudeHistory({ check, ROOT, handlers });
   // ── AG. Agentes de IA: socket local + MCP por stdio, sshd real, sin secretos ──
   await require('./lib/check-agent').seccionAgent({ check, ROOT });
+  await require('./lib/check-agent-pool').seccionAgentPool({ check, ROOT });
 
   // ── R/A. Restaurar el espacio de trabajo; reconexion automatica ──
   await require('./lib/check-workspace').seccionWorkspace({ check, ROOT });

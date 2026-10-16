@@ -30,7 +30,8 @@ There are two ways in, and both reach the same place:
 ```
 
 - `termilab-cli` is a thin client. It holds no state and reads no host data; it forwards each request to the running Termilab over a local socket (`<userData>/agent.sock`, mode 0600, in a 0700 folder; a per-user named pipe on Windows) and authenticates with a random token in `<userData>/agent-token` (mode 0600). Only your own user account can open either. Nothing listens on the network.
-- Termilab resolves the host, checks its host key against the keys you have already trusted, logs in with the saved credentials, runs the action and returns the result. Each `run_command` is a fresh SSH login; interactive shells stay open until closed or idle for 15 minutes.
+- Termilab resolves the host, checks its host key against the keys you have already trusted, logs in with the saved credentials, runs the action and returns the result. Each `run_command` runs in a fresh SSH session; interactive shells stay open until closed or idle for 15 minutes.
+- **Connections.** While an agent works, Termilab logs in to each host once and runs every call (commands, file reads and writes, shells) as a new channel on that connection, like OpenSSH's ControlMaster: one login per host instead of one per call. It closes after 10 minutes without agent activity (an open shell counts as activity) and when Termilab quits. Editing the host in Termilab drops it, so the next call logs in with the new settings. Up to 8 calls run at once per host; more wait their turn, and a server with a lower `MaxSessions` is detected and respected. If the connection drops, calls that were running fail with a clear error and are not repeated; calls still waiting reconnect on their own.
 - `<userData>` is `~/.config/termilab` on Linux, `~/Library/Application Support/termilab` on macOS and `%APPDATA%\termilab` on Windows.
 
 ## Requirements
@@ -147,7 +148,7 @@ Termilab is an SSH client running on the user's computer. Through it you can wor
 
 #### One-off commands: run_command
 
-Each call is a fresh login: nothing (current directory, variables, sudo session) carries over to the next call. Use `cwd` instead of `cd`.
+Each call runs in a fresh session: nothing (current directory, variables, sudo session) carries over to the next call. Use `cwd` instead of `cd`.
 
     run_command {"host": "produccion", "command": "docker ps", "cwd": "/srv/app"}
 
@@ -182,6 +183,7 @@ Text comes back as utf-8, other files as base64 (see `encoding`). Reads default 
 - "No host named ...": call `list_hosts` and use an exact name or id.
 - "matches N hosts": use the `id` instead of the name.
 - Authentication failed: the credentials saved in Termilab are wrong; ask the user to fix the host in Termilab.
+- "Connection to ... was lost while ...": the network or the server dropped mid-call and it was NOT retried. The command may or may not have run: check its effect before running it again.
 
 Every call is recorded in Termilab's Logs (tool, host, command, exit code, duration; never the output or file contents).
 
@@ -237,7 +239,7 @@ backup      -           root@backup.lan:2222      debian
 
 ### run
 
-Runs one command over a fresh login as that host's user and waits for it. Its stdout and stderr go to termilab-cli's stdout and stderr, and termilab-cli exits with the command's exit code.
+Runs one command in a fresh session as that host's user and waits for it. Its stdout and stderr go to termilab-cli's stdout and stderr, and termilab-cli exits with the command's exit code.
 
 | Option | Meaning |
 |---|---|
