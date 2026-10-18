@@ -997,3 +997,40 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
 - Huecos conocidos (documentados en docs/agents.md): scripts escritos y luego ejecutados (`bash x.sh`,
   `psql -f`, `mysql < f`), comandos armados en ejecución (base64, variables), alias/funciones,
   programas que borran solos, edición de línea con flechas en una shell interactiva.
+
+## CLI en el PATH de macOS (`cli-install-service.js`, 2026-10-18, arnés CI1–CI13)
+
+- Servicio **inyectable** (`new CliInstallService({platform, home, resourcesPath, isPackaged, shell, env,
+  loginPath})`): el arnés nunca toca el `~/.local/bin` real (CI12 lo compara antes/después). Fuera de darwin
+  responde sin leer disco ni lanzar shell; Android y cualquier otra plataforma caen en `'linux-packaged'`.
+- "Es de Termilab" = symlink cuyo destino (aunque cuelgue) es `*.app/Contents/Resources/bin/<mismo nombre>`.
+  Todo lo demás es ajeno: install lanza **antes de crear ninguno** (no medio instalar), uninstall lo salta.
+  Reemplazo de stale = symlink temporal + `rename`.
+- `onPath`: `$SHELL -lc` (fallback `os.userInfo().shell`, Finder puede no poner SHELL) con marcadores en la
+  salida, porque un profile que hace `echo` ensucia stdout (CI9). `-l` en zsh lee `.zprofile`, **no**
+  `.zshrc`: quien tenga el PATH solo en `.zshrc` sale `onPath:false` aunque su terminal lo vea. Decisión
+  del encargo (shell de login), no un bug.
+- **El namespace `cli` está omitido en el shim de Android** (`mobile/web/electron-api-shim.js` +
+  `EXPECTED_OMITTED` de `check-mobile.js`): todo namespace nuevo de preload rompe M1a/M1b si no va al shim o
+  a esas dos listas. `npm run build` ni `check-main` lo ven; `node scripts/check-mobile.js` sí.
+- CI13 ejecuta los lanzadores reales de `build/mac/` a través del enlace contra un bundle falso
+  (`MacOS/Termilab` = script que imprime `ELECTRON_RUN_AS_NODE` y args).
+- Controles negativos hechos en copia: ajeno como stale → CI7/CI8; regular como stale → CI6/CI8; uninstall
+  sin filtro → CI8; sin guardia de plataforma → CI1; PATH del proceso → CI9; sin marcadores → CI9; sin
+  timeout → CI10; sin chequeo previo de ambos → CI6/CI7.
+
+### Dock con `--cli`/`--mcp` directos: cómo se mide
+
+- `lsappinfo visibleProcessList` → ASN → `lsappinfo info -only pid <ASN>`; filtra el pid de la app de Derek.
+  Una sola muestra a los 5 s no basta: muestrea en bucle 3 s. Sin arreglo, visible todo el rato; con
+  `app.setActivationPolicy('prohibited')` (o `app.dock.hide()`, igual) antes del `spawnSync`, ~150 ms al
+  arrancar y nada más (Electron se registra antes de ejecutar main.js; eso no se puede quitar desde JS).
+- Parchear un `.app` empaquetado sin reconstruir: `ditto` a scratch, `npx --no-install @electron/asar
+  extract/pack`, `codesign --force --deep -s -`. Funciona porque el fuse
+  `EnableEmbeddedAsarIntegrityValidation` está **Disabled** (`npx @electron/fuses read --app X.app`); si
+  algún día se activa, este atajo deja de valer.
+- El scratchpad de la sesión es compartido con los otros subagentes del mismo orquestador: aparecen `.app`
+  y procesos suyos ahí (`scratchpad/Mis Apps/...`). No los mates por estar "en tu" scratch.
+- El arnés completo en Mac tiene ~27 fallos preexistentes (Linux: systemd-run, /proc, sshd...) y algunos
+  flojos por carga (CH4, F7, S9 cambian entre corridas). Para saber si rompiste algo: `git archive HEAD` a
+  scratch + symlink de `node_modules`, corre ahí, y compara las listas de `FALLA`.
