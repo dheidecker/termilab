@@ -208,6 +208,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     resolve: (spec) => invoke('paths:resolve', spec),
   },
 
+  // ─── Command line tools on the PATH (macOS) ─────────────
+  // CliStatus = {supported, reason ('linux-packaged'|'windows'|'dev-build'|
+  // 'scripts-missing'|null), binDir, installed, stale, onPath, pathLine,
+  // shellRc, entries:[{name, linkPath, target}]}. install/uninstall reject
+  // with a readable message when unsupported or a name is taken by a non-Termilab file.
+  cli: {
+    status: () => invoke('cli:status'),
+    install: () => invoke('cli:install'),
+    uninstall: () => invoke('cli:uninstall'),
+  },
+
   // ─── Local filesystem (SFTP Local pane) ────────────────
   // Absolute paths; names are one segment; trash() uses the OS trash.
   localFs: {

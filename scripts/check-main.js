@@ -56,6 +56,9 @@
  *     tabla de electron/agent/destructive.js, aprobacion Run once / Block con
  *     un renderer falso, run_command / send_input de verdad en "local".
  *     Solo esta seccion: TERMILAB_CHECK_ONLY=DX.
+ *  16. CLI EN EL PATH (CI*, scripts/lib/check-cli-install.js): enlaces de
+ *     termilab-cli/mcp en ~/.local/bin (macOS) con HOME temporal; Linux/Windows
+ *     supported:false sin tocar disco. Solo esta seccion: TERMILAB_CHECK_ONLY=CI.
  *
  * No abre Electron ni toca el servidor real. No necesita red.
  */
@@ -1456,6 +1459,14 @@ async function main() {
     process.exit(failures ? 1 : 0);
   }
 
+  // TERMILAB_CHECK_ONLY=CI: solo el grafo + termilab-cli/mcp en el PATH (macOS)
+  if (process.env.TERMILAB_CHECK_ONLY === 'CI') {
+    await require('./lib/check-cli-install').seccionCliInstall({ check, ROOT, handlers });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo CI)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // TERMILAB_CHECK_ONLY=KP: solo el grafo + la seccion KP (iterar sobre el keeper)
   if (process.env.TERMILAB_CHECK_ONLY === 'KP') {
     await require('./lib/check-keeper').seccionKeeper({ check, ROOT, handlers });
@@ -1495,6 +1506,8 @@ async function main() {
   await require('./lib/check-agent-pool').seccionAgentPool({ check, ROOT });
   // ── DX. Comandos destructivos de agentes: clasificador + Run once / Block ──
   await require('./lib/check-destructive').seccionDestructive({ check, ROOT });
+  // ── CI. termilab-cli / termilab-mcp en el PATH (macOS, ~/.local/bin) ──
+  await require('./lib/check-cli-install').seccionCliInstall({ check, ROOT, handlers });
 
   // ── R/A. Restaurar el espacio de trabajo; reconexion automatica ──
   await require('./lib/check-workspace').seccionWorkspace({ check, ROOT });

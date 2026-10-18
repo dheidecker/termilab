@@ -21,6 +21,7 @@ const backgroundSessions = require('./services/background-sessions');
 const uploadService = require('./services/upload-service');
 const claudeHistory = require('./services/claude-history');
 const openPathService = require('./services/open-path-service');
+const cliInstallService = require('./services/cli-install-service');
 const agentService = require('./agent/agent-service');
 const agentApprovals = require('./agent/approval');
 
@@ -583,6 +584,13 @@ function registerIpcHandlers(mainWindow) {
     pathSpecGuard(event, spec, 'paths:resolve');
     return await openPathService.resolve(spec);
   }));
+
+  // ─── termilab-cli / termilab-mcp on the PATH (macOS only) ───
+  // cli-install-service.js: symlinks in ~/.local/bin to the launchers inside
+  // the .app. Linux/Windows/dev answer supported:false; install/uninstall throw there.
+  ipcMain.handle('cli:status', wrapHandler(async () => cliInstallService.status()));
+  ipcMain.handle('cli:install', wrapHandler(async () => cliInstallService.install()));
+  ipcMain.handle('cli:uninstall', wrapHandler(async () => cliInstallService.uninstall()));
 
   // ─── Images into a terminal (drag & drop, clipboard) ───
   // upload-service.js: saved to / uploaded into ~/.termilab/uploads, the
@@ -1181,6 +1189,7 @@ function removeIpcHandlers() {
     'known-hosts:list', 'known-hosts:delete', 'known-hosts:import',
     'logs:list', 'logs:clear',
     'agent:status', 'agent:logs', 'agent:clear-logs', 'agent:approval-response',
+    'cli:status', 'cli:install', 'cli:uninstall',
     'sftp:list', 'sftp:realpath', 'sftp:stat', 'sftp:mkdir', 'sftp:create-file',
     'sftp:rename', 'sftp:delete', 'sftp:chmod',
     'sftp:transfer-start', 'sftp:transfer-cancel',
