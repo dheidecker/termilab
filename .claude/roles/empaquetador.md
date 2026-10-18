@@ -32,8 +32,16 @@ tuyos — corrige lo que compruebes que ya no es cierto.
   Comprueba con `pgrep` y, si hace falta, un segundo `kill` al pid del main.
 - **Tamaños y tiempos** (M-series, electron 33.4.11, builder 26.16.1): dmg universal 1.15.3 =
   186,9 MB (la cifra que se citaba como «1.15.0»; el dmg que hay en `release/` es el 1.15.3);
-  1.17.0 = 187,2 MB dmg + 180,7 MB zip (el keeper suma ~300 KB crudos al asar). dmg + zip
-  universal: ~2 min. `npm install` + rebuild: 5 s.
+  1.17.0 = 187,2 MB dmg + 180,7 MB zip (el keeper suma ~300 KB crudos al asar); 1.22.0 =
+  187,3 MB dmg + 180,8 MB zip (+0,1 MB; asar 1054 entradas). dmg + zip universal: ~2 min.
+  `npm install` + rebuild: 5 s.
+- **`check-package-perms.js` solo sabe de Linux:** en Mac sale con código 2 («missing ...deb»), no
+  es un fallo del build. Comprobación manual equivalente sobre `.app`, zip extraído (`ditto -x -k`)
+  y dmg montado: `find <app> ! -type l ! -perm -o+r` y `find <app> -type d ! -perm -o+x` vacíos
+  (1.22.0: 0 y 0 en los tres). Ampliar el script a Mac sigue pendiente.
+- **Escaneo de arquitecturas completo:** `find <app> -type f -print0 | xargs -0 file | grep Mach-O
+  | grep -v "universal binary"` — solo deben salir las slices de los fat y los cuatro prebuilds
+  `node-pty/prebuilds/darwin-*` (18 fat en 1.22.0).
 - **Los targets en la CLI anulan `mac.target`** (`computeArchToTargetNamesMap` en
   `app-builder-lib/out/targets/targetFactory.js`: si la CLI trae nombres, la config se ignora).
   `--mac dmg` dejaba fuera el zip del actualizador; por eso `dist:mac*` usan `--mac` a secas.
@@ -111,8 +119,7 @@ tuyos — corrige lo que compruebes que ya no es cierto.
   captura de pantalla estaba denegado. `titleBarStyle: 'hidden'` en darwin es
   una ruta de código que nadie ha mirado con los ojos.
 - **electron-updater en macOS.** El release v1.17.0 de GitHub existe sin
-  `latest-mac.yml`: el `.app` registra al arrancar «Cannot find latest-mac.yml ... 404» (no
-  rompe nada). `latest-mac.yml` ya lista el zip como `path`. Sin firma, Squirrel.Mac rechazará
+  `latest-mac.yml`: el `.app` registra al arrancar un 404 del feed (no rompe nada). `latest-mac.yml` ya lista el zip como `path`. Sin firma, Squirrel.Mac rechazará
   instalar la actualización aunque se publiquen yml + zip: nunca probado de extremo a extremo.
 
 ## Android (fase 5, 2026-09-24)
@@ -216,10 +223,22 @@ tuyos — corrige lo que compruebes que ya no es cierto.
 - **AppImage:** `--mcp` funciona igual, stdout limpio. El updater de AppImage renombra el archivo si
   el nombre lleva `x.y.z` (`AppImageUpdater.js`): para registrarlo, nombre sin versión.
 - **Tiempos:** `npm run dist` Linux completo ~4 min; `pack` 13 s.
+- **macOS (1.22.0, comprobado):** `Termilab.app/Contents/MacOS/Termilab --mcp` y `--cli`
+  funcionan en arm64 y bajo Rosetta: initialize en ~0,4 s, stdout solo JSON, stderr vacío, sale en
+  ~10 ms al cerrar stdin y con SIGTERM (que deja huérfano al hijo hasta el EOF, como en Linux).
+  Sin ventana, sin helpers, sin tocar la instancia abierta. **Pero el proceso padre se registra en
+  LaunchServices como app `Foreground`** y está en `lsappinfo visibleProcessList` (casi seguro =
+  icono en el Dock mientras dure el servidor; no visto en pantalla). El hijo en modo node
+  (`ELECTRON_RUN_AS_NODE=1 <bin> <app.asar>/electron/agent/cli.js`) **no** se registra (type
+  NULL): un wrapper de shell como el de Linux evitaría el Dock. En Mac no hay `termilab-cli` en
+  el PATH: no se empaqueta nada equivalente a `build/linux/*` (decisión de producto pendiente).
+- **Probar el agente con `--user-data-dir` en el scratchpad no sirve:** `agent.sock` supera los
+  104 bytes de `sun_path` y Node lo trunca (en el Mac aparece un socket `scr` en el directorio
+  padre del scratchpad). Dos apps de prueba chocan en el mismo nombre truncado → «Agent API not
+  started: EADDRINUSE» y el CLI dice «Termilab is not running». Usa `mktemp -d -t tl`
+  (`/var/folders/...`, corto) y `TERMILAB_USER_DATA` con la misma ruta.
 - **Sin comprobar:** Windows (que `Termilab.exe --mcp` con stdio en pipes no abre ventana ni
-  consola y pasa los pipes al hijo) y macOS (si sale icono en el Dock durante el `spawnSync`;
-  si sale, `LSUIElement` no aplica porque es el mismo bundle: habría que probar `app.dock.hide()`
-  antes, que exige el módulo electron). Tampoco instalar el deb/pacman de verdad.
+  consola y pasa los pipes al hijo). Tampoco instalar el deb/pacman de verdad.
 
 ## Comando `termilab-cli` y `--cli` (2026-10-16, rama feat/mcp)
 
@@ -234,4 +253,4 @@ tuyos — corrige lo que compruebes que ya no es cierto.
   `node scripts/e2e-agent.mjs [release/linux-unpacked]` prueba hosts/run/124/mcp por `--cli`.
 - Deb a un directorio aparte: `npx electron-builder --linux deb -c.directories.output=<scratch>`
   (~1 min); el wrapper se prueba sin instalar con `dpkg-deb -x` + `sed` de `/opt/Termilab`.
-- **Sin comprobar:** `Termilab.exe --cli` (consola/pipes en Windows) y el binario de mac.
+- **Sin comprobar:** `Termilab.exe --cli` (consola/pipes en Windows). Mac: ver la sección MCP.
