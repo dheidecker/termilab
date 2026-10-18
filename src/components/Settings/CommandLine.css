@@ -1,0 +1,153 @@
+/* Settings → General → Command line (CommandLine.jsx) */
+
+.cli-cmd {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.cli-note {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.cli-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.settings-test-btn:disabled,
+.cli-secondary-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.cli-secondary-btn {
+  padding: 6px 14px;
+  background: transparent;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.cli-secondary-btn:hover:not(:disabled) {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.cli-commands {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cli-commands li {
+  padding: 3px 8px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  font-size: var(--font-size-sm);
+}
+
+/* The PATH step. Not an error, but the one thing a user will miss: without
+   it the install looks like it did nothing. */
+.cli-path-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--color-warning);
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-muted);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+.cli-path-note p,
+.cli-example p {
+  margin: 0;
+}
+
+.cli-path-note p + .cli-copy,
+.cli-example p + .cli-copy {
+  margin-top: 6px;
+}
+
+.cli-path-note .cli-copy + p {
+  margin-top: 6px;
+}
+
+.cli-path-note strong {
+  font-weight: 600;
+}
+
+.cli-example {
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* A command you are meant to copy */
+.cli-copy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+
+.cli-copy-text {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+
+.cli-copy-btn {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  background: transparent;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cli-copy-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.cli-error {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--color-danger);
+  background: var(--color-danger-muted);
+  /* --color-danger on its own muted fill is 4.4:1 in both themes, under AA
+     for 12px: the red goes on the bar, the message stays readable */
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

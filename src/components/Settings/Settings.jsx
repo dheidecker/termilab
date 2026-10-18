@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../contexts/AppContext';
 import { getThemeList } from '../../themes/terminal-themes';
 import SyncPanel from '../Sync/SyncPanel';
+import CommandLine from './CommandLine';
 import { IS_ANDROID } from '../../platform';
 import { MobileTopBar } from '../Mobile/MobileScreen';
 import './Settings.css';
@@ -243,6 +244,9 @@ export default function Settings({ fullPage = false, onBack }) {
               <div className="settings-section-title">Sync</div>
               <SyncPanel />
             </div>
+
+            {/* Renders nothing unless main says the platform needs it (macOS) or the package ships it (Linux) */}
+            {!IS_ANDROID && <CommandLine />}
 
             <div className="settings-section">
               <div className="settings-section-title">Data Management</div>
