@@ -230,8 +230,31 @@ tuyos — corrige lo que compruebes que ya no es cierto.
   LaunchServices como app `Foreground`** y está en `lsappinfo visibleProcessList` (casi seguro =
   icono en el Dock mientras dure el servidor; no visto en pantalla). El hijo en modo node
   (`ELECTRON_RUN_AS_NODE=1 <bin> <app.asar>/electron/agent/cli.js`) **no** se registra (type
-  NULL): un wrapper de shell como el de Linux evitaría el Dock. En Mac no hay `termilab-cli` en
-  el PATH: no se empaqueta nada equivalente a `build/linux/*` (decisión de producto pendiente).
+  NULL). Resuelto con los wrappers de `build/mac/` (sección siguiente).
+
+## Wrappers de macOS: `Contents/Resources/bin/termilab-{cli,mcp}` (2026-10-18, 1.22.0)
+
+- **Contrato con dev-backend** (que los enlaza en `~/.local/bin`): ruta
+  `process.resourcesPath + '/bin/<nombre>'`, 0755, invocados por symlink. Si cambias la ruta,
+  rompes su servicio.
+- **`mac.extraResources` se SUMA al `extraResources` general**, al revés que `mac.files`:
+  `getFileMatchers` (`app-builder-lib/out/fileMatcher.js`) hace `addPatterns(config[name])` y
+  luego `addPatterns(customBuildOptions[name])`. Comprobado: `Resources/assets` sigue en el `.app`.
+  `files` no pasa por ahí, por eso se comporta distinto.
+- El modo sale del disco igual que en Linux (git guarda 0755): 755 en `.app`, zip y dmg.
+  `@electron/universal` no protesta: solo compara Mach-O.
+- **Prueba de que no hay icono en el Dock, con control positivo:** comparar los ASN
+  `lsappinfo visibleProcessList | grep -o 'ASN:[^"]*"Termilab"'` antes y durante. El wrapper
+  añade 0 (el hijo da `lsappinfo find pid=` vacío); `Termilab --mcp` por el binario gráfico
+  añade 1. Sin el control la prueba no demuestra nada (y el separador no es la coma).
+- **Rosetta de verdad:** `ps -o flags= -p <pid>` con el bit 0x20000 (`P_TRANSLATED`) puesto
+  (salió 0x34004). `sysctl.proc_translated` solo informa del proceso que lo pregunta.
+- Probado desde una copia del `.app` en una ruta con espacio y una cadena de dos symlinks
+  (uno relativo), invocando por `PATH`: `--help`, `hosts`, `initialize` del MCP y salida al
+  cerrar stdin, arm64 y x86_64. Primer arranque Rosetta de la app de prueba: 53 s (oahd).
+- **Sin comprobar:** la app instalada en `/Applications` usando los wrappers (la de Derek era
+  otra build); Gatekeeper/cuarentena sobre un script dentro de un `.app` descargado sin firmar;
+  que la firma real (osx-sign) acepte scripts en `Resources/bin` sin quejarse.
 - **Probar el agente con `--user-data-dir` en el scratchpad no sirve:** `agent.sock` supera los
   104 bytes de `sun_path` y Node lo trunca (en el Mac aparece un socket `scr` en el directorio
   padre del scratchpad). Dos apps de prueba chocan en el mismo nombre truncado → «Agent API not
@@ -253,4 +276,4 @@ tuyos — corrige lo que compruebes que ya no es cierto.
   `node scripts/e2e-agent.mjs [release/linux-unpacked]` prueba hosts/run/124/mcp por `--cli`.
 - Deb a un directorio aparte: `npx electron-builder --linux deb -c.directories.output=<scratch>`
   (~1 min); el wrapper se prueba sin instalar con `dpkg-deb -x` + `sed` de `/opt/Termilab`.
-- **Sin comprobar:** `Termilab.exe --cli` (consola/pipes en Windows). Mac: ver la sección MCP.
+- **Sin comprobar:** `Termilab.exe --cli` (consola/pipes en Windows). Mac: ver «Wrappers de macOS».
