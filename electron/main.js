@@ -10,6 +10,15 @@
   const at = process.argv.findIndex(a => a === '--cli' || a === '--mcp');
   if (at >= 0) {
     const { spawnSync } = require('child_process');
+    /* macOS: LaunchServices registers this waiting parent as a visible app
+       (Dock icon for as long as the MCP server runs). 'prohibited' takes it
+       out of lsappinfo visibleProcessList; measured 2026-10-18 on a packaged
+       universal 1.22.0: without it the parent stays listed the whole run, with
+       it only for ~150 ms at startup (Electron registers before main.js runs).
+       The bin/termilab-* launchers in the .app skip this hop entirely. */
+    if (process.platform === 'darwin') {
+      try { require('electron').app.setActivationPolicy('prohibited'); } catch { /* old Electron: keep going */ }
+    }
     const script = process.argv[at] === '--cli' ? 'cli.js' : 'mcp.js';
     const r = spawnSync(process.execPath, [require('path').join(__dirname, 'agent', script), ...process.argv.slice(at + 1)], {
       stdio: 'inherit',
