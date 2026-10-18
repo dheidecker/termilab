@@ -1,0 +1,15 @@
+#!/bin/sh
+# Termilab MCP server over stdio: claude mcp add termilab -- termilab-mcp
+# Same as `termilab-cli mcp`, resolved next to this script inside the bundle
+# (not through PATH), following symlinks like termilab-cli does.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self") || break
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+bin_dir=$(cd "$(dirname "$self")" && pwd -P) || exit 1
+
+exec "$bin_dir/termilab-cli" mcp "$@"

@@ -132,7 +132,17 @@
       ],
       "category": "public.app-category.developer-tools",
       "icon": "assets/icon.png",
-      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-*/*"
+      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/node_modules/node-pty/prebuilds/darwin-*/*",
+      "extraResources": [
+        {
+          "from": "build/mac",
+          "to": "bin",
+          "filter": [
+            "termilab-cli",
+            "termilab-mcp"
+          ]
+        }
+      ]
     },
     "win": {
       "target": [

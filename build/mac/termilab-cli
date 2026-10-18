@@ -1,0 +1,19 @@
+#!/bin/sh
+# Termilab command line for scripts, bots and MCP clients (macOS):
+#   termilab-cli hosts | run | read | write | mcp | guide   (termilab-cli --help)
+# Lives in Termilab.app/Contents/Resources/bin/ and is usually reached through a
+# symlink in ~/.local/bin. Node mode directly: no GUI process, no Dock icon.
+
+# Resolve our real path following symlinks (no readlink -f on older macOS).
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self") || break
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+bin_dir=$(cd "$(dirname "$self")" && pwd -P) || exit 1
+contents=$(dirname "$(dirname "$bin_dir")")
+
+ELECTRON_RUN_AS_NODE=1 exec "$contents/MacOS/Termilab" "$contents/Resources/app.asar/electron/agent/cli.js" "$@"
