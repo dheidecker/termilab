@@ -860,3 +860,16 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   entero en un `<pre>` con scroll (`max-height: 38vh`).
 - Trampa vista en la captura: la cuenta atrás salía "2:01" porque `now` se inicializa al montar la app;
   hay que `setNow(Date.now())` al llegar cada aviso. Mirado con los ojos vía CDP (scripts/e2e-approval.mjs).
+
+## Settings → General → Command line (2026-10-18)
+
+- `Settings/CommandLine.jsx`: `CommandLineView` es **puro (props)** y se exporta aparte del contenedor,
+  así el arnés SSR pinta todas las ramas sin parchear `useState`. Si añades estado, mantenlo en el
+  contenedor. Sin `electronAPI.cli` o con `status()` fallando no pinta nada (ni título).
+- Semántica real de main (`cli-install-service.js`): `installed` = **los dos** enlaces son nuestros;
+  `stale` implica `installed:false`; uno solo instalado = "no instalado" (Install completa el otro).
+  `pathLine`/`shellRc` vienen `null` si `onPath`; con fish, `pathLine` es `fish_add_path …`, no `export`.
+- Contraste: `--color-danger` sobre `--color-danger-muted` da **4.42:1 en los dos temas** (bajo AA a
+  12px). `.sync-banner-error` lo usa igual; en `.cli-error` el rojo va en la barra y el texto en
+  `--text-primary`. Mac: PIL sí está en el python3 del sistema, numpy no.
+- Sin mirar en Electron real ni con el backend vivo: solo SSR + Chrome headless con estados inyectados.
