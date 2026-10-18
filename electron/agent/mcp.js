@@ -29,6 +29,15 @@ const LEGACY = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const SUPPORTED = [...MODERN, ...LEGACY];
 const META_VERSION = 'io.modelcontextprotocol/protocolVersion';
 
+/* Modern (2026-07-28) list results must say how long the client may cache
+   them: ttlMs + cacheScope. Without them a strict client (Claude Code) rejects
+   the whole tools/list and the server shows up as "tools fetch failed". The
+   lists are static for a given Termilab version, so an hour is safe; scope is
+   private because nothing gains from sharing them across users. */
+const LIST_CACHE = Object.freeze({ ttlMs: 60 * 60 * 1000, cacheScope: 'private' });
+const listResult = (modern, key, items) =>
+  (modern ? { resultType: 'complete', ...LIST_CACHE, [key]: items } : { [key]: items });
+
 const INSTRUCTIONS = [
   'Termilab is the SSH client on the user\'s computer. It runs commands and edits files on the user\'s saved servers '
     + 'with the credentials it already holds: you never see a password or key, do not need one, and must not ask for one.',
@@ -269,16 +278,16 @@ async function handle(msg, state = {}) {
     case 'ping':
       return ok(modern ? { resultType: 'complete' } : {});
     case 'tools/list':
-      return ok({ ...(modern ? { resultType: 'complete' } : {}), tools: TOOLS });
+      return ok(listResult(modern, 'tools', TOOLS));
     case 'resources/list':
-      return ok({ ...(modern ? { resultType: 'complete' } : {}), resources: RESOURCES });
+      return ok(listResult(modern, 'resources', RESOURCES));
     case 'resources/templates/list':
-      return ok({ ...(modern ? { resultType: 'complete' } : {}), resourceTemplates: [] });
+      return ok(listResult(modern, 'resourceTemplates', []));
     case 'resources/read':
       if (params.uri !== GUIDE_URI) return err(-32002, `Resource not found: ${params.uri}`, { uri: params.uri });
       return ok({ ...(modern ? { resultType: 'complete' } : {}), contents: [{ uri: GUIDE_URI, mimeType: 'text/markdown', text: GUIDE }] });
     case 'prompts/list':
-      return ok({ ...(modern ? { resultType: 'complete' } : {}), prompts: PROMPTS });
+      return ok(listResult(modern, 'prompts', PROMPTS));
     case 'prompts/get':
       if (params.name !== PROMPT_NAME) return err(-32602, `Unknown prompt: ${params.name}`);
       return ok({

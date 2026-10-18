@@ -195,6 +195,17 @@ async function seccionAgent({ check, ROOT }) {
       assert.strictEqual(disc.result.resultType, 'complete');
       const list = await mcp.request('tools/list', { _meta: meta });
       assert.strictEqual(list.result.resultType, 'complete');
+      // 2026-07-28: list results carry cache hints; Claude Code rejects the list without them
+      assert.strictEqual(typeof list.result.ttlMs, 'number');
+      assert.ok(['public', 'private'].includes(list.result.cacheScope));
+      for (const m of ['resources/list', 'resources/templates/list', 'prompts/list']) {
+        const r = await mcp.request(m, { _meta: meta });
+        assert.strictEqual(typeof r.result.ttlMs, 'number', m);
+        assert.ok(['public', 'private'].includes(r.result.cacheScope), m);
+      }
+      // legacy keeps its old shape
+      const legacyList = await mcp.request('tools/list', {});
+      assert.strictEqual(legacyList.result.ttlMs, undefined);
       const names = list.result.tools.map(t => t.name).sort();
       assert.deepStrictEqual(names, ['close_shell', 'list_hosts', 'open_shell', 'read_file', 'read_output', 'run_command', 'send_input', 'write_file']);
       for (const t of list.result.tools) assert.strictEqual(t.inputSchema.type, 'object', `${t.name} sin inputSchema object`);
