@@ -11,7 +11,7 @@ import { getTheme } from '../../themes/terminal-themes';
 import { tintTheme } from '../../themes/tint';
 import { tabColor } from '../HostList/hostColor';
 import { paneTitle, groupOf, focusedPaneOf } from '../SplitPane/layoutTree';
-import { IS_ANDROID, PLATFORM, FEATURES } from '../../platform';
+import { IS_ANDROID, IS_WEB, PLATFORM, FEATURES } from '../../platform';
 import ExtraKeys, { useStickyModifiers } from './mobile/ExtraKeys';
 import SessionHeader from './mobile/SessionHeader';
 import { applyModifiers, keySequence } from './mobile/keys';
@@ -184,6 +184,11 @@ export default function TerminalView({ tab }) {
   useEffect(() => { tabsRef.current = state.tabs; }, [state.tabs]);
 
   const isLocal = tab.type === 'local-terminal';
+  /* Web mirror: this pane shows a session of the PC (its live id from
+     mirror:state). It never connects or spawns: it joins (see below). */
+  const mirrorSid = IS_WEB && tab.mirror ? liveSessionId(tab) : null;
+  /* …and joins again when the socket comes back (a new client for main) */
+  const mirrorKey = mirrorSid ? `${mirrorSid}#${state.mirrorEpoch || 0}` : null;
 
   /* Terminal settings from app */
   const termSettings = state.settings?.terminal || {};
@@ -209,6 +214,8 @@ export default function TerminalView({ tab }) {
     /* For SSH tabs: wait until sessionId is available (connecting is done) */
     if (!isLocal && tab.connecting) return;
     if (!isLocal && !tab.sessionId) return;
+    /* A mirrored pane: until the PC's session exists (a pty being spawned) */
+    if (IS_WEB && tab.mirror && !mirrorSid) return;
     if (initializedRef.current || !containerRef.current) return;
     initializedRef.current = true;
     mountedRef.current = true;
@@ -730,8 +737,10 @@ export default function TerminalView({ tab }) {
     }));
 
 
-    /* Setup data flow based on mode */
-    if (hasApi()) {
+    /* Setup data flow based on mode (a mirrored pane: joinMirrored, below) */
+    if (mirrorSid) {
+      /* nothing here */
+    } else if (hasApi()) {
       if (isLocal) {
         /* ─── Local Terminal Mode ─── */
         if (!adopt) term.writeln('\x1b[90mOpening local shell...\x1b[0m');
@@ -837,8 +846,12 @@ export default function TerminalView({ tab }) {
 
         if (adopt) {
           if (tab.ptySessionId) wireLocal(tab.ptySessionId, false);
-        } else whenLaidOut().then(() => {
+        } else (tab.spawnSize && !laidOut() ? Promise.resolve(tab.spawnSize) : whenLaidOut()).then((given) => {
           if (disposed) return null;
+          /* Opened from the web mirror while this pane is hidden here: at the
+             browser's size, not when (if ever) it is shown on the PC */
+          const at = given && !laidOut() ? given : null;
+          if (at) return window.electronAPI.localShell.spawn({ cols: at.cols, rows: at.rows, sessionKey: tab.sessionKey || tab.id });
           fitNow();
           return window.electronAPI.localShell.spawn({ cols: term.cols || 80, rows: term.rows || 24, sessionKey: tab.sessionKey || tab.id });
         })
@@ -970,6 +983,89 @@ export default function TerminalView({ tab }) {
       });
     }
 
+    /* Web mirror: leave the PC's session (never ends it) */
+    let mirrorCleanup = null;
+    if (mirrorSid) mirrorCleanup = joinMirrored();
+    function joinMirrored() {
+      /* ─── Web mirror: one more viewer of the PC's session ───
+         (electron/window-registry.js). join → 'session:join-screen' (the
+         PC's screen at the request, then what came after, in order) → live.
+         Input and resize go to the same session: main lets a viewer use it
+         (mayUse) and the last client that typed conducts the pty's size; the
+         others follow 'session:size'. */
+      const sid = mirrorSid;
+      sessionIdRef.current = sid;
+      const svc = isLocal ? window.electronAPI.localShell : window.electronAPI.ssh;
+      const sess = window.electronAPI.session;
+      let joinId = null;
+      let screenIn = false;
+      const screens = new Map();   // join-screen pushes that beat the join's reply
+      svc.onData((s, data) => {
+        /* Before our screen: already in it (main buffers for a joining viewer) */
+        if (disposed || s !== sid || !screenIn) return;
+        term.write(data);
+        if (isLoggingRef.current) logBufferRef.current.push(data);
+      });
+      svc.onClose((s) => {
+        if (disposed || s !== sid) return;
+        setConnected(false);
+        term.writeln(`\r\n\x1b[90m[${isLocal ? 'Session ended' : 'Connection closed'}]\x1b[0m`);
+      });
+      svc.onError((s, error) => {
+        if (!disposed && s === sid) term.writeln(`\r\n\x1b[31m[Error: ${error}]\x1b[0m`);
+      });
+      const reconnect = !isLocal ? window.electronAPI.ssh.onReconnect?.((p) => {
+        if (disposed || !p || p.sessionId !== sid) return;
+        if (p.state === 'reconnected') setConnected(true);
+        else if (p.state === 'lost' || p.state === 'reconnecting') setConnected(false);
+      }) : null;
+      const applyScreen = (p) => {
+        screenIn = true;
+        /* The pty's size, as the PC has it: followed until the user types here */
+        if (p.sized && Number.isInteger(p.cols) && Number.isInteger(p.rows) && p.cols > 0 && p.rows > 0) {
+          follow = { cols: p.cols, rows: p.rows };
+          try { term.resize(p.cols, p.rows); } catch (_) { /* disposed */ }
+        }
+        if (p.data) term.write(p.data);
+        if (!p.history) term.writeln('\x1b[2m[Joined live: earlier output is not available here]\x1b[0m');
+        setConnected(p.connected !== false);
+        term.onData((raw) => {
+          const data = filterInput(raw);
+          if (isLocal) window.electronAPI.localShell.write(sid, data);
+          else window.electronAPI.ssh.sendData(sid, data);
+        });
+        sendSize = (c, r) => {
+          if (isLocal) window.electronAPI.localShell.resize(sid, c, r);
+          else window.electronAPI.ssh.resize(sid, c, r);
+        };
+        term.onResize(() => pushSize());
+        /* Not sized yet (the PC's pane hidden, waitSize): this size opens it */
+        if (!follow) {
+          try { fitAddon.fit(); } catch (_) { /* not laid out */ }
+          pushSize(true);
+        }
+      };
+      const joinListener = sess.onJoinScreen((p) => {
+        if (disposed || !p || p.sessionId !== sid || screenIn) return;
+        if (joinId && p.joinId === joinId) applyScreen(p);
+        else screens.set(p.joinId, p);
+      });
+      sess.join(sid).then((r) => {
+        if (disposed) return;
+        joinId = r && r.joinId;
+        const p = screens.get(joinId);
+        screens.clear();
+        if (p && !screenIn) applyScreen(p);
+      }).catch((err) => {
+        if (!disposed) term.writeln(`\x1b[31m✗ Could not show this session: ${err.message || err}\x1b[0m`);
+      });
+      return () => {
+        sess.offEvents(joinListener);
+        if (reconnect) window.electronAPI.ssh.removeReconnectListener?.(reconnect);
+        sess.leave(sid).catch(() => {});
+      };
+    }
+
     /* ResizeObserver for auto-fit (an adopted screen: once it is written) */
     const ro = new ResizeObserver(() => {
       if (follow) return;   // another client conducts the size (see sizeListener)
@@ -1031,6 +1127,7 @@ export default function TerminalView({ tab }) {
     return () => {
       disposed = true;
       detachPaths();
+      if (mirrorCleanup) mirrorCleanup();
       if (reconnectListener) window.electronAPI?.ssh?.removeReconnectListener?.(reconnectListener);
       if (sizeListener) window.electronAPI?.session?.offEvents?.(sizeListener);
       followKey.dispose();
@@ -1058,7 +1155,7 @@ export default function TerminalView({ tab }) {
       term.dispose();
     };
 
-  }, [tab.sessionId, tab.connecting]); // Re-run when sessionId arrives
+  }, [tab.sessionId, tab.connecting, mirrorKey]); // Re-run when sessionId arrives
 
   /* "Paste N lines?": pasteInto waits on this promise (Enter pastes, Esc cancels) */
   const pasteAskRef = useRef(null);

@@ -17,6 +17,12 @@
  * every failed attempt shows in `error`. On boot (resume()) a stored
  * enabled:true is revalidated: Tailscale no longer ready → enabled:false and
  * nothing is started.
+ *
+ * The web server itself (electron/web/server.js, behind main.js
+ * syncWebServer) follows the same switch: `configure({syncServer})` hands it
+ * in, and enable / disable / resume call it with this PC's identity — the
+ * owner's Tailscale login, the tailnet DNS name and the serve port, kept
+ * here and read synchronously by auth.js on every request.
  */
 const os = require('os');
 const storeService = require('../services/store-service');
@@ -32,11 +38,45 @@ class RemoteAccess {
     this.attempt = 0;
     this.backoffMs = [1000, 2000, 5000, 10000, 30000, 60000];
     this.userData = null;
+    /* (identity | null) => Promise: main.js syncWebServer */
+    this.syncServer = null;
+    this.identity = { login: null, dnsName: null, port: null, name: null };
   }
 
-  configure({ userData, backoffMs } = {}) {
+  configure({ userData, backoffMs, syncServer } = {}) {
     if (userData) this.userData = userData;
     if (Array.isArray(backoffMs) && backoffMs.length) this.backoffMs = backoffMs;
+    if (typeof syncServer === 'function') this.syncServer = syncServer;
+  }
+
+  /* What auth.js checks every request against; getters, so a later change
+     (another login, a renamed tailnet) applies without a restart */
+  _serverIdentity(ra) {
+    const id = this.identity;
+    const out = {
+      getAllowedLogin: () => id.login,
+      getDnsName: () => id.dnsName,
+      getPort: () => id.port,
+      name: ra.hostName,
+    };
+    if (process.platform !== 'linux') out.tcpPort = ra.port + 1;
+    return out;
+  }
+
+  /* Web server on/off per settings (syncWebServer reads `enabled` itself).
+     A failure is shown like any other remote-access error. */
+  async _syncServer(ts) {
+    if (!this.syncServer) return;
+    let ra;
+    try { ra = await this._settings(); } catch (_) { return; }
+    if (ts) Object.assign(this.identity, { login: ts.login || null, dnsName: ts.dnsName || null });
+    Object.assign(this.identity, { port: ra.port, name: ra.hostName });
+    const ready = ra.enabled && this.identity.login && this.identity.dnsName;
+    try {
+      await this.syncServer(ready ? this._serverIdentity(ra) : null);
+    } catch (err) {
+      this.error = { code: 'server-failed', message: `The web server did not start: ${(err && err.message) || err}` };
+    }
   }
 
   _userData() {
@@ -135,6 +175,7 @@ class RemoteAccess {
       }
     }
     await storeService.saveRemoteAccess({ enabled: true });
+    await this._syncServer(await tailscale.status());
     return this.status();
   }
 
@@ -153,6 +194,7 @@ class RemoteAccess {
     await this.stop();
     this.error = null;
     await storeService.saveRemoteAccess({ enabled: false });
+    await this._syncServer(null);
     try {
       await tailscale.disable({ port: ra.port, target: this._target(ra.port) });
     } catch (err) {
@@ -182,6 +224,7 @@ class RemoteAccess {
     }
     try {
       await this._start(ra);
+      await this._syncServer(ts);
     } catch (err) {
       this.error = this._errorOf(err);
       await storeService.saveRemoteAccess({ enabled: false });

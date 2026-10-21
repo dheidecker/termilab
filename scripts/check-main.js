@@ -1414,6 +1414,14 @@ async function main() {
     process.exit(failures ? 1 : 0);
   }
 
+  // TERMILAB_CHECK_ONLY=V: solo el grafo + espectadores y el espejo web (check-viewers.js)
+  if (process.env.TERMILAB_CHECK_ONLY === 'V') {
+    await require('./lib/check-viewers').seccionEspectadores({ check, ROOT, handlers, onHandlers });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo V)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // TERMILAB_CHECK_ONLY=BG: solo el grafo + la lista Background del dock de Sessions
   if (process.env.TERMILAB_CHECK_ONLY === 'BG') {
     await require('./lib/check-background').seccionBackground({ check, ROOT, handlers });

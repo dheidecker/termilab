@@ -228,6 +228,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     enable: () => invoke('web:enable'),
     disable: () => invoke('web:disable'),
     setName: (name) => invoke('web:set-name', name),
+    /* Browsers connected right now: [{id, login, userAgent, connectedAt}] */
+    clients: () => invoke('web:clients'),
+    kick: (clientId) => invoke('web:kick', clientId),
+    /* {clients, connected: {id, login} | null}: the list changed (connected = one just arrived) */
+    onClients: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('web:clients', listener);
+      return listener;
+    },
+    offClients: (listener) => { if (listener) ipcRenderer.removeListener('web:clients', listener); },
   },
 
   // ─── Local filesystem (SFTP Local pane) ────────────────
@@ -574,6 +584,33 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('session:snapshot-request', listener);
       ipcRenderer.removeListener('session:join-screen', listener);
       ipcRenderer.removeListener('session:size', listener);
+    },
+  },
+
+  // ─── Web mirror: the tabs of a PC window, in the browser ──
+  /* See electron/web/mirror.js. A PC window report()s its tabs; a browser
+     reads state() / onState {windows, windowId, number, tabs, layouts,
+     focusedPane}, picks the window with select(id) and sends command({type,
+     ...}), which the PC window gets as onCommand and runs. */
+  mirror: {
+    report: (snapshot) => invoke('mirror:report', snapshot),
+    state: () => invoke('mirror:state'),
+    select: (windowId) => invoke('mirror:select', windowId),
+    command: (cmd) => invoke('mirror:command', cmd),
+    onState: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('mirror:state', listener);
+      return listener;
+    },
+    onCommand: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('mirror:command', listener);
+      return listener;
+    },
+    offEvents: (listener) => {
+      if (!listener) return;
+      ipcRenderer.removeListener('mirror:state', listener);
+      ipcRenderer.removeListener('mirror:command', listener);
     },
   },
 

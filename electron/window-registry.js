@@ -60,6 +60,14 @@
  *    host-key questions go there from then on) and the session lives on.
  *    Only when no viewer is left does the old rule apply (the caller ends it).
  *
+ * Virtual windows (the web mirror's browsers, addWindow(wc, {virtual:true})):
+ * one more client for broadcasts and for the sessions they join, never a
+ * PC window. They own nothing (claim() ignores them, and a dying owner is
+ * never succeeded by one: the session goes to Background, or to another PC
+ * window), they are never a move's source or target, never primary/focused,
+ * take no window number and are left out of list() and the Sessions panel's
+ * window count.
+ *
  * Joining without loss or duplicates (same idea as a move, but the owner is
  * not paused):
  *
@@ -211,17 +219,19 @@ class WindowRegistry {
     return true;
   }
 
-  /** Register a BrowserWindow (or anything with .webContents.send). Idempotent. */
-  addWindow(win) {
+  /** Register a BrowserWindow (or anything with .webContents.send). Idempotent.
+      opts.virtual: a web mirror client (see "Virtual windows" above). */
+  addWindow(win, opts = {}) {
     const wc = this._wc(win);
     if (!wc) throw new Error('addWindow: no webContents');
     const existing = this._windows.get(wc);
     if (existing) return existing;
+    const virtual = opts.virtual === true;
     const used = new Set([...this._windows.values()].map(e => e.number));
-    let number = 1;
-    while (used.has(number)) number++;
+    let number = 0;
+    if (!virtual) { number = 1; while (used.has(number)) number++; }
     const id = (win && typeof win.id === 'number') ? win.id : `w${++this._seq}`;
-    const entry = { id, number, win: win === wc ? null : win, wc, ready: false, adoptions: [], unseen: 0, agents: [] };
+    const entry = { id, number, win: win === wc ? null : win, wc, ready: false, adoptions: [], unseen: 0, agents: [], virtual };
     this._windows.set(wc, entry);
     return entry;
   }
@@ -264,7 +274,7 @@ class WindowRegistry {
   }
 
   byId(id) {
-    for (const e of this._windows.values()) if (e.id === id || String(e.id) === String(id)) return e;
+    for (const e of this._windows.values()) if (!e.virtual && (e.id === id || String(e.id) === String(id))) return e;
     return null;
   }
 
@@ -272,13 +282,23 @@ class WindowRegistry {
     return [...this._windows.values()].filter(e => this._alive(e.wc));
   }
 
+  /** Live PC windows only (no web mirror clients). */
+  pcWindows() {
+    return this.liveWindows().filter(e => !e.virtual);
+  }
+
+  isVirtual(winOrWc) {
+    const e = this._windows.get(this._wc(winOrWc));
+    return !!(e && e.virtual);
+  }
+
   primary() {
-    return this.liveWindows()[0] || null;
+    return this.pcWindows()[0] || null;
   }
 
   /** The focused window, else the first one (a prompt with no session owner). */
   focused() {
-    const live = this.liveWindows();
+    const live = this.pcWindows();
     for (const e of live) {
       try { if (e.win && typeof e.win.isFocused === 'function' && e.win.isFocused()) return e; } catch (_) { /* ignore */ }
     }
@@ -288,7 +308,7 @@ class WindowRegistry {
   /** [{id, number, focused, self}] for a "Move to window" menu. */
   list(selfWc) {
     const focused = this.focused();
-    return this.liveWindows().map(e => ({
+    return this.pcWindows().map(e => ({
       id: e.id,
       number: e.number,
       focused: !!focused && focused.wc === e.wc,
@@ -302,13 +322,13 @@ class WindowRegistry {
      app-wide total; a closed window's go with it. */
   setUnseen(winOrWc, n) {
     const entry = this._windows.get(this._wc(winOrWc));
-    if (!entry) return this.totalUnseen();
+    if (!entry || entry.virtual) return this.totalUnseen();
     entry.unseen = Number.isInteger(n) && n > 0 ? Math.min(n, 9999) : 0;
     return this.totalUnseen();
   }
 
   totalUnseen() {
-    return this.liveWindows().reduce((sum, e) => sum + (e.unseen || 0), 0);
+    return this.pcWindows().reduce((sum, e) => sum + (e.unseen || 0), 0);
   }
 
   /* Sessions panel: each window reports its terminals, in tab-bar order
@@ -317,7 +337,7 @@ class WindowRegistry {
      come from a renderer. A closed window's rows go with its entry. */
   setAgents(winOrWc, rows) {
     const entry = this._windows.get(this._wc(winOrWc));
-    if (!entry) return false;
+    if (!entry || entry.virtual) return false;
     entry.agents = cleanSessionRows(rows);
     return true;
   }
@@ -326,7 +346,7 @@ class WindowRegistry {
       agentId, name, state, since, title, alias, host, color}]} */
   agentRows(selfWc) {
     const self = this._wc(selfWc);
-    const live = [...this.liveWindows()].sort((x, y) => (x.number || 0) - (y.number || 0));
+    const live = [...this.pcWindows()].sort((x, y) => (x.number || 0) - (y.number || 0));
     const rows = [];
     for (const e of live) {
       for (const r of e.agents || []) rows.push({ ...r, windowId: e.id, windowNumber: e.number, self: e.wc === self });
@@ -348,6 +368,8 @@ class WindowRegistry {
   claim(sessionId, owner) {
     const wc = this._wc(owner);
     if (!sessionId || !wc) return;
+    /* A browser never owns a session (the gateway does not even let it open one) */
+    if (this.isVirtual(wc)) { console.warn('[WindowRegistry] a web client cannot own a session'); return; }
     this._owners.set(sessionId, wc);
     this._closedOwner.delete(sessionId);
   }
@@ -528,6 +550,9 @@ class WindowRegistry {
       history: !!snap,
       reason: snap ? 'ok' : reason,
       data: snap ? snap.data : '',
+      /* The pty has had a real size: a viewer follows it. Not yet (waitSize,
+         the owner's pane hidden): the viewer's own size may open it */
+      sized: !!pty,
       cols: pty ? pty.cols : (snap ? num(snap.cols) : null),
       rows: pty ? pty.rows : (snap ? num(snap.rows) : null),
       connected: snap ? snap.connected !== false : null,
@@ -561,7 +586,8 @@ class WindowRegistry {
   _promoteViewer(sessionId) {
     const set = this._viewers.get(sessionId);
     if (!set) return false;
-    const next = [...set].find(wc => this._windows.has(wc) && this._alive(wc));
+    /* Never a browser: with only those left the session ends / goes to Background */
+    const next = [...set].find(wc => this._windows.has(wc) && this._alive(wc) && !this.isVirtual(wc));
     if (!next) return false;
     for (const j of [...this._joins.values()]) {
       if (j.sessionId === sessionId) this._finishJoin(j.id, null, 'owner-closed');
@@ -679,6 +705,7 @@ class WindowRegistry {
   beginMove(sessionIds, from) {
     const fromWc = this._wc(from);
     if (!this._windows.has(fromWc)) throw new Error('Unknown window');
+    if (this.isVirtual(fromWc)) throw new Error('A browser has no tabs to move');
     const ids = [...new Set((sessionIds || []).filter(s => typeof s === 'string' && s))];
     for (const sid of ids) {
       if (this._moving.has(sid)) throw new Error('That session is already being moved');
@@ -713,6 +740,7 @@ class WindowRegistry {
     if (!move) throw new Error('That move is no longer in progress');
     const toWc = this._wc(to);
     if (!this._windows.has(toWc)) throw new Error('Unknown window');
+    if (this.isVirtual(toWc)) throw new Error('A browser cannot take tabs');
     if (toWc === move.from) throw new Error('The tab is already in that window');
     /* It already gets these sessions as a viewer: owning them too would
        deliver everything twice */

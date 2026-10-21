@@ -22,7 +22,21 @@ export function confirmCloseSessions(members, label) {
 /* plan (planKeeperClose): which kept sessions to END; the rest only detach.
    Closing never kills a kept session otherwise: quitting, closing a window
    or a dropped link all just detach. */
+/* Web mirror: the browser ends nothing itself. Which tabs the user chose to
+   END is kept here until removeTab sends the close to the PC window (the
+   mirror:command carries it), which ends them through this same function. */
+const mirrorEnd = new Set();
+export function takeMirrorEnd(ids) {
+  const out = [].concat(ids).filter(id => mirrorEnd.has(id));
+  for (const id of [].concat(ids)) mirrorEnd.delete(id);
+  return out;
+}
+
 export async function endSessions(members, disconnectSession, plan = null) {
+  if (typeof window !== 'undefined' && window.__termilabWeb === true) {
+    for (const t of members) if (plan && plan.end && plan.end.has(t.id)) mirrorEnd.add(t.id);
+    return;
+  }
   await Promise.all(members.map(async (t) => {
     if (!t.sessionId) return;
     if (t.type === 'local-terminal') {

@@ -422,8 +422,19 @@ async function main() {
     assert.deepStrictEqual(seen.sendData[0].slice(1), ['s1', 'ls\r']);
   });
 
-  await check('WS11 ssh:connect sin password usa la guardada (en main); nunca vuelve al navegador', async () => {
-    const r = await c.invoke('ssh:connect', [{ hostId: 'h1', host: '10.0.0.1', username: 'root', privateKeyPath: '/etc/shadow' }]);
+  await check('WS11 ssh:connect: fuera por defecto (espejo); con el canal abierto usa la password guardada y nunca vuelve', async () => {
+    const refused = await c.invoke('ssh:connect', [{ hostId: 'h1', host: '10.0.0.1', username: 'root' }]);
+    assert.strictEqual(refused.ok, false, 'el navegador abrio una sesion propia');
+    assert.strictEqual(seen.connect, null);
+    for (const ch of ['ssh:connect', 'ssh:disconnect', 'local:spawn', 'local:kill', 'ssh:keeper-end', 'local:keeper-end', 'ssh:keeper-kill', 'local:keeper-kill', 'mirror:report', 'web:clients', 'web:kick']) {
+      assert.ok(!WEB_CHANNELS.has(ch), `${ch} no debe estar en la lista blanca`);
+    }
+    const open = makeServer({ mode: 'tcp', tcpPort: 0, gateway: { tap, getHost: async id => HOSTS.find(h => h.id === id) || null, channels: new Set([...WEB_CHANNELS, 'ssh:connect']) } });
+    const addr = await open.start();
+    const oc = await wsConnect(WS_OK, { target: { host: '127.0.0.1', port: addr.port } });
+    const r = await oc.invoke('ssh:connect', [{ hostId: 'h1', host: '10.0.0.1', username: 'root', privateKeyPath: '/etc/shadow' }]);
+    oc.end();
+    await open.stop();
     assert.strictEqual(r.ok, true);
     assert.strictEqual(seen.connect.password, SECRETS[0]);
     assert.ok(!('privateKeyPath' in seen.connect), 'el navegador nombro una ruta del PC');

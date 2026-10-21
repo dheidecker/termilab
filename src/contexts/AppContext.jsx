@@ -4,7 +4,8 @@ import { mockConnect } from '../components/SFTP/fsApi';
 import * as Layout from '../components/SplitPane/layoutTree';
 import { connectTab, markAbandoned } from '../components/SplitPane/sessions';
 import { listenForAdoptions, listenForMoves, moveTabToWindow as moveTabToWindowImpl, windowInfo } from '../components/SplitPane/windowMove';
-import { FEATURES } from '../platform';
+import { FEATURES, IS_WEB } from '../platform';
+import { applyMirrorState, markMirrorRows, mirrorActions } from '../components/Mirror/mirror';
 import { localSessionRows } from '../components/Agents/sessionRows';
 import { snapshotWindow, restorePlan, runStaggered } from '../components/SplitPane/workspace';
 
@@ -139,12 +140,15 @@ function buildConnectConfig(host, extra = {}) {
    (fromBackground: reopened from Sessions → Background; a session found gone
    then closes the tab with a toast instead of leaving a dead terminal). */
 function attachKeeperTab(dispatch, host, id, extra = {}) {
-  const tabId = crypto.randomUUID();
+  /* extra.tabId / noSwitch / spawnSize: opened for the web mirror (Mirror/mirror.js) */
+  const tabId = typeof extra.tabId === 'string' && extra.tabId ? extra.tabId : crypto.randomUUID();
   const sessionKey = `keeper:${id}`;
   const look = {
     ...(extra.alias ? { alias: extra.alias } : {}),
     ...(extra.color ? { color: extra.color } : {}),
     ...(extra.fromBackground ? { fromBackground: true } : {}),
+    ...(extra.noSwitch ? { noSwitch: true } : {}),
+    ...(extra.spawnSize ? { spawnSize: extra.spawnSize } : {}),
   };
   if (host && host.local) {
     dispatch({ type: 'ADD_TAB', payload: { id: tabId, type: 'local-terminal', label: 'Local Terminal', sessionId: `local-${tabId}`, sessionKey, ...look } });
@@ -228,6 +232,12 @@ const initialState = {
      the background, from main's background-sessions.json; the same list in
      every window. [{keeperId, sessionKey, kind, hostId, label, alias, color, agent, detachedAt}] */
   backgroundSessions: [],
+  /* Web mirror only (IS_WEB): which PC window this browser shows
+     {windowId, number, windows, pending (a tab it asked for, to open when it
+     appears), ready}; null elsewhere. mirrorEpoch: bumped when the socket
+     comes back, so every mirrored pane joins its session again. */
+  mirror: null,
+  mirrorEpoch: 0,
 };
 
 /* ── Reducer ── */
@@ -456,8 +466,17 @@ function baseReducer(state, action) {
     case 'SET_AGENTS_ALL': {
       const p = action.payload;
       if (!p || !Array.isArray(p.rows)) return state;
-      return { ...state, agentsAll: { windows: Number.isInteger(p.windows) && p.windows > 0 ? p.windows : 1, rows: p.rows } };
+      const all = { windows: Number.isInteger(p.windows) && p.windows > 0 ? p.windows : 1, rows: p.rows };
+      /* Web mirror: the rows of the window it mirrors are "here" */
+      return { ...state, agentsAll: state.mirror ? markMirrorRows(all, state.mirror.windowId) : all };
     }
+    /* Web mirror: the PC window's tabs (Mirror/mirror.js) */
+    case 'MIRROR_STATE':
+      return applyMirrorState(state, action.payload);
+    case 'MIRROR_PENDING':
+      return { ...state, mirror: { ...(state.mirror || {}), pending: action.payload || null } };
+    case 'MIRROR_RECONNECTED':
+      return { ...state, mirrorEpoch: (state.mirrorEpoch || 0) + 1 };
     case 'SET_BACKGROUND_SESSIONS':
       return Array.isArray(action.payload) ? { ...state, backgroundSessions: action.payload } : state;
     /* The pane was focused or typed in: its done mark (ring, badge) goes */
@@ -987,8 +1006,11 @@ export function AppProvider({ children }) {
     }, []),
 
     /* SSH Connection */
-    connectToHost: useCallback(async (host) => {
-      const tabId = crypto.randomUUID();
+    /* opts {tabId, noSwitch}: a tab the web mirror asked for (its id, and
+       the PC's own active tab stays as it is) */
+    connectToHost: useCallback(async (host, opts) => {
+      const o = opts && typeof opts === 'object' && typeof opts.tabId === 'string' ? opts : null;
+      const tabId = o ? o.tabId : crypto.randomUUID();
 
       /* Create tab immediately with "connecting" status for visual feedback */
       dispatch({ type: 'ADD_TAB', payload: {
@@ -999,6 +1021,7 @@ export function AppProvider({ children }) {
         hostId: host.id,
         connecting: true,
         hostConfig: host,
+        ...(o && o.noSwitch ? { noSwitch: true } : {}),
       }});
 
       if (hasApi()) {
@@ -1021,8 +1044,9 @@ export function AppProvider({ children }) {
        (its alias/colour back); a local one is checked first (cheap), an SSH
        one on attach (a gone one closes its tab with a toast, TerminalView).
        → {tabId} | {gone:true} | {noHost:true} */
-    reopenBackgroundSession: useCallback(async (rec) => {
-      const extra = { alias: rec.alias || null, color: rec.color || null, fromBackground: true };
+    reopenBackgroundSession: useCallback(async (rec, opts) => {
+      const o = opts && typeof opts === 'object' && typeof opts.tabId === 'string' ? opts : {};
+      const extra = { alias: rec.alias || null, color: rec.color || null, fromBackground: true, tabId: o.tabId, noSwitch: !!o.noSwitch, spawnSize: o.spawnSize || null };
       if (rec.kind === 'local') {
         const local = hasApi() ? api().localShell : null;
         if (local && typeof local.keeperList === 'function') {
@@ -1105,13 +1129,19 @@ export function AppProvider({ children }) {
     addTab: useCallback((tab) => dispatch({ type: 'ADD_TAB', payload: tab }), []),
     /* The home tab is not in `tabs`: it is what shows when activeTabId is null. */
     goHome: useCallback(() => dispatch({ type: 'SET_ACTIVE_TAB', payload: null }), []),
-    openLocalTerminal: useCallback(() => {
-      const tabId = crypto.randomUUID();
+    /* opts {tabId, noSwitch, spawnSize}: opened for the web mirror (an onClick
+       passes an event here: ignored). spawnSize: the pty starts at it if this
+       pane is hidden on the PC (TerminalView). */
+    openLocalTerminal: useCallback((opts) => {
+      const o = opts && typeof opts === 'object' && typeof opts.tabId === 'string' ? opts : null;
+      const tabId = o ? o.tabId : crypto.randomUUID();
       dispatch({ type: 'ADD_TAB', payload: {
         id: tabId,
         type: 'local-terminal',
         label: 'Local Terminal',
         sessionId: `local-${tabId}`,
+        ...(o && o.noSwitch ? { noSwitch: true } : {}),
+        ...(o && o.spawnSize ? { spawnSize: o.spawnSize } : {}),
       }});
       return tabId;
     }, []),
@@ -1137,11 +1167,12 @@ export function AppProvider({ children }) {
     }, []),
 
     /* Split panes (desktop). groupId = the tab in the bar, paneId = one of its panes. */
-    splitPane: useCallback((groupId, paneId, direction) => {
-      const id = crypto.randomUUID();
+    splitPane: useCallback((groupId, paneId, direction, opts) => {
+      const o = opts && typeof opts === 'object' && typeof opts.tabId === 'string' ? opts : null;
+      const id = o ? o.tabId : crypto.randomUUID();
       dispatch({ type: 'PANE_SPLIT', payload: {
         groupId, paneId, direction,
-        newTab: { id, type: 'local-terminal', label: 'Terminal', sessionId: `local-${id}` },
+        newTab: { id, type: 'local-terminal', label: 'Terminal', sessionId: `local-${id}`, ...(o && o.spawnSize ? { spawnSize: o.spawnSize } : {}) },
       }});
     }, []),
     dropOnPane: useCallback((drag, groupId, paneId, zone) => dispatch({ type: 'PANE_DROP', payload: { drag, groupId, paneId, zone } }), []),
@@ -1410,6 +1441,23 @@ export function AppProvider({ children }) {
     }, []),
   };
 
+  /* Web mirror: the tabs are the PC's; changing them is an order to it */
+  const mirrorOverrides = useMemo(() => (IS_WEB ? mirrorActions(dispatch) : null), []);
+  if (mirrorOverrides) Object.assign(actions, mirrorOverrides);
+  useEffect(() => {
+    if (!IS_WEB) return undefined;
+    const m = window.electronAPI.mirror;
+    let alive = true;
+    const pull = () => m.state().then((p) => { if (alive) dispatch({ type: 'MIRROR_STATE', payload: p }); }).catch(() => {});
+    pull();
+    const on = m.onState((p) => dispatch({ type: 'MIRROR_STATE', payload: p }));
+    /* The socket came back (electron-stub.js): a new client for main, so
+       pull the tabs again and have every pane join its session again */
+    const back = () => { pull(); dispatch({ type: 'MIRROR_RECONNECTED' }); };
+    window.addEventListener('termilab-web-reconnect', back);
+    return () => { alive = false; m.offEvents(on); window.removeEventListener('termilab-web-reconnect', back); };
+  }, []);
+
   /**
    * Remote OS detection (`ssh:os-detected`) -> `host.os`, for the distro logo
    * on the host cards. Saved only when the value changed, and never for:
@@ -1511,7 +1559,8 @@ export function AppProvider({ children }) {
     window.electronAPI.window.reportAgents(sessionRowsRef.current).catch(() => {});
   }, [sessionRowsKey]);
   useEffect(() => {
-    if (!FEATURES.multiWindow) return undefined;
+    /* The web mirror too: the PC's Sessions panel rows (agents included) */
+    if (!FEATURES.multiWindow && !IS_WEB) return undefined;
     const w = window.electronAPI.window;
     let alive = true;
     w.agents().then((p) => { if (alive) dispatch({ type: 'SET_AGENTS_ALL', payload: p }); }).catch(() => {});
@@ -1525,7 +1574,7 @@ export function AppProvider({ children }) {
   }, []);
   /* Sessions dock → Background: main's list, the same in every window */
   useEffect(() => {
-    const w = FEATURES.multiWindow ? window.electronAPI.window : null;
+    const w = FEATURES.multiWindow || IS_WEB ? window.electronAPI.window : null;
     if (!w || typeof w.backgroundSessions !== 'function') {
       if (!hasApi()) dispatch({ type: 'SET_BACKGROUND_SESSIONS', payload: MOCK_BACKGROUND_SESSIONS });
       return undefined;

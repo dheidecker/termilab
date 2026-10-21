@@ -29,14 +29,28 @@
  */
 const { EventEmitter } = require('events');
 
-/** Channels the browser may call (ipcRenderer.invoke and ipcRenderer.send). */
+/**
+ * Channels the browser may call (ipcRenderer.invoke and ipcRenderer.send).
+ *
+ * The browser is a MIRROR (F3, electron/web/mirror.js): it never owns a
+ * session. It does not open, close or end any (ssh:connect/disconnect,
+ * local:spawn/kill, keeper end/kill are out): it joins the PC's sessions as a
+ * viewer (session:*), types and resizes in them, and asks the PC window to
+ * open, close, rename… (mirror:command), which does it the normal way.
+ * Not here either: mirror:report (only a PC window reports its tabs) and
+ * web:clients / web:kick (the PC's list of browsers).
+ */
 const WEB_CHANNELS = new Set([
-  // SSH terminals
-  'ssh:connect', 'ssh:disconnect', 'ssh:send-data', 'ssh:resize', 'ssh:host-key-response',
-  'ssh:keeper-foreground', 'ssh:keeper-end', 'ssh:keeper-list', 'ssh:keeper-kill',
+  // SSH terminals (input and size of the sessions it joined)
+  'ssh:send-data', 'ssh:resize', 'ssh:host-key-response',
+  'ssh:keeper-foreground', 'ssh:keeper-list',
   // Local terminals
-  'local:spawn', 'local:kill', 'local:write', 'local:resize',
-  'local:keeper-foreground', 'local:keeper-end', 'local:keeper-list', 'local:keeper-kill',
+  'local:write', 'local:resize',
+  'local:keeper-foreground', 'local:keeper-list',
+  // Viewer of the PC's sessions (window-registry.js)
+  'session:join', 'session:leave', 'session:snapshot',
+  // The PC window's tabs, and orders for it
+  'mirror:state', 'mirror:command', 'mirror:select',
   // Hosts, groups, snippets, settings: read. Keys and stored forwards are read
   // too (AppContext loads them with everything else, all or nothing); keys come
   // without any private material, forwards cannot be started from here.
@@ -186,6 +200,13 @@ function createGateway(deps = {}) {
     wc.id = BASE_WC_ID + (++seq);
     wc.isWeb = true;
     wc.login = meta.login || null;
+    wc.userAgent = typeof meta.userAgent === 'string' ? meta.userAgent.slice(0, 300) : null;
+    wc.connectedAt = Date.now();
+    /* web:kick: the PC closes this browser's socket */
+    wc.disconnect = (code = 4001, reason = 'disconnected from the PC') => {
+      try { ws.close(code, reason); } catch (_) { /* gone */ }
+      try { ws.socket.end(); } catch (_) { /* gone */ }
+    };
     wc.getType = () => 'web';
     wc.isDestroyed = () => destroyed;
     wc.isLoading = () => false;

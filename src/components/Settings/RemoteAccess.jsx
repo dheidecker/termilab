@@ -18,6 +18,47 @@ import './RemoteAccess.css';
  * No API (browser, Android, an older main) -> renders nothing.
  */
 
+/* "Chrome on Linux", "Safari on iPhone"… from a user agent; the raw string goes in the title */
+export function describeAgent(ua) {
+  const s = String(ua || '');
+  if (!s) return 'Unknown browser';
+  const browser = /Edg\//.test(s) ? 'Edge' : /Firefox\//.test(s) ? 'Firefox' : /Chrome\//.test(s) ? 'Chrome'
+    : /Safari\//.test(s) ? 'Safari' : 'Browser';
+  const os = /iPhone|iPad/.test(s) ? 'iOS' : /Android/.test(s) ? 'Android' : /Mac OS X/.test(s) ? 'macOS'
+    : /Windows/.test(s) ? 'Windows' : /Linux/.test(s) ? 'Linux' : '';
+  return os ? `${browser} on ${os}` : browser;
+}
+
+/* The browsers connected right now (web:clients), each with Disconnect (web:kick) */
+export function ConnectedBrowsers({ clients, onKick, kicking }) {
+  if (!Array.isArray(clients)) return null;
+  return (
+    <div className="settings-field ra-clients">
+      <div className="settings-field-label">
+        <span>Connected browsers</span>
+        {!clients.length && <small>None right now</small>}
+        {clients.length > 0 && (
+          <ul className="ra-client-list">
+            {clients.map(c => (
+              <li key={c.id} className="ra-client">
+                <span className="ra-client-who">
+                  <strong className="ra-strong">{c.login || 'unknown user'}</strong>
+                  <small title={c.userAgent || ''}>
+                    {describeAgent(c.userAgent)} · since {new Date(c.connectedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </small>
+                </span>
+                <button className="settings-test-btn" onClick={() => onKick(c.id)} disabled={kicking === c.id}>
+                  {kicking === c.id ? 'Disconnecting…' : 'Disconnect'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const webApi = () => (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.web) || null;
 
 const REASONS = {
@@ -47,7 +88,7 @@ const ERRORS = {
   'serve-exited': 'Tailscale stopped sharing Termilab. Retrying…',
 };
 
-export function RemoteAccessView({ state, busy, error, nameDraft, onNameChange, onNameSave, onToggle }) {
+export function RemoteAccessView({ state, busy, error, nameDraft, onNameChange, onNameSave, onToggle, clients, onKick, kicking }) {
   if (!state) return null;
   const ts = state.tailscale || {};
   const ra = state.remoteAccess || {};
@@ -122,6 +163,8 @@ export function RemoteAccessView({ state, busy, error, nameDraft, onNameChange, 
               <CopyBlock text={state.url} label="address" />
             </div>
           )}
+
+          {enabled && onKick && <ConnectedBrowsers clients={clients} onKick={onKick} kicking={kicking} />}
         </>
       )}
 
@@ -143,6 +186,26 @@ export default function RemoteAccess() {
   const [error, setError] = useState(null);
   const [nameDraft, setNameDraft] = useState('');
   const mounted = useRef(false);
+  const [clients, setClients] = useState(null);
+  const [kicking, setKicking] = useState(null);
+
+  /* Who is connected from a browser, live (pushed on every change) */
+  useEffect(() => {
+    const api = webApi();
+    if (!api || typeof api.clients !== 'function') return undefined;
+    let alive = true;
+    api.clients().then((list) => { if (alive) setClients(list || []); }).catch(() => {});
+    const on = api.onClients?.((p) => { if (alive && p && Array.isArray(p.clients)) setClients(p.clients); });
+    return () => { alive = false; api.offClients?.(on); };
+  }, []);
+
+  const kick = async (id) => {
+    const api = webApi();
+    if (!api || typeof api.kick !== 'function') return;
+    setKicking(id);
+    try { await api.kick(id); } catch (_) { /* gone already */ }
+    if (mounted.current) setKicking(null);
+  };
 
   const apply = (s) => {
     if (!mounted.current || !s) return;
@@ -181,6 +244,9 @@ export default function RemoteAccess() {
       onNameChange={setNameDraft}
       onNameSave={() => run('name', api => api.setName(nameDraft))}
       onToggle={() => run('toggle', api => (state?.remoteAccess?.enabled ? api.disable() : api.enable()))}
+      clients={clients}
+      onKick={kick}
+      kicking={kicking}
     />
   );
 }

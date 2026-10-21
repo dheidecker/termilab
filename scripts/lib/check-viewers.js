@@ -19,6 +19,17 @@
  *      duena con espectadores tampoco: el espectador pasa a ser el dueno.
  *  V9  un espectador destruido se ignora (ni send ni excepcion).
  *  V10 sin espectadores, todo como antes: cada resize pasa, nada de session:size.
+ *
+ * Espejo web (F3): el navegador es una ventana VIRTUAL (ipc.attachWebClient).
+ *  V11 nunca es duena: claim lo ignora; si la duena se va y solo queda el
+ *      virtual, la sesion termina como siempre (Background); con otra ventana
+ *      del PC espectadora, pasa a esa aunque el virtual sea mas antiguo. Ni
+ *      primaria, ni numero, ni en list(), ni destino ni origen de mudanza.
+ *  V12 un disconnect limpia: deja de ser espectador de todo, el conductor
+ *      vuelve a la duena (su tamano al pty), sale del registro y de la lista.
+ *  V13 mirror:command llega al renderer del PC (limpio) y mirror:state vuelve
+ *      al navegador con el sessionId vivo; ordenes malas o desde el PC, no.
+ *  V14 web:clients / web:kick: solo el PC; aviso al PC al conectar.
  */
 const assert = require('assert');
 const path = require('path');
@@ -26,6 +37,22 @@ const path = require('path');
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 /** Una ventana falsa. `alRecibir(canal, args)`: el "renderer", en orden. */
+/* Un navegador del espejo: lo que gateway.js le pone al webContents virtual */
+let idVirtual = 1000000;
+function navegadorFalso(nombre, login = 'owner@example.com') {
+  const recibido = [];
+  let vivo = true;
+  const wc = {
+    nombre, id: ++idVirtual, isWeb: true, login, userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/130', connectedAt: Date.now(),
+    send: (canal, ...args) => { if (!vivo) throw new Error(`send a ${nombre} destruido`); recibido.push([canal, ...args]); },
+    isDestroyed: () => !vivo,
+    desconectados: 0,
+    disconnect: () => { wc.desconectados++; },
+    morir: () => { vivo = false; },
+  };
+  return { wc, recibido, de: (canal) => recibido.filter(([c]) => c === canal) };
+}
+
 function ventanaFalsa(nombre, { alRecibir } = {}) {
   const recibido = [];
   const oyentes = new Map();
@@ -407,6 +434,161 @@ async function seccionEspectadores({ check, ROOT, handlers, onHandlers }) {
       assert.deepStrictEqual(pty, [['ssh:resize', sid, 91, 31]]);
       registry.release(sid);
       for (const V of [A, B]) V.win.cerrar();
+    });
+
+    await check('V11 el navegador nunca es dueno: ni por claim, ni heredando; fuera de list/primaria/mudanzas', async () => {
+      const [A, P] = nuevas('A-v11', 'P-v11');
+      const W = navegadorFalso('W-v11');
+      ipc.attachWebClient(W.wc);
+      const sid = 'v11-sid';
+      const sb = 'v11-b';
+      const cerradas = [];
+      sshService.isConnected = (s) => s === sid || s === sb || real.isConnected.call(sshService, s);
+      sshService.disconnect = async (s) => { if (s === sid || s === sb) cerradas.push(s); else return real.disconnect.call(sshService, s); };
+      let Q = null;
+      try {
+        registry.claim('v11-propia', W.wc);
+        assert.strictEqual(registry.ownerOf('v11-propia'), null, 'el navegador quedo como dueno por claim');
+        const e = registry.entryOf(W.wc);
+        assert.ok(e && e.virtual && e.number === 0, 'la ventana virtual tomo un numero de ventana');
+        assert.ok(!registry.list(A.wc).some(x => x.id === W.wc.id), 'el navegador aparece en "Mover a ventana"');
+        assert.ok(registry.primary() && !registry.primary().virtual, 'el navegador es la ventana primaria');
+        assert.notStrictEqual(registry.focused().wc, W.wc);
+        assert.strictEqual(registry.agentRows(W.wc).windows, registry.pcWindows().length, 'el navegador cuenta como ventana del PC');
+        assert.ok(!registry.pcWindows().some(x => x.wc === W.wc));
+        assert.strictEqual(registry.byId(W.wc.id), null);
+        registry.claim(sid, A.wc);
+        /* El navegador se une primero (mas antiguo), luego otra ventana del PC */
+        await contestar(A, await unir({ wc: W.wc }, sid), { data: 'x' });
+        await contestar(A, await unir(P, sid), { data: 'x' });
+        assert.throws(() => registry.beginMove([], W.wc), /browser/);
+        const mv = registry.beginMove([sid], A.wc);
+        assert.throws(() => registry.setTarget(mv, W.wc, {}), /browser/, 'una mudanza pudo ir al navegador');
+        registry.abort(mv, 'test');
+        A.win.cerrar();
+        await sleep(10);
+        assert.strictEqual(registry.ownerOf(sid), P.wc, 'la sesion no paso a la otra ventana del PC');
+        assert.ok(registry.isViewer(sid, W.wc), 'el navegador dejo de ver la sesion');
+        assert.deepStrictEqual(cerradas, []);
+        /* Solo queda el navegador como espectador: la duena se va -> termina, nunca al navegador */
+        registry.claim(sb, P.wc);
+        await contestar(P, await unir({ wc: W.wc }, sb), { data: '' });
+        [Q] = nuevas('Q-v11');
+        P.win.cerrar();
+        await sleep(10);
+        assert.notStrictEqual(registry.ownerOf(sb), W.wc, 'el navegador heredo la sesion');
+        assert.ok(cerradas.includes(sb), 'la sesion sin duena del PC no termino (Background) como siempre');
+      } finally {
+        sshService.isConnected = real.isConnected;
+        sshService.disconnect = real.disconnect;
+        ipc.detachWebClient(W.wc);
+        if (Q) Q.win.cerrar();
+        for (const s of [sid, sb]) registry.release(s);
+      }
+    });
+
+    await check('V12 disconnect del navegador: deja todo, el conductor vuelve a la duena, fuera del registro', async () => {
+      const [A] = nuevas('A-v12');
+      const W = navegadorFalso('W-v12');
+      ipc.attachWebClient(W.wc);
+      const s1 = 'v12-a'; const s2 = 'v12-b';
+      for (const s of [s1, s2]) {
+        registry.claim(s, A.wc);
+        await contestar(A, await unir({ wc: W.wc }, s), { data: '' });
+      }
+      pty.length = 0;
+      onHandlers.get('ssh:resize')({ sender: A.wc }, s1, 100, 30);
+      onHandlers.get('ssh:resize')({ sender: W.wc }, s1, 60, 20);
+      onHandlers.get('ssh:send-data')({ sender: W.wc }, s1, 'ls\r');
+      assert.strictEqual(registry.conductorOf(s1), W.wc);
+      assert.deepStrictEqual(registry.ptySizeOf(s1), { cols: 60, rows: 20 });
+      W.wc.morir();
+      ipc.detachWebClient(W.wc);
+      assert.ok(!registry.isViewer(s1, W.wc) && !registry.isViewer(s2, W.wc), 'sigue de espectador');
+      assert.strictEqual(registry.entryOf(W.wc), null, 'sigue en el registro');
+      assert.strictEqual(registry.conductorOf(s1), A.wc);
+      assert.deepStrictEqual(registry.ptySizeOf(s1), { cols: 100, rows: 30 }, 'el pty no volvio al tamano de la duena');
+      assert.strictEqual(registry.ownerOf(s1), A.wc, 'la sesion perdio su duena');
+      const clients = await handlers.get('web:clients')({ sender: A.wc });
+      assert.ok(clients.success && !clients.data.some(c => c.id === W.wc.id), 'sigue en web:clients');
+      for (const s of [s1, s2]) registry.release(s);
+      A.win.cerrar();
+    });
+
+    await check('V13 mirror:command llega al renderer del PC y mirror:state vuelve al navegador', async () => {
+      const [A] = nuevas('A-v13');
+      const W = navegadorFalso('W-v13');
+      ipc.attachWebClient(W.wc);
+      try {
+        const tabs = [
+          { id: 't1', type: 'local-terminal', label: 'Local Terminal', sessionId: 'pty-1', hostConfig: { password: 'nunca' } },
+          { id: 't2', type: 'terminal', label: 'Prod', hostId: 'h1', sessionId: 'ssh-2', connecting: false },
+          { id: 't3', type: 'sftp', label: 'SFTP' },
+        ];
+        let r = await handlers.get('mirror:report')({ sender: A.wc }, { tabs, layouts: {}, focusedPane: {} });
+        assert.ok(r.success && r.data === true, r.error);
+        /* Por defecto la primaria (la del arnes); este navegador elige A */
+        const def = await handlers.get('mirror:state')({ sender: W.wc });
+        assert.strictEqual(def.data.windowId, registry.primary().id);
+        assert.ok((await handlers.get('mirror:select')({ sender: W.wc }, registry.entryOf(A.wc).id)).success);
+        const st = await handlers.get('mirror:state')({ sender: W.wc });
+        assert.ok(st.success, st.error);
+        assert.deepStrictEqual(st.data.tabs.map(t => [t.id, t.sessionId]), [['t1', 'pty-1'], ['t2', 'ssh-2']]);
+        assert.strictEqual(st.data.windowId, registry.entryOf(A.wc).id);
+        assert.ok(!JSON.stringify(st.data).includes('nunca'), 'el estado lleva campos de mas');
+        /* Un navegador que reporta: ignorado */
+        r = await handlers.get('mirror:report')({ sender: W.wc }, { tabs: [] });
+        assert.strictEqual(r.data, false);
+        /* La orden, limpia, al renderer del PC */
+        r = await handlers.get('mirror:command')({ sender: W.wc }, { type: 'open-local', tabId: 'nuevo-1', cols: 120, rows: 40, extra: 'x' });
+        assert.ok(r.success, r.error);
+        assert.deepStrictEqual(A.de('mirror:command').map(([, c]) => c), [{ type: 'open-local', tabId: 'nuevo-1', cols: 120, rows: 40 }]);
+        for (const bad of [{ type: 'borrar-todo' }, { type: 'open-local', tabId: '../x' }, { type: 'close', tabIds: [] }, null]) {
+          const x = await handlers.get('mirror:command')({ sender: W.wc }, bad);
+          assert.strictEqual(x.success, false, JSON.stringify(bad));
+        }
+        const fromPc = await handlers.get('mirror:command')({ sender: A.wc }, { type: 'open-local', tabId: 'x1' });
+        assert.strictEqual(fromPc.success, false, 'el PC pudo mandarse ordenes como navegador');
+        assert.strictEqual(A.de('mirror:command').length, 1);
+        /* El PC la ejecuta y reporta de nuevo: el navegador recibe el push */
+        await handlers.get('mirror:report')({ sender: A.wc }, { tabs: [...tabs, { id: 'nuevo-1', type: 'local-terminal', sessionId: 'pty-9' }] });
+        const push = W.de('mirror:state').pop();
+        assert.ok(push && push[1].tabs.some(t => t.id === 'nuevo-1' && t.sessionId === 'pty-9'), 'mirror:state no volvio al navegador');
+        /* Elegir ventana: otra del PC; una que no existe, no */
+        const [B] = nuevas('B-v13');
+        await handlers.get('mirror:report')({ sender: B.wc }, { tabs: [{ id: 'b1', type: 'local-terminal', sessionId: 'pty-b' }] });
+        const sel = await handlers.get('mirror:select')({ sender: W.wc }, registry.entryOf(B.wc).id);
+        assert.ok(sel.success && sel.data.tabs[0].id === 'b1', sel.error);
+        assert.strictEqual((await handlers.get('mirror:select')({ sender: W.wc }, 999999)).success, false);
+        B.win.cerrar();
+        const back = W.de('mirror:state').pop();
+        assert.strictEqual(back[1].windowId, registry.primary().id, 'cerrada la elegida, no volvio a la primaria');
+      } finally {
+        ipc.detachWebClient(W.wc);
+        A.win.cerrar();
+      }
+    });
+
+    await check('V14 web:clients y web:kick solo desde el PC; el PC se entera de cada conexion', async () => {
+      const [A] = nuevas('A-v14');
+      const W = navegadorFalso('W-v14', 'yo@example.com');
+      ipc.attachWebClient(W.wc);
+      try {
+        const aviso = A.de('web:clients').pop();
+        assert.ok(aviso && aviso[1].connected && aviso[1].connected.login === 'yo@example.com', 'el PC no recibio el aviso de conexion');
+        const lista = await handlers.get('web:clients')({ sender: A.wc });
+        const yo = lista.data.find(c => c.id === W.wc.id);
+        assert.ok(yo && yo.login === 'yo@example.com' && /Chrome/.test(yo.userAgent) && Number.isFinite(yo.connectedAt));
+        assert.strictEqual((await handlers.get('web:clients')({ sender: W.wc })).success, false);
+        assert.strictEqual((await handlers.get('web:kick')({ sender: W.wc }, W.wc.id)).success, false);
+        assert.strictEqual(W.wc.desconectados, 0);
+        const k = await handlers.get('web:kick')({ sender: A.wc }, W.wc.id);
+        assert.ok(k.success && k.data === true);
+        assert.strictEqual(W.wc.desconectados, 1, 'web:kick no cerro el socket');
+      } finally {
+        ipc.detachWebClient(W.wc);
+        A.win.cerrar();
+      }
     });
   } finally {
     sshService.sendData = real.sendData;

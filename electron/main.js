@@ -47,7 +47,7 @@ const path = require('path');
    functions (electron/web/ipc-tap.js). Electron's behaviour is unchanged. */
 require('./web/ipc-tap').install(ipcMain);
 
-const { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting, keptSessionsOf, endKeptWhenClosed, captureKeptForQuit, noteKeptOnQuit } = require('./ipc-handlers');
+const { registerIpcHandlers, removeIpcHandlers, attachWindow, attachWebClient, detachWebClient, setQuitting, keptSessionsOf, endKeptWhenClosed, captureKeptForQuit, noteKeptOnQuit } = require('./ipc-handlers');
 const { guardNavigation } = require('./navigation-guard');
 const windowRegistry = require('./window-registry');
 const sshService = require('./services/ssh-service');
@@ -226,6 +226,9 @@ async function startWebServer(identity) {
       gateway: {
         /* The browser never holds a password: ssh:connect from it uses the saved one */
         getHost: async (id) => (await storeService.getHosts()).find(h => h && h.id === id) || null,
+        /* Each browser is one more (virtual, never owning) window in the registry */
+        onConnect: (wc) => attachWebClient(wc),
+        onDisconnect: (wc) => detachWebClient(wc),
       },
     });
     const address = await srv.start();
@@ -251,6 +254,9 @@ async function syncWebServer(identity) {
   await stopWebServer();
   return null;
 }
+
+/* remote-access.js starts/stops the server with the Tailscale identity */
+remoteAccess.configure({ syncServer: syncWebServer });
 
 /* While the web mirror is on, closing the last window hides it instead: the
    browser mirrors this renderer's tabs, and the app keeps running for it

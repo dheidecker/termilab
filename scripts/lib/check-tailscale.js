@@ -22,6 +22,7 @@
  *  TS14 arranque: enabled + Tailscale ya no esta → enabled:false, nada lanzado.
  *  TS15 saveSettings no toca remoteAccess; set-name valida; socket dir 0700.
  *  TS16 canales web:* registrados y por el sobre de wrapHandler.
+ *  TS17 el servidor web (syncServer) sigue a enable / resume / disable.
  *
  * Solo esta seccion: TERMILAB_CHECK_ONLY=TS.
  */
@@ -305,6 +306,33 @@ async function seccionTailscale({ check, ROOT, handlers }) {
     assert.strictEqual(r.data.tailscale.login, 'derek@example.com');
     const bad = await handlers.get('web:set-name')({}, '');
     assert.strictEqual(bad.success, false);
+    keep();
+  });
+
+  await check('TS17 el servidor web sigue al interruptor: enable/resume lo arrancan con login, dnsName y puerto; disable lo para', async () => {
+    const llamadas = [];
+    const antes = remote.syncServer;
+    remote.configure({ syncServer: async (id) => { llamadas.push(id ? { login: id.getAllowedLogin(), dns: id.getDnsName(), port: id.getPort() } : null); } });
+    try {
+      useCase('ready');
+      let st = await remote.enable();
+      assert.strictEqual(st.error, null, st.error && st.error.message);
+      assert.deepStrictEqual(llamadas, [{ login: 'derek@example.com', dns: 'pc-derek.tail1234.ts.net', port: 7443 }]);
+      await remote.disable();
+      assert.deepStrictEqual(llamadas[1], null, 'disable no paro el servidor');
+      await storeService.saveRemoteAccess({ enabled: true });
+      st = await remote.resume();
+      assert.strictEqual(st.serving, true);
+      assert.deepStrictEqual(llamadas[2], { login: 'derek@example.com', dns: 'pc-derek.tail1234.ts.net', port: 7443 }, 'resume no arranco el servidor');
+      await remote.disable();
+      /* Un servidor que no arranca: error visible, no excepcion */
+      remote.configure({ syncServer: async (id) => { if (id) throw new Error('socket ocupado'); } });
+      st = await remote.enable();
+      assert.strictEqual(st.error && st.error.code, 'server-failed');
+      await remote.disable();
+    } finally {
+      remote.syncServer = antes;
+    }
     keep();
   });
 

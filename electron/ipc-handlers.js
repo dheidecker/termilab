@@ -25,6 +25,7 @@ const cliInstallService = require('./services/cli-install-service');
 const agentService = require('./agent/agent-service');
 const agentApprovals = require('./agent/approval');
 const remoteAccess = require('./web/remote-access');
+const mirror = require('./web/mirror');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -162,6 +163,8 @@ function attachWindow(win) {
   win.on('focus', () => stopFlash(win));
   win.on('closed', () => {
     const owned = windowRegistry.removeWindow(wc);
+    /* Browsers mirroring it fall back to another window */
+    mirror.windowGone(wc);
     setBadge();
     /* Its agents leave every other window's panel */
     broadcastAgents();
@@ -175,7 +178,7 @@ function attachWindow(win) {
     transfersByWindow.delete(wc);
     /* Quitting, or the last window going on Linux/Windows (quit follows):
        before-quit tears everything down, as it always did. */
-    const lastAndQuitting = windowRegistry.liveWindows().length === 0 && process.platform !== 'darwin';
+    const lastAndQuitting = windowRegistry.pcWindows().length === 0 && process.platform !== 'darwin';
     /* Closing one window of several ends its tabs: it leaves the workspace.
        The close that quits the app keeps it (that is what is restored). */
     workspaceService.windowClosed(wc, { keep: quitting || lastAndQuitting });
@@ -185,6 +188,22 @@ function attachWindow(win) {
     endWindowSessions(owned, { endKept: endKeptOnClose.has(wc) });
   });
   return entry;
+}
+
+/* ─── Web mirror clients (electron/web/gateway.js onConnect/onDisconnect) ───
+   Each browser socket is a virtual webContents: one more client in the
+   registry (broadcasts, the sessions it joins), never a PC window. It never
+   owns a session or a tab (window-registry.js "Virtual windows"). */
+function attachWebClient(wc) {
+  windowRegistry.addWindow(wc, { virtual: true });
+  mirror.addClient(wc);
+}
+function detachWebClient(wc) {
+  /* Leaves every session it viewed (removeWindow does the leave()s); it owned none */
+  const owned = windowRegistry.removeWindow(wc);
+  mirror.removeClient(wc);
+  if (owned.length) endWindowSessions(owned);
+  broadcastAgents();
 }
 
 /* ─── "An agent finished" outside the window (window:attention) ───
@@ -1040,6 +1059,26 @@ function registerIpcHandlers(mainWindow) {
     return windowRegistry.answerJoin(joinId, event.sender, snapshot || null);
   }));
 
+  /* ─── Web mirror (electron/web/mirror.js) ───
+     report: a PC window's tabs (browsers are ignored). state/select/command:
+     from a browser (the gateway's allow-list). clients/kick: the PC's list of
+     connected browsers (never reachable from one). */
+  ipcMain.handle('mirror:report', wrapHandler(async (event, snapshot) => mirror.report(event.sender, snapshot)));
+  ipcMain.handle('mirror:state', wrapHandler(async (event) => mirror.stateFor(event.sender)));
+  ipcMain.handle('mirror:select', wrapHandler(async (event, windowId) => mirror.select(event.sender, windowId)));
+  ipcMain.handle('mirror:command', wrapHandler(async (event, cmd) => {
+    if (!windowRegistry.isVirtual(event.sender)) throw new Error('Only a browser sends mirror commands');
+    return mirror.command(event.sender, cmd);
+  }));
+  ipcMain.handle('web:clients', wrapHandler(async (event) => {
+    if (windowRegistry.isVirtual(event.sender)) throw new Error('Not available from the web');
+    return mirror.clients();
+  }));
+  ipcMain.handle('web:kick', wrapHandler(async (event, clientId) => {
+    if (windowRegistry.isVirtual(event.sender)) throw new Error('Not available from the web');
+    return mirror.kick(clientId);
+  }));
+
   /* A new empty window: offset from the one asking, or at {x, y} */
   ipcMain.handle('window:new', wrapHandler(async (event, opts) => {
     const e = windowRegistry.createWindow(placeNear(event, opts));
@@ -1248,6 +1287,7 @@ function removeIpcHandlers() {
     'window:background-sessions', 'window:background-forget', 'window:background-rename',
     'window:workspace-take', 'window:workspace-report', 'window:workspace-restored',
     'session:join', 'session:leave', 'session:snapshot',
+    'mirror:report', 'mirror:state', 'mirror:select', 'mirror:command', 'web:clients', 'web:kick',
     'system:info',
     'sync:status', 'sync:login', 'sync:logout', 'sync:now',
     'sync:devices', 'sync:revoke-device',
@@ -1268,4 +1308,4 @@ function removeIpcHandlers() {
   ipcMain.removeAllListeners('window:close');
 }
 
-module.exports = { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting, endWindowSessions, attention, keptSessionsOf, endKeptWhenClosed, captureKeptForQuit, noteKeptOnQuit };
+module.exports = { registerIpcHandlers, removeIpcHandlers, attachWindow, attachWebClient, detachWebClient, setQuitting, endWindowSessions, attention, keptSessionsOf, endKeptWhenClosed, captureKeptForQuit, noteKeptOnQuit };

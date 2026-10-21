@@ -215,7 +215,7 @@ function createWebServer(opts) {
     if (why) { console.warn(`[web] 403 upgrade: ${why}`); refuseUpgrade(socket); return; }
     const ws = wsLite.accept(req, socket, head, { maxMessage });
     if (!ws) return;
-    gateway.attach(ws, { login: req.headers['tailscale-user-login'] || null });
+    gateway.attach(ws, { login: req.headers['tailscale-user-login'] || null, userAgent: req.headers['user-agent'] || null });
   }
 
   async function start() {

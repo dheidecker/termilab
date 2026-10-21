@@ -19,6 +19,7 @@ import KnownHosts from './components/KnownHosts/KnownHosts';
 import Logs from './components/Logs/Logs';
 import AgentsDock from './components/Agents/AgentsDock';
 import { useSessionRequests } from './components/Agents/sessionActions';
+import { useMirrorSource } from './components/Mirror/mirror';
 import HostKeyPrompt from './components/HostKeyPrompt/HostKeyPrompt';
 import AgentApproval from './components/AgentApproval/AgentApproval';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
@@ -70,6 +71,8 @@ function AppContent() {
   const closeAgentsDock = () => { saveAgentsDock(false); setAgentsDock(false); };
   /* Another window's Sessions dock renaming/colouring/closing a terminal here */
   useSessionRequests();
+  /* Web mirror: this window's tabs to the browsers, their orders back here */
+  useMirrorSource(state, actions);
 
   /* No session tab selected → the home tab (sidebar + section) is showing */
   const homeActive = !tabs.some(t => t.id === activeTabId);
