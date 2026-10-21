@@ -43,6 +43,9 @@ if (process.platform === 'linux' && process.env.TERMILAB_USE_SYSTEM_IME !== '1')
 
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
+/* Before any handler is registered: the web mirror's gateway calls the same
+   functions (electron/web/ipc-tap.js). Electron's behaviour is unchanged. */
+require('./web/ipc-tap').install(ipcMain);
 
 const { registerIpcHandlers, removeIpcHandlers, attachWindow, setQuitting, keptSessionsOf, endKeptWhenClosed, captureKeptForQuit, noteKeptOnQuit } = require('./ipc-handlers');
 const { guardNavigation } = require('./navigation-guard');
@@ -142,7 +145,10 @@ function createWindow(bounds = {}, { maximized = false } = {}) {
   // http(s)/mailto links open in the default browser, file:// never does
   guardNavigation(win);
 
-  win.on('close', (event) => confirmClose(win, event));
+  win.on('close', (event) => {
+    if (hideForWeb(win, event)) return;
+    confirmClose(win, event);
+  });
 
   win.on('closed', () => {
     windows.delete(win);
@@ -191,6 +197,72 @@ function confirmClose(win, event) {
 }
 
 windowRegistry.setWindowFactory((bounds) => createWindow(bounds));
+
+// ─── Web mirror (electron/web/) ─────────────────────────
+/* The server is required lazily: nothing of it loads unless remote access is
+   on. Wiring (electron/web/remote-access.js) calls syncWebServer(identity) at
+   boot and on every change, or startWebServer/stopWebServer directly.
+   identity = { getAllowedLogin(), getDnsName(), getPort()?, socketPath?, tcpPort? } */
+let webServer = null;
+let webStarting = null;
+
+function webServerActive() {
+  return !!(webServer && webServer.isRunning());
+}
+
+async function startWebServer(identity) {
+  if (webServerActive()) return webServer.address();
+  if (webStarting) return webStarting;
+  webStarting = (async () => {
+    const { createWebServer } = require('./web/server');
+    const storeService = require('./services/store-service');
+    const srv = createWebServer({
+      socketPath: identity.socketPath || path.join(app.getPath('userData'), 'web', 'termilab.sock'),
+      tcpPort: identity.tcpPort,
+      getAllowedLogin: identity.getAllowedLogin,
+      getDnsName: identity.getDnsName,
+      getPort: identity.getPort,
+      info: { name: identity.name || require('os').hostname(), version: app.getVersion() },
+      gateway: {
+        /* The browser never holds a password: ssh:connect from it uses the saved one */
+        getHost: async (id) => (await storeService.getHosts()).find(h => h && h.id === id) || null,
+      },
+    });
+    const address = await srv.start();
+    webServer = srv;
+    return address;
+  })();
+  try { return await webStarting; } finally { webStarting = null; }
+}
+
+async function stopWebServer() {
+  if (webStarting) { try { await webStarting; } catch (_) { /* failed: nothing to stop */ } }
+  const srv = webServer;
+  webServer = null;
+  if (srv) await srv.stop();
+}
+
+/** Start or stop per settings.remoteAccess.enabled. */
+async function syncWebServer(identity) {
+  const storeService = require('./services/store-service');
+  const settings = await storeService.getSettings();
+  const enabled = !!(settings && settings.remoteAccess && settings.remoteAccess.enabled);
+  if (enabled && identity) return startWebServer(identity);
+  await stopWebServer();
+  return null;
+}
+
+/* While the web mirror is on, closing the last window hides it instead: the
+   browser mirrors this renderer's tabs, and the app keeps running for it
+   (second-instance / dock click shows it again). */
+function hideForWeb(win, event) {
+  if (quitCleanupDone || !webServerActive()) return false;
+  const others = [...windows].filter(w => w !== win && !w.isDestroyed() && w.isVisible());
+  if (others.length > 0) return false;
+  event.preventDefault();
+  win.hide();
+  return true;
+}
 
 /* macOS has a visible app menu: give it New Window (Cmd+Shift+N). Elsewhere
    the window is frameless with no menu bar; the renderer handles Ctrl+Shift+N. */
@@ -466,12 +538,15 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
+    } else if (![...windows].some(w => !w.isDestroyed() && w.isVisible())) {
+      onSecondInstance();   // hidden by hideForWeb: bring it back
     }
   });
 });
 
 // Quit when all windows are closed (except on macOS)
 app.on('window-all-closed', () => {
+  if (webServerActive()) return;   // the web mirror keeps the app alive
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -524,6 +599,7 @@ app.on('before-quit', async (event) => {
     await portForwardService.stopAll();
     await agentService.stop();
     await remoteAccess.stop();
+    await stopWebServer().catch(err => console.error('[Main] Could not stop the web server:', err.message));
     await localShellService.killAll();
     syncService.stop();
     removeIpcHandlers();
@@ -543,6 +619,10 @@ process.on('unhandledRejection', (reason) => {
 
 /* scripts/lib/check-main-lifecycle.js loads this file with a stubbed electron */
 module.exports = {
+  startWebServer,
+  stopWebServer,
+  syncWebServer,
+  webServerActive,
   _test: {
     windows,
     confirmClose,
