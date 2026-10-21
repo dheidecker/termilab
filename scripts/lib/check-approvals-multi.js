@@ -12,6 +12,9 @@
  *    timeout sigue bloqueando; un cliente destruido se ignora.
  *  - AM5: agent-log guarda answeredBy.
  *  - AM6-AM8: huella nueva del servidor SSH (host-key-service.js), misma regla.
+ *  - AM10: recargar el navegador (detachWebClient + attachWebClient reales):
+ *    el viejo sale de los destinos, el nuevo recibe el aviso pendiente y su
+ *    respuesta gana; sin nadie mas, desconectar es Block / rechazo.
  *  - AM9: ciclo de vida con la web activa: dialogo al cerrar la ultima
  *    ventana (Linux/Windows), app:quit, segunda instancia muestra la oculta.
  *
@@ -278,6 +281,89 @@ async function seccionAprobacionesMulti({ check, ROOT, handlers }) {
       assert.strictEqual(await v3, false);
       assert.strictEqual(await v2, false);
       assert.strictEqual(hk._pending.size, 0);
+    });
+
+    await check('AM10 recarga del navegador = disconnect + connect: el nuevo recibe aprobacion y huella pendientes y su respuesta gana; solo y se va -> Block', async () => {
+      const ipc = require(path.join(ROOT, 'electron', 'ipc-handlers.js'));
+      const registry = require(path.join(ROOT, 'electron', 'window-registry.js'));
+      const approvals = require(path.join(ROOT, 'electron', 'agent', 'approval.js'));
+      /* Los de la cache ahora (otra seccion pudo recargar el grafo): los mismos que usa ipc-handlers */
+      const hk10 = require(path.join(ROOT, 'electron', 'services', 'host-key-service.js'));
+      const store10 = require(path.join(ROOT, 'electron', 'services', 'store-service.js'));
+      const real10 = { get: store10.getKnownHosts, save: store10.saveKnownHost };
+      /* Enrutados al registro de ipc-handlers (en la corrida completa otra seccion los apunta a otro) */
+      const routers = { hk: hk10.router, ap: approvals.router };
+      hk10.router = registry;
+      approvals.router = registry;
+      store10.getKnownHosts = async () => [];
+      store10.saveKnownHost = async (e) => { saved.push(e); };
+      const a = pcWindow('A-am10', { focused: true });
+      registry.addWindow(a.win);
+      const w1 = webClient('derek');
+      ipc.attachWebClient(w1.wc);
+      try {
+        /* Aprobacion */
+        const p = ask(approvals);
+        assert.ok(await until(() => of(w1, 'agent:approval-prompt').length === 1 && of(a, 'agent:approval-prompt').length === 1), 'no llego');
+        const id = of(w1, 'agent:approval-prompt')[0].requestId;
+        /* Huella: a la ventana del PC (fijada: el registro compartido puede
+           tener ventanas de secciones anteriores) y a los navegadores */
+        hk10._target = () => a.wc;
+        saved.length = 0;
+        const v = hk10.verify('am10.example', 22, ed25519Blob(), { sessionId: null });
+        assert.ok(await until(() => of(w1, 'ssh:host-key-prompt').length === 1), 'la huella no llego');
+        const hid = of(w1, 'ssh:host-key-prompt')[0].requestId;
+        /* Recarga: se va el viejo... */
+        w1.kill();
+        ipc.detachWebClient(w1.wc);
+        assert.strictEqual(approvals.pendingCount(), 1, 'desconectar el navegador bloqueo con el PC vivo');
+        assert.strictEqual(hk10._pending.size, 1);
+        assert.strictEqual(approvals.respond(id, true, w1.wc), false, 'respondio el navegador ido');
+        /* ...y llega el nuevo: recibe los dos avisos */
+        const w2 = webClient('derek');
+        ipc.attachWebClient(w2.wc);
+        assert.strictEqual(of(w2, 'agent:approval-prompt').length, 1, 'el navegador nuevo no recibio la aprobacion');
+        const again = of(w2, 'agent:approval-prompt')[0];
+        assert.strictEqual(again.requestId, id);
+        assert.ok(again.timeoutMs > 0 && again.timeoutMs <= APPROVAL_TIMEOUT_MS, `timeoutMs ${again.timeoutMs}`);
+        assert.deepStrictEqual(of(w2, 'ssh:host-key-prompt').map(x => x.requestId), [hid], 'el navegador nuevo no recibio la huella');
+        assert.strictEqual(of(a, 'agent:approval-prompt').length, 1, 'el PC recibio el aviso dos veces');
+        /* Su respuesta gana, por los handlers de verdad */
+        const r = await handlers.get('agent:approval-response')({ sender: w2.wc }, { requestId: id, approve: true });
+        assert.ok(r.success && r.data === true, JSON.stringify(r));
+        assert.deepStrictEqual(await p, { approved: true, reason: 'approved', by: 'web:derek' });
+        assert.deepStrictEqual(of(a, 'agent:approval-cancel'), [{ requestId: id, reason: 'answered', by: 'web:derek' }]);
+        const rh = await handlers.get('ssh:host-key-response')({ sender: w2.wc }, { requestId: hid, accept: true });
+        assert.ok(rh.success && rh.data === true, JSON.stringify(rh));
+        assert.strictEqual(await v, true);
+        assert.strictEqual(saved.length, 1);
+        /* Sin ventana de PC (el registro de la seccion puede tener otras de
+           pruebas anteriores: se ignoran): el unico navegador se va -> Block
+           y rechazo, sin esperar 2 min */
+        a.kill();
+        registry.removeWindow(a.wc);
+        approvals._pickWindow = () => null;
+        hk10._target = () => w2.wc;
+        const q = ask(approvals);
+        const v2 = hk10.verify('am10b.example', 22, ed25519Blob(), { sessionId: null });
+        assert.ok(await until(() => of(w2, 'agent:approval-prompt').length === 2 && of(w2, 'ssh:host-key-prompt').length === 2), 'no llego al navegador solo');
+        w2.kill();
+        ipc.detachWebClient(w2.wc);
+        assert.deepStrictEqual(await q, { approved: false, reason: 'no-window' });
+        assert.strictEqual(await v2, false);
+        assert.strictEqual(approvals.pendingCount(), 0);
+        assert.strictEqual(hk10._pending.size, 0);
+      } finally {
+        hk10.router = routers.hk;
+        approvals.router = routers.ap;
+        store10.getKnownHosts = real10.get;
+        store10.saveKnownHost = real10.save;
+        delete approvals._pickWindow;
+        delete hk10._target;
+        approvals.rejectAll();
+        hk10.rejectAll();
+        for (const c of [a]) { try { registry.removeWindow(c.wc); } catch (_) { /* fuera ya */ } }
+      }
     });
   } finally {
     storeService.getKnownHosts = realGet;

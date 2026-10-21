@@ -53,6 +53,9 @@
  *    time the pty's size changes, 'session:size' {sessionId, cols, rows}
  *    goes to every client so the others fit their xterm to it. With no
  *    viewers none of this runs: every resize passes, nothing is emitted.
+ *    When the conductor leaves, or the last viewer does, the owner gets
+ *    'session:size' {sessionId, cols, rows, release: true}: it conducts
+ *    again and must stop following another client's size and fit itself.
  *  - a viewer's window closing (removeWindow) or leave() only drops that
  *    viewer: it never ends the session.
  *  - the OWNER's window closing while viewers remain does not end the
@@ -584,13 +587,30 @@ class WindowRegistry {
     }
     const sizes = this._wanted.get(sessionId);
     if (sizes) sizes.delete(wc);
-    if (this._conductor.get(sessionId) === wc) {
+    const conducted = this._conductor.get(sessionId) === wc;
+    if (conducted) {
       this._conductor.delete(sessionId);
       /* The pty goes back to whoever conducts now (the owner) */
       this._conduct(sessionId);
       this._announceConductor(sessionId);
     }
+    /* The owner conducts again (the conductor left) or is alone: its xterm
+       may still be following another client's size. Tell it to let go. */
+    if (conducted || !set.size) this._releaseOwner(sessionId);
     return true;
+  }
+
+  /* 'session:size' {release: true} to the owner only: stop following,
+     fit the pane again and report its size (TerminalView sizeListener).
+     cols/rows are the pty's, or null when it never had one. */
+  _releaseOwner(sessionId) {
+    const pty = this._ptySize.get(sessionId) || null;
+    const payload = { sessionId, cols: pty ? pty.cols : null, rows: pty ? pty.rows : null, release: true };
+    const move = this._moving.get(sessionId);
+    const buffer = move && move.buffers.get(sessionId);
+    if (buffer) { buffer.push(['session:size', [payload]]); return; }
+    const owner = this._owners.get(sessionId);
+    if (owner && !this._closedOwner.has(sessionId) && this._windows.has(owner)) this.sendTo(owner, 'session:size', payload);
   }
 
   /* The owner's window closed and viewers remain: the oldest live one owns
@@ -610,6 +630,8 @@ class WindowRegistry {
     this._owners.set(sessionId, next);
     if (this._conductor.get(sessionId) !== next) this._conductor.delete(sessionId);
     this._conduct(sessionId);
+    /* It was a viewer, following someone's size: it conducts now */
+    this._releaseOwner(sessionId);
     return true;
   }
 

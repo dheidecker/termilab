@@ -65,8 +65,9 @@ class WebSocketLite extends EventEmitter {
     this.maxMessage = maxMessage;
     this.maxBuffered = maxBuffered;
     this.readyState = 'open';     // open | closing | closed
-    this._chunks = [];            // unparsed input
+    this._chunks = [];            // unparsed input, as it came (concatenated only once a frame is whole)
     this._chunksLen = 0;
+    this._need = 2;               // bytes the next frame needs before parsing is worth a concat
     this._frag = null;            // { opcode, parts: [], size } while a fragmented message arrives
     this._closeSent = false;
     this._closedEmitted = false;
@@ -160,6 +161,7 @@ class WebSocketLite extends EventEmitter {
     clearInterval(this._pinger);
     clearTimeout(this._closeTimer);
     this._chunks = [];
+    this._chunksLen = 0;
     this._frag = null;
     try { this.socket.destroy(); } catch (_) { /* gone */ }
     this.emit('close', this._closeCode, this._closeReason);
@@ -172,7 +174,11 @@ class WebSocketLite extends EventEmitter {
     this._alive = true;
     this._chunks.push(d);
     this._chunksLen += d.length;
-    let buf = this._chunks.length === 1 ? this._chunks[0] : Buffer.concat(this._chunks);
+    /* A big message arrives in many chunks: they wait in the list until the
+       frame is whole, and only then are joined, once. Concatenating on every
+       chunk was quadratic (a 20 MB image in 64 KB chunks: ~3 GB copied). */
+    if (this._chunksLen < this._need) return;
+    let buf = this._chunks.length === 1 ? this._chunks[0] : Buffer.concat(this._chunks, this._chunksLen);
     let off = 0;
     while (this.readyState !== 'closed') {
       const used = this._parseFrame(buf, off);
@@ -182,6 +188,25 @@ class WebSocketLite extends EventEmitter {
     buf = off >= buf.length ? null : buf.subarray(off);
     this._chunks = buf ? [buf] : [];
     this._chunksLen = buf ? buf.length : 0;
+    this._need = buf ? this._frameNeed(buf) : 2;
+  }
+
+  /** Bytes the frame starting at buf[0] needs: its header, then header + payload once the length is known. */
+  _frameNeed(buf) {
+    if (buf.length < 2) return 2;
+    const b1 = buf[1];
+    const code = b1 & 0x7F;
+    const head = 2 + (code === 126 ? 2 : code === 127 ? 8 : 0) + ((b1 & 0x80) ? 4 : 0);
+    if (buf.length < head) return head;
+    let len = code;
+    if (code === 126) len = buf.readUInt16BE(2);
+    else if (code === 127) {
+      const big = buf.readBigUInt64BE(2);
+      /* Over the cap _parseFrame already closed with 1009; never wait for it */
+      if (big > BigInt(this.maxMessage)) return head;
+      len = Number(big);
+    }
+    return head + len;
   }
 
   /** Parses one frame at `off`. Returns bytes consumed, 0 if incomplete, -1 after a failure. */

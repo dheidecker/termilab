@@ -12,6 +12,10 @@
  *    on another site cannot open a socket here with the owner's browser.
  *    Plain HTTP requests may omit Origin; one that sends a foreign one is refused.
  *
+ * Those headers are trusted only because nothing but tailscaled can reach
+ * the server: it listens on a 0600 unix socket (Linux only, see server.js).
+ * On a loopback TCP port any local process could forge all three.
+ *
  * No cookies, no token, no CORS headers: nothing a browser could replay or
  * relax. Failure is a bare 403 with no reason (the reason goes to the log).
  */

@@ -2,21 +2,24 @@
  * The web mirror's HTTP server: the app (dist-web/), the preload bundle and
  * the gateway WebSocket, behind auth.js.
  *
- * It listens ONLY where `tailscale serve` proxies to:
- *  - Linux: a unix socket at `socketPath` (its directory 0700, the socket
- *    0600). Never TCP.
- *  - macOS / Windows (prepared; tailscale serve there proxies to
- *    http://127.0.0.1:<serve port + 1>, 7444 by default): host fixed at
- *    127.0.0.1, port `tcpPort`. After listen() the bound address is checked
- *    and the server closes itself if it is not loopback. There is no bind
- *    option, on purpose.
- *    RISK: any local process can reach loopback and forge the Tailscale
- *    headers. `secretPrefix: true` puts every path under a random secret
- *    prefix (address().prefix), but only works if the serve target carries
- *    that path; the current serve-guard target has none, so it is off by
- *    default.
+ * It listens ONLY on a unix socket at `socketPath` (its directory 0700, the
+ * socket 0600), which is where `tailscale serve` proxies to. Never TCP, and
+ * there is no host / port / bind option at all.
  *
- * Routes (after the prefix):
+ * Linux only. start() refuses anywhere else, so remote access is off on
+ * macOS and Windows for now (remote-access.js says so in the UI). Why: there
+ * `tailscale serve` can only proxy to a loopback HTTP port, and loopback
+ * TCP is open to every local process, which could forge
+ * `Tailscale-User-Login`, `Host` and `Origin` and get the whole gateway
+ * (auth.js trusts those headers because only tailscaled can reach the
+ * socket). Enabling it there needs one of:
+ *  - a serve target that carries a secret the server checks (a random path
+ *    prefix or header that tailscale serve adds and a local process cannot
+ *    learn), or
+ *  - tailscale serve proxying to a unix socket / named pipe on those systems,
+ *    with permissions that admit only this user and tailscaled.
+ *
+ * Routes:
  *   GET /                        dist-web/index.html
  *   GET /termilab-preload.js     electron-stub.js + electron/preload.js, wrapped
  *   GET /.well-known/termilab    {app:'termilab', name, version} (F5 discovery)
@@ -30,15 +33,12 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
 
 const wsLite = require('./ws-lite');
 const { createAuth, refuseHttp, refuseUpgrade } = require('./auth');
 const { createGateway } = require('./gateway');
 
 const ROOT = path.join(__dirname, '..', '..');
-const LOOPBACK = '127.0.0.1';
-const DEFAULT_TCP_PORT = 7444;   // tailscale.DEFAULT_PORT (7443) + 1, where serve proxies off Linux
 const MAX_MESSAGE = 32 * 1024 * 1024;   // a Compose image, base64'd, fits
 
 const CSP = [
@@ -113,26 +113,20 @@ async function prepareSocketPath(socketPath) {
 
 /**
  * @param {object} opts
- * @param {string} [opts.socketPath]   required in unix mode
+ * @param {string} opts.socketPath     the unix socket tailscale serve proxies to
  * @param {() => string|null} opts.getAllowedLogin
  * @param {() => string|null} opts.getDnsName
  * @param {() => number|null} [opts.getPort]
  * @param {{name?: string, version?: string}} [opts.info]
  * @param {object} [opts.gateway]      createGateway() deps (tap, getHost, onConnect, onDisconnect)
  * @param {string} [opts.distDir]      default <repo>/dist-web
- * @param {'unix'|'tcp'} [opts.mode]   default: unix on Linux, tcp elsewhere
- * @param {number} [opts.tcpPort]      tcp mode: the fixed loopback port (default 7444; 0 = any, tests)
- * @param {boolean} [opts.secretPrefix] tcp mode: random path prefix (see RISK above)
  * @param {number} [opts.maxMessage]
  */
 function createWebServer(opts) {
-  const mode = opts.mode || (process.platform === 'linux' ? 'unix' : 'tcp');
   const distDir = path.resolve(opts.distDir || path.join(ROOT, 'dist-web'));
   const info = { app: 'termilab', name: (opts.info && opts.info.name) || os.hostname(), version: (opts.info && opts.info.version) || '0.0.0' };
   const auth = createAuth({ getAllowedLogin: opts.getAllowedLogin, getDnsName: opts.getDnsName, getPort: opts.getPort });
   const gateway = createGateway(opts.gateway || {});
-  const prefix = mode === 'tcp' && opts.secretPrefix ? `/${crypto.randomBytes(16).toString('hex')}` : '';
-  const tcpPort = Number.isInteger(opts.tcpPort) ? opts.tcpPort : DEFAULT_TCP_PORT;
   const maxMessage = opts.maxMessage || MAX_MESSAGE;
   let preloadBundle = null;
   let server = null;
@@ -149,15 +143,9 @@ function createWebServer(opts) {
     return preloadBundle;
   };
 
-  /** The path inside the app, or null when outside the prefix. */
+  /** The path of a request URL, or null when it does not parse. */
   function route(url) {
-    let pathname;
-    try { pathname = new URL(url, 'http://x').pathname; } catch (_) { return null; }
-    if (prefix) {
-      if (pathname !== prefix && !pathname.startsWith(`${prefix}/`)) return null;
-      pathname = pathname.slice(prefix.length) || '/';
-    }
-    return pathname;
+    try { return new URL(url, 'http://x').pathname; } catch (_) { return null; }
   }
 
   function send(res, status, type, body, extra = {}) {
@@ -220,6 +208,11 @@ function createWebServer(opts) {
 
   async function start() {
     if (server) return api.address();
+    /* See the header: off Linux the only target serve can use is loopback TCP */
+    if (process.platform !== 'linux') {
+      throw new Error(`Remote access is available on Linux for now (this is ${process.platform}): not listening`);
+    }
+    if (!opts.socketPath) throw new Error('socketPath is required');
     const srv = http.createServer((req, res) => {
       onRequest(req, res).catch((err) => {
         console.error('[web] request failed:', err.message);
@@ -231,27 +224,13 @@ function createWebServer(opts) {
     srv.on('clientError', (err, socket) => { try { socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); } catch (_) { /* gone */ } });
     srv.headersTimeout = 20000;
     srv.requestTimeout = 60000;
-    if (mode === 'unix') {
-      if (!opts.socketPath) throw new Error('socketPath is required');
-      await prepareSocketPath(opts.socketPath);
-      await new Promise((resolve, reject) => {
-        srv.once('error', reject);
-        srv.listen(opts.socketPath, () => { srv.removeListener('error', reject); resolve(); });
-      });
-      await fsp.chmod(opts.socketPath, 0o600);
-      address = { mode, socketPath: opts.socketPath, prefix };
-    } else {
-      await new Promise((resolve, reject) => {
-        srv.once('error', reject);
-        srv.listen({ host: LOOPBACK, port: tcpPort, exclusive: true }, () => { srv.removeListener('error', reject); resolve(); });
-      });
-      const a = srv.address();
-      if (!a || typeof a !== 'object' || a.address !== LOOPBACK) {
-        await new Promise(r => srv.close(r));
-        throw new Error(`Web server bound to ${a && a.address}, not loopback: closed`);
-      }
-      address = { mode, host: LOOPBACK, port: a.port, prefix };
-    }
+    await prepareSocketPath(opts.socketPath);
+    await new Promise((resolve, reject) => {
+      srv.once('error', reject);
+      srv.listen(opts.socketPath, () => { srv.removeListener('error', reject); resolve(); });
+    });
+    await fsp.chmod(opts.socketPath, 0o600);
+    address = { mode: 'unix', socketPath: opts.socketPath };
     server = srv;
     return api.address();
   }
@@ -262,7 +241,7 @@ function createWebServer(opts) {
     server = null;
     gateway.closeAll();
     await new Promise(r => { srv.close(() => r()); if (srv.closeAllConnections) srv.closeAllConnections(); });
-    if (mode === 'unix' && opts.socketPath) {
+    if (opts.socketPath) {
       try { await fsp.unlink(opts.socketPath); } catch (_) { /* already gone */ }
     }
     address = null;
@@ -278,4 +257,4 @@ function createWebServer(opts) {
   return api;
 }
 
-module.exports = { createWebServer, buildPreloadBundle, SECURITY_HEADERS, CSP, MAX_MESSAGE, DEFAULT_TCP_PORT };
+module.exports = { createWebServer, buildPreloadBundle, SECURITY_HEADERS, CSP, MAX_MESSAGE };

@@ -197,11 +197,19 @@ function attachWindow(win) {
 function attachWebClient(wc) {
   windowRegistry.addWindow(wc, { virtual: true });
   mirror.addClient(wc);
+  /* A question already waiting (an agent's command, a new host key) is asked
+     here too: a reloaded page is a new client and must still be able to answer */
+  agentApprovals.addClient(wc);
+  hostKeyService.addClient(wc);
 }
 function detachWebClient(wc) {
   /* Leaves every session it viewed (removeWindow does the leave()s); it owned none */
   const owned = windowRegistry.removeWindow(wc);
   mirror.removeClient(wc);
+  /* Like a closing window: it leaves every open question; with nobody else
+     left to answer, that is a Block / rejection, not a 2-minute hang */
+  hostKeyService.rejectFor(wc);
+  agentApprovals.rejectFor(wc);
   if (owned.length) endWindowSessions(owned);
   broadcastAgents();
 }

@@ -23,6 +23,8 @@
  *  TS15 saveSettings no toca remoteAccess; set-name valida; socket dir 0700.
  *  TS16 canales web:* registrados y por el sobre de wrapHandler.
  *  TS17 el servidor web (syncServer) sigue a enable / resume / disable.
+ *  TS18 fuera de Linux (process.platform simulado): unsupported-platform,
+ *       enable rechazado en main, resume apaga, nunca serve ni servidor.
  *
  * Solo esta seccion: TERMILAB_CHECK_ONLY=TS.
  */
@@ -330,6 +332,46 @@ async function seccionTailscale({ check, ROOT, handlers }) {
       st = await remote.enable();
       assert.strictEqual(st.error && st.error.code, 'server-failed');
       await remote.disable();
+    } finally {
+      remote.syncServer = antes;
+    }
+    keep();
+  });
+
+  await check('TS18 solo Linux: en darwin/win32 web:status da unsupported-platform, enable se rechaza en main, resume apaga', async () => {
+    const real = Object.getOwnPropertyDescriptor(process, 'platform');
+    const llamadas = [];
+    const antes = remote.syncServer;
+    remote.configure({ syncServer: async (id) => { llamadas.push(id); } });
+    try {
+      for (const plat of ['darwin', 'win32']) {
+        useCase('ready');
+        Object.defineProperty(process, 'platform', { ...real, value: plat });
+        try {
+          const r = await handlers.get('web:status')({}, undefined);
+          assert.strictEqual(r.success, true);
+          assert.strictEqual(r.data.tailscale.reason, 'unsupported-platform', `${plat}: status`);
+          assert.deepStrictEqual([r.data.remoteAccess.enabled, r.data.serving, r.data.url], [false, false, null]);
+          const en = await handlers.get('web:enable')({}, undefined);
+          assert.strictEqual(en.success, true);
+          assert.strictEqual(en.data.error && en.data.error.code, 'unsupported-platform', `${plat}: enable no se nego`);
+          assert.strictEqual(en.data.remoteAccess.enabled, false);
+          assert.strictEqual((await storeService.getSettings()).remoteAccess.enabled, false, `${plat}: enable guardo enabled:true`);
+          assert.strictEqual(serveRuns().length, 0, `${plat}: se lanzo tailscale serve`);
+          await storeService.saveRemoteAccess({ enabled: true });
+          const st = await remote.resume();
+          assert.strictEqual(st.tailscale.reason, 'unsupported-platform');
+          assert.strictEqual((await storeService.getSettings()).remoteAccess.enabled, false, `${plat}: resume dejo enabled:true`);
+          assert.strictEqual(serveRuns().length, 0);
+          assert.ok(!llamadas.some(Boolean), `${plat}: se arranco el servidor web`);
+        } finally {
+          Object.defineProperty(process, 'platform', real);
+        }
+      }
+      /* La UI: el texto y el interruptor deshabilitado por el motivo */
+      const ra = fs.readFileSync(path.join(ROOT, 'src', 'components', 'Settings', 'RemoteAccess.jsx'), 'utf-8');
+      assert.ok(/'unsupported-platform':\s*\{\s*text: 'Remote access is available on Linux for now\.'/.test(ra), 'falta el aviso de la UI');
+      assert.ok(/disabled=\{!!reason \|\| !!busy\}/.test(ra), 'el interruptor no se deshabilita con un motivo');
     } finally {
       remote.syncServer = antes;
     }

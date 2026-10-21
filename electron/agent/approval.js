@@ -16,7 +16,9 @@
  *
  * Anything but an explicit approve from a client it was shown in is a
  * Block: no client, failed sends, a timeout (2 min), every client closing
- * with no other window to move to. One answer per request: approving runs
+ * with no other window to move to. A browser that connects (or reloads) while
+ * a request is open is shown it too (addClient); one that disconnects leaves
+ * it (rejectFor), as a closing window does. One answer per request: approving runs
  * that one call, once; nothing is remembered.
  *
  * No electron here (the harness drives it with fake windows); bringing the
@@ -72,10 +74,12 @@ class ApprovalBroker {
     return (list || []).filter(e => e && this._alive(e.wc));
   }
 
-  /* One client more for `req`; the PC one is also brought forward */
-  _showTo(req, entry, isPc) {
+  /* One client more for `req`; the PC one is also brought forward. A client
+     that arrives late is told the time left, not the full timeout. */
+  _showTo(req, entry, isPc, late = false) {
     if (req.targets.has(entry.wc)) return true;
-    if (!this._send(entry.wc, 'agent:approval-prompt', req.payload)) return false;
+    const payload = late && req.deadline ? { ...req.payload, timeoutMs: Math.max(0, req.deadline - Date.now()) } : req.payload;
+    if (!this._send(entry.wc, 'agent:approval-prompt', payload)) return false;
     req.targets.add(entry.wc);
     if (isPc) {
       req.pc = entry.wc;
@@ -86,6 +90,7 @@ class ApprovalBroker {
 
   _arm(requestId, req) {
     clearTimeout(req.timer);
+    req.deadline = Date.now() + this.timeoutMs;
     /* Not unref'd: a question in flight keeps the process (and the agent's call) alive */
     req.timer = setTimeout(() => this._finish(requestId, false, 'timeout'), this.timeoutMs);
   }
@@ -167,6 +172,20 @@ class ApprovalBroker {
       }
       if (!req.targets.size) this._finish(id, false, 'no-window');
     }
+  }
+
+  /**
+   * A web mirror client connected (a reloaded page is a new one): every
+   * request still open is shown there too, and its answer counts like any
+   * other client's. Returns how many it got.
+   */
+  addClient(wc) {
+    if (!this._alive(wc)) return 0;
+    let n = 0;
+    for (const req of this._pending.values()) {
+      if (this._showTo(req, { wc }, false, true)) n++;
+    }
+    return n;
   }
 
   /** Quitting: everything still open is blocked. */

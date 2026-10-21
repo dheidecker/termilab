@@ -359,6 +359,14 @@ export default function TerminalView({ tab }) {
        the pane fits itself back. */
     const sizeListener = window.electronAPI?.session?.onSize?.((p) => {
       if (disposed || !p || p.sessionId !== sessionIdRef.current) return;
+      /* release: this pane conducts again (the conductor left, or nobody
+         else shows the session). Stop following and fit back to the pane. */
+      if (p.release) {
+        follow = null;
+        try { fitAddon.fit(); } catch (_) { /* not laid out */ }
+        pushSize();
+        return;
+      }
       const { cols, rows } = p;
       if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols <= 0 || rows <= 0) return;
       if (cols === term.cols && rows === term.rows) { follow = null; return; }

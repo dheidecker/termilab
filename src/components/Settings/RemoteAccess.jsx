@@ -62,6 +62,10 @@ export function ConnectedBrowsers({ clients, onKick, kicking }) {
 const webApi = () => (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.web) || null;
 
 const REASONS = {
+  /* main refuses on macOS / Windows (electron/web/remote-access.js); no Tailscale advice applies */
+  'unsupported-platform': {
+    text: 'Remote access is available on Linux for now.',
+  },
   'not-installed': {
     text: 'Tailscale is not installed on this computer. Remote access only works inside your private Tailscale network, never on the open internet.',
     link: { href: 'https://tailscale.com/download', label: 'Download Tailscale' },

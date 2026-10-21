@@ -25,6 +25,9 @@
  *      virtual, la sesion termina como siempre (Background); con otra ventana
  *      del PC espectadora, pasa a esa aunque el virtual sea mas antiguo. Ni
  *      primaria, ni numero, ni en list(), ni destino ni origen de mudanza.
+ *  V15 el navegador conductor se va: la duena recibe session:size release
+ *      (suelta follow) y el pty vuelve a su tamano; igual si quedan otros
+ *      espectadores (ellos reciben el session:size normal, no el release).
  *  V12 un disconnect limpia: deja de ser espectador de todo, el conductor
  *      vuelve a la duena (su tamano al pty), sale del registro y de la lista.
  *  V13 mirror:command llega al renderer del PC (limpio) y mirror:state vuelve
@@ -512,6 +515,60 @@ async function seccionEspectadores({ check, ROOT, handlers, onHandlers }) {
       const clients = await handlers.get('web:clients')({ sender: A.wc });
       assert.ok(clients.success && !clients.data.some(c => c.id === W.wc.id), 'sigue en web:clients');
       for (const s of [s1, s2]) registry.release(s);
+      A.win.cerrar();
+    });
+
+    await check('V15 se va el navegador conductor: la duena recibe release y el pty vuelve a su tamano (solo, y con otro espectador)', async () => {
+      const [A] = nuevas('A-v15');
+      const W = navegadorFalso('W-v15');
+      const W2 = navegadorFalso('W2-v15');
+      ipc.attachWebClient(W.wc);
+      ipc.attachWebClient(W2.wc);
+      const releases = (V) => V.de('session:size').filter(([, p]) => p.release).map(([, p]) => p);
+      /* Solo el navegador: se va con session:leave */
+      const s1 = 'v15-solo';
+      registry.claim(s1, A.wc);
+      onHandlers.get('ssh:resize')({ sender: A.wc }, s1, 200, 50);
+      await contestar(A, await unir({ wc: W.wc }, s1), { data: '' });
+      onHandlers.get('ssh:resize')({ sender: W.wc }, s1, 80, 24);
+      onHandlers.get('ssh:send-data')({ sender: W.wc }, s1, 'x');
+      assert.deepStrictEqual(registry.ptySizeOf(s1), { cols: 80, rows: 24 });
+      assert.ok(A.de('session:size').some(([, p]) => p.sessionId === s1 && p.cols === 80 && !p.release), 'la duena no supo del 80x24');
+      assert.deepStrictEqual(releases(A), []);
+      pty.length = 0;
+      const r = await handlers.get('session:leave')({ sender: W.wc }, s1);
+      assert.ok(r.success, r.error);
+      assert.deepStrictEqual(releases(A), [{ sessionId: s1, cols: 200, rows: 50, release: true }], 'la duena no recibio el aviso');
+      assert.deepStrictEqual(registry.ptySizeOf(s1), { cols: 200, rows: 50 });
+      assert.deepStrictEqual(pty, [['ssh:resize', s1, 200, 50]]);
+      assert.ok(!W.de('session:size').some(([, p]) => p.release), 'el release llego al navegador');
+      /* Despues, sin espectadores, como siempre: cada resize pasa */
+      pty.length = 0;
+      onHandlers.get('ssh:resize')({ sender: A.wc }, s1, 190, 45);
+      assert.deepStrictEqual(pty, [['ssh:resize', s1, 190, 45]]);
+
+      /* Con dos navegadores: conduce W, W se va (desconexion), queda W2 */
+      const s2 = 'v15-dos';
+      registry.claim(s2, A.wc);
+      onHandlers.get('ssh:resize')({ sender: A.wc }, s2, 200, 50);
+      await contestar(A, await unir({ wc: W.wc }, s2), { data: '' });
+      await contestar(A, await unir({ wc: W2.wc }, s2), { data: '' });
+      onHandlers.get('ssh:resize')({ sender: W.wc }, s2, 70, 20);
+      onHandlers.get('ssh:resize')({ sender: W2.wc }, s2, 90, 30);
+      onHandlers.get('ssh:send-data')({ sender: W.wc }, s2, 'y');
+      assert.strictEqual(registry.conductorOf(s2), W.wc);
+      assert.deepStrictEqual(registry.ptySizeOf(s2), { cols: 70, rows: 20 });
+      const antes = releases(A).length;
+      W.wc.morir();
+      ipc.detachWebClient(W.wc);
+      assert.strictEqual(registry.conductorOf(s2), A.wc);
+      assert.deepStrictEqual(registry.ptySizeOf(s2), { cols: 200, rows: 50 });
+      assert.deepStrictEqual(releases(A).slice(antes), [{ sessionId: s2, cols: 200, rows: 50, release: true }], 'la duena no recibio el aviso con otro espectador');
+      assert.ok(W2.de('session:size').some(([, p]) => p.sessionId === s2 && p.cols === 200 && p.rows === 50 && !p.release), 'W2 no sigue el tamano de la duena');
+      assert.deepStrictEqual(releases(W2), [], 'el release llego a un espectador');
+      for (const s of [s1, s2]) registry.release(s);
+      W2.wc.morir();
+      ipc.detachWebClient(W2.wc);
       A.win.cerrar();
     });
 

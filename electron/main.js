@@ -202,7 +202,8 @@ windowRegistry.setWindowFactory((bounds) => createWindow(bounds));
 /* The server is required lazily: nothing of it loads unless remote access is
    on. Wiring (electron/web/remote-access.js) calls syncWebServer(identity) at
    boot and on every change, or startWebServer/stopWebServer directly.
-   identity = { getAllowedLogin(), getDnsName(), getPort()?, socketPath?, tcpPort? } */
+   identity = { getAllowedLogin(), getDnsName(), getPort()?, socketPath? }.
+   Linux only: server.js start() refuses elsewhere (no TCP listener at all). */
 let webServer = null;
 let webStarting = null;
 
@@ -218,7 +219,6 @@ async function startWebServer(identity) {
     const storeService = require('./services/store-service');
     const srv = createWebServer({
       socketPath: identity.socketPath || path.join(app.getPath('userData'), 'web', 'termilab.sock'),
-      tcpPort: identity.tcpPort,
       getAllowedLogin: identity.getAllowedLogin,
       getDnsName: identity.getDnsName,
       getPort: identity.getPort,

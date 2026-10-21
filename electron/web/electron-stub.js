@@ -65,11 +65,23 @@
    * @param {Function} opts.WebSocket      constructor (the browser's)
    * @param {number} [opts.retryMs]
    */
+  var HELD = {
+    'agent:approval-prompt': true,
+    'agent:approval-cancel': true,
+    'ssh:host-key-prompt': true,
+    'ssh:host-key-prompt-cancel': true,
+  };
+  var HELD_MAX = 50;
+
   function createIpcRenderer(opts) {
     var WS = opts.WebSocket;
     var pending = new Map();    // id -> {resolve, reject}
     var listeners = new Map();  // channel -> [fn(event, ...args)]
     var queue = [];             // frames waiting for the socket to open
+    /* Questions main asks a client the moment it connects (an approval or a
+       host key already waiting, ipc-handlers attachWebClient) arrive before
+       the app has mounted its listeners: held until one registers. */
+    var held = [];              // [channel, args] with no listener yet, HELD channels only
     var seq = 0;
     var ws = null;
     var retry = opts.retryMs || 1000;
@@ -101,12 +113,12 @@
           if (msg.ok) p.resolve(decode(msg.v)); else p.reject(new Error(msg.e || 'Error'));
         } else if (msg.t === 'ev' && typeof msg.ch === 'string') {
           var args = decode(Array.isArray(msg.args) ? msg.args : []);
-          var event = { sender: null };
-          (listeners.get(msg.ch) || []).slice().forEach(function (fn) {
-            try { fn.apply(null, [event].concat(args)); } catch (err) {
-              if (root.console) root.console.error('[termilab-web] listener for ' + msg.ch + ' threw:', err);
-            }
-          });
+          var list = listeners.get(msg.ch) || [];
+          if (!list.length && HELD[msg.ch]) {
+            if (held.length < HELD_MAX) held.push([msg.ch, args]);
+            return;
+          }
+          dispatch(list, msg.ch, args);
         }
       };
       ws.onclose = function () {
@@ -120,6 +132,25 @@
         setTimeout(connect, wait);
       };
       ws.onerror = function () { /* onclose follows */ };
+    }
+
+    function dispatch(list, channel, args) {
+      var event = { sender: null };
+      list.slice().forEach(function (fn) {
+        try { fn.apply(null, [event].concat(args)); } catch (err) {
+          if (root.console) root.console.error('[termilab-web] listener for ' + channel + ' threw:', err);
+        }
+      });
+    }
+
+    /* The first listener of a held channel gets what waited for it, in order */
+    function release(channel, fn) {
+      var mine = [];
+      held = held.filter(function (h) { if (h[0] !== channel) return true; mine.push(h); return false; });
+      if (!mine.length) return;
+      setTimeout(function () {
+        mine.forEach(function (h) { if ((listeners.get(channel) || []).indexOf(fn) >= 0) dispatch([fn], channel, h[1]); });
+      }, 0);
     }
 
     function post(frame) {
@@ -143,6 +174,7 @@
       on: function (channel, fn) {
         if (!listeners.has(channel)) listeners.set(channel, []);
         listeners.get(channel).push(fn);
+        if (HELD[channel]) release(channel, fn);
         return ipc;
       },
       removeListener: function (channel, fn) {

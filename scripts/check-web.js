@@ -91,7 +91,6 @@ function makeServer(extra = {}) {
   return createWebServer({
     socketPath,
     distDir,
-    mode: 'unix',
     getAllowedLogin: () => LOGIN,
     getDnsName: () => DNS,
     getPort: () => PORT,
@@ -446,9 +445,10 @@ async function main() {
     for (const ch of ['ssh:connect', 'ssh:disconnect', 'local:spawn', 'local:kill', 'ssh:keeper-end', 'local:keeper-end', 'ssh:keeper-kill', 'local:keeper-kill', 'mirror:report', 'web:clients', 'web:kick']) {
       assert.ok(!WEB_CHANNELS.has(ch), `${ch} no debe estar en la lista blanca`);
     }
-    const open = makeServer({ mode: 'tcp', tcpPort: 0, gateway: { tap, getHost: async id => HOSTS.find(h => h.id === id) || null, channels: new Set([...WEB_CHANNELS, 'ssh:connect']) } });
-    const addr = await open.start();
-    const oc = await wsConnect(WS_OK, { target: { host: '127.0.0.1', port: addr.port } });
+    const openSock = path.join(tmp, 'userData', 'web-open', 'termilab.sock');
+    const open = makeServer({ socketPath: openSock, gateway: { tap, getHost: async id => HOSTS.find(h => h.id === id) || null, channels: new Set([...WEB_CHANNELS, 'ssh:connect']) } });
+    await open.start();
+    const oc = await wsConnect(WS_OK, { target: { path: openSock } });
     const r = await oc.invoke('ssh:connect', [{ hostId: 'h1', host: '10.0.0.1', username: 'root', privateKeyPath: '/etc/shadow' }]);
     oc.end();
     await open.stop();
@@ -572,33 +572,84 @@ async function main() {
     await again.stop();
   });
 
-  await check('WS20 modo TCP (Mac/Windows): solo 127.0.0.1, sin opcion de bind; prefijo secreto opcional', async () => {
-    const tcp = makeServer({ mode: 'tcp', tcpPort: 0, host: '0.0.0.0', bind: '0.0.0.0' });
-    const a = await tcp.start();
-    assert.strictEqual(a.host, '127.0.0.1');
-    assert.strictEqual(a.prefix, '');
-    const target = { host: '127.0.0.1', port: a.port };
-    assert.strictEqual((await request('/.well-known/termilab', GOOD, { target })).status, 200);
-    assert.strictEqual((await request('/.well-known/termilab', {}, { target })).status, 403);
-    await tcp.stop();
-    const sec = makeServer({ mode: 'tcp', tcpPort: 0, secretPrefix: true });
-    const b = await sec.start();
-    assert.ok(/^\/[0-9a-f]{32}$/.test(b.prefix));
-    const t2 = { host: '127.0.0.1', port: b.port };
-    assert.strictEqual((await request('/.well-known/termilab', GOOD, { target: t2 })).status, 404);
-    assert.strictEqual((await request(`${b.prefix}/.well-known/termilab`, GOOD, { target: t2 })).status, 200);
-    const w = await wsConnect(WS_OK, { pathname: `${b.prefix}/ws`, target: t2 });
-    assert.strictEqual(w.status, 101);
-    w.end();
-    await w.closed();
-    await sec.stop();
+  await check('WS20 solo Linux: en darwin/win32 start() se niega y no escucha nada; nunca TCP ni opcion de bind', async () => {
+    const real = Object.getOwnPropertyDescriptor(process, 'platform');
+    for (const plat of ['darwin', 'win32']) {
+      const sock = path.join(tmp, 'userData', `web-${plat}`, 'termilab.sock');
+      const srv = makeServer({ socketPath: sock, mode: 'tcp', tcpPort: 0, host: '0.0.0.0', bind: '0.0.0.0' });
+      Object.defineProperty(process, 'platform', { ...real, value: plat });
+      try {
+        await assert.rejects(srv.start(), /available on Linux/, `${plat}: start() no se nego`);
+      } finally {
+        Object.defineProperty(process, 'platform', real);
+      }
+      assert.strictEqual(srv.isRunning(), false);
+      assert.strictEqual(srv.address(), null);
+      assert.ok(!fs.existsSync(sock), `${plat}: dejo un socket`);
+    }
+    /* En Linux, aunque se pida TCP, escucha en el socket unix */
+    const sock = path.join(tmp, 'userData', 'web-linux', 'termilab.sock');
+    const lin = makeServer({ socketPath: sock, mode: 'tcp', tcpPort: 0 });
+    const a = await lin.start();
+    assert.deepStrictEqual(a, { mode: 'unix', socketPath: sock });
+    assert.strictEqual((await request('/.well-known/termilab', GOOD, { target: { socketPath: sock } })).status, 200);
+    await lin.stop();
     const src = fs.readFileSync(path.join(WEB, 'server.js'), 'utf-8');
-    assert.ok(!/opts\.(host|bind)\b/.test(src), 'server.js lee una opcion de bind');
+    assert.ok(!/opts\.(host|bind|tcpPort|mode|secretPrefix)\b/.test(src), 'server.js lee una opcion de red');
+    assert.ok(!/\.listen\(\s*\{|127\.0\.0\.1|LOOPBACK/.test(src), 'server.js conserva un camino TCP');
   });
 
   await check('WS21 gatewayUrl respeta el prefijo; el stub reemplaza binarios por {$b}', () => {
     assert.strictEqual(stubMod.gatewayUrl({ protocol: 'https:', host: 'pc:7443', pathname: '/' }), 'wss://pc:7443/ws');
     assert.strictEqual(stubMod.gatewayUrl({ protocol: 'https:', host: 'pc', pathname: '/abc/index.html' }), 'wss://pc/abc/ws');
+  });
+
+  await check('WS23 ws-lite: un mensaje de ~20 MB en chunks de 64 KB llega integro y sin coste cuadratico', async () => {
+    const { EventEmitter } = require('events');
+    const sock = Object.assign(new EventEmitter(), {
+      destroyed: false, writableLength: 0,
+      setNoDelay() {}, write() { return true; }, end() {}, destroy() { this.destroyed = true; },
+    });
+    const ws = new wsLite.WebSocketLite(sock, { pingMs: 0 });
+    const got = [];
+    ws.on('message', (data, bin) => got.push([data, bin]));
+    const body = crypto.randomBytes(20 * 1024 * 1024);
+    const wire = Buffer.concat([frame(0x2, body), frame(0x1, 'despues')]);
+    const CHUNK = 64 * 1024;
+    const t0 = process.hrtime.bigint();
+    for (let i = 0; i < wire.length; i += CHUNK) sock.emit('data', wire.subarray(i, i + CHUNK));
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.strictEqual(got.length, 2, `llegaron ${got.length} mensajes`);
+    assert.strictEqual(got[0][1], true);
+    assert.ok(Buffer.isBuffer(got[0][0]) && got[0][0].equals(body), 'el mensaje grande llego alterado');
+    assert.deepStrictEqual(got[1], ['despues', false]);
+    assert.strictEqual(ws._chunksLen, 0, 'quedaron bytes pendientes');
+    console.log(`       20 MB en ${Math.ceil(wire.length / CHUNK)} chunks de 64 KB: ${ms.toFixed(0)} ms`);
+    assert.ok(ms < 800, `demasiado lento: ${ms.toFixed(0)} ms`);
+    ws.terminate();
+  });
+
+  await check('WS24 stub: un aviso que llega antes que su oyente (recarga) se guarda y se entrega; el resto no', async () => {
+    let sock = null;
+    class FakeWS { constructor() { sock = this; this.readyState = 1; setTimeout(() => this.onopen && this.onopen({}), 0); } send() {} close() {} }
+    const ipc = stubMod.createIpcRenderer({ url: 'wss://x/ws', WebSocket: FakeWS });
+    await new Promise(r => setTimeout(r, 5));
+    const push = (ch, ...args) => sock.onmessage({ data: JSON.stringify({ t: 'ev', ch, args }) });
+    push('agent:approval-prompt', { requestId: 'r1' });
+    push('ssh:host-key-prompt', { requestId: 'h1' });
+    push('ssh:data', 's1', 'perdido');
+    const got = [];
+    ipc.on('agent:approval-prompt', (e, p) => got.push(['ap', p.requestId]));
+    ipc.on('ssh:host-key-prompt', (e, p) => got.push(['hk', p.requestId]));
+    ipc.on('ssh:data', (e, sid, d) => got.push(['data', d]));
+    await new Promise(r => setTimeout(r, 10));
+    assert.deepStrictEqual(got, [['ap', 'r1'], ['hk', 'h1']]);
+    /* Ya con oyente: directo, una vez; un segundo oyente no recibe lo viejo */
+    push('agent:approval-prompt', { requestId: 'r2' });
+    ipc.on('agent:approval-prompt', (e, p) => got.push(['ap2', p.requestId]));
+    await new Promise(r => setTimeout(r, 10));
+    assert.deepStrictEqual(got.slice(2), [['ap', 'r2']]);
+    ipc._stop();
   });
 
   console.log(`\ncheck-web: ${passed} ok, ${failures} fallos`);

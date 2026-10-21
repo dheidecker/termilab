@@ -355,6 +355,21 @@ class HostKeyService {
     }
   }
 
+  /**
+   * A web mirror client connected (a reloaded page is a new one): every
+   * prompt still unanswered is shown there too, and it may answer it.
+   * Returns how many it got.
+   */
+  addClient(wc) {
+    if (!this._windowAlive(wc)) return 0;
+    let n = 0;
+    for (const req of this._pending.values()) {
+      if (req.answered || req.targets.has(wc)) continue;
+      if (this._send('ssh:host-key-prompt', req.payload, wc)) { req.targets.add(wc); n++; }
+    }
+    return n;
+  }
+
   /** A live window, other than `gone`, of a connection waiting on `req`. */
   _otherWindow(req, gone) {
     if (!this.router) return null;

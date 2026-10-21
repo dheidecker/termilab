@@ -18,6 +18,13 @@
  * enabled:true is revalidated: Tailscale no longer ready → enabled:false and
  * nothing is started.
  *
+ * Linux only, for now. There the server listens on a unix socket 0600 in a
+ * 0700 directory, so only this uid can reach it besides tailscaled. On macOS
+ * and Windows `tailscale serve` can only proxy to loopback TCP, where any
+ * local process could forge the Tailscale headers (see server.js): status()
+ * reports tailscale.reason 'unsupported-platform', enable() refuses, resume()
+ * switches a stored enabled:true off, and the server is never started.
+ *
  * The web server itself (electron/web/server.js, behind main.js
  * syncWebServer) follows the same switch: `configure({syncServer})` hands it
  * in, and enable / disable / resume call it with this PC's identity — the
@@ -29,6 +36,13 @@ const storeService = require('../services/store-service');
 const tailscale = require('./tailscale');
 
 const NAME_MAX = 63;
+
+/** Remote access runs only where the server can sit behind a unix socket. */
+const supported = () => process.platform === 'linux';
+const UNSUPPORTED = Object.freeze({
+  code: 'unsupported-platform',
+  message: 'Remote access is available on Linux for now',
+});
 
 class RemoteAccess {
   constructor() {
@@ -53,14 +67,12 @@ class RemoteAccess {
      (another login, a renamed tailnet) applies without a restart */
   _serverIdentity(ra) {
     const id = this.identity;
-    const out = {
+    return {
       getAllowedLogin: () => id.login,
       getDnsName: () => id.dnsName,
       getPort: () => id.port,
       name: ra.hostName,
     };
-    if (process.platform !== 'linux') out.tcpPort = ra.port + 1;
-    return out;
   }
 
   /* Web server on/off per settings (syncWebServer reads `enabled` itself).
@@ -71,7 +83,7 @@ class RemoteAccess {
     try { ra = await this._settings(); } catch (_) { return; }
     if (ts) Object.assign(this.identity, { login: ts.login || null, dnsName: ts.dnsName || null });
     Object.assign(this.identity, { port: ra.port, name: ra.hostName });
-    const ready = ra.enabled && this.identity.login && this.identity.dnsName;
+    const ready = supported() && ra.enabled && this.identity.login && this.identity.dnsName;
     try {
       await this.syncServer(ready ? this._serverIdentity(ra) : null);
     } catch (err) {
@@ -84,14 +96,11 @@ class RemoteAccess {
     return require('electron').app.getPath('userData');
   }
 
-  /* Linux: a unix socket in a 0700 dir (F1 listens on it). Elsewhere
-     tailscale serve cannot proxy to a socket: loopback, port + 1. */
-  _target(port) {
-    if (process.platform === 'linux') {
-      tailscale.ensureSocketDir(this._userData());
-      return `unix:${tailscale.socketPath(this._userData())}`;
-    }
-    return `http://127.0.0.1:${port + 1}`;
+  /* A unix socket in a 0700 dir (server.js listens on it). Linux only: see the header. */
+  _target() {
+    if (!supported()) throw new tailscale.TailscaleError(UNSUPPORTED.code, UNSUPPORTED.message);
+    tailscale.ensureSocketDir(this._userData());
+    return `unix:${tailscale.socketPath(this._userData())}`;
   }
 
   async _settings() {
@@ -114,6 +123,16 @@ class RemoteAccess {
   }
 
   async status() {
+    if (!supported()) {
+      const ra = await this._settings();
+      return {
+        tailscale: { installed: null, running: false, login: null, dnsName: null, httpsEnabled: false, tagged: false, reason: UNSUPPORTED.code },
+        remoteAccess: { ...ra, enabled: false },
+        serving: false,
+        url: null,
+        error: null,
+      };
+    }
     const [ts, ra] = await Promise.all([tailscale.status(), this._settings()]);
     return {
       tailscale: ts,
@@ -126,7 +145,7 @@ class RemoteAccess {
 
   async _start(ra) {
     const port = ra.port;
-    const handle = await tailscale.enable({ port, target: this._target(port) });
+    const handle = await tailscale.enable({ port, target: this._target() });
     this.handle = handle;
     this.error = null;
     this.attempt = 0;
@@ -163,6 +182,12 @@ class RemoteAccess {
   }
 
   async enable() {
+    /* Not just the UI: main refuses too, and nothing is stored */
+    if (!supported()) {
+      this.error = { ...UNSUPPORTED };
+      const st = await this.status();
+      return { ...st, error: this.error };
+    }
     const ra = await this._settings();
     if (!this.handle) {
       clearTimeout(this.retryTimer);
@@ -195,8 +220,9 @@ class RemoteAccess {
     this.error = null;
     await storeService.saveRemoteAccess({ enabled: false });
     await this._syncServer(null);
+    if (!supported()) return this.status();
     try {
-      await tailscale.disable({ port: ra.port, target: this._target(ra.port) });
+      await tailscale.disable({ port: ra.port, target: this._target() });
     } catch (err) {
       // Not fatal: the foreground config died with the child anyway
       if (err.code === 'operator-required') this.error = this._errorOf(err);
@@ -216,6 +242,10 @@ class RemoteAccess {
   async resume() {
     const ra = await this._settings();
     if (!ra.enabled) return null;
+    if (!supported()) {
+      await storeService.saveRemoteAccess({ enabled: false });
+      return this.status();
+    }
     const ts = await tailscale.status();
     if (ts.reason) {
       this.error = { code: ts.reason, message: `Remote access was turned off: Tailscale is not ready (${ts.reason})` };
@@ -235,3 +265,4 @@ class RemoteAccess {
 
 module.exports = new RemoteAccess();
 module.exports.RemoteAccess = RemoteAccess;
+module.exports.UNSUPPORTED = UNSUPPORTED;
