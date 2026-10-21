@@ -4,7 +4,7 @@
  *   <userData>/data/agent-logs.json   (0600, this computer only, never synced)
  *
  * Entry: { id, type: 'agent', tool, host, hostId, hostname?, port?, username?,
- *          command?, exitCode?, category?, ok, error?, durationMs, startedAt, endedAt }
+ *          command?, exitCode?, category?, answeredBy?, ok, error?, durationMs, startedAt, endedAt }
  *
  * A destructive command adds one more entry with the user's decision:
  * tool "run_command (approved)" / "send_input (blocked)", plus `category`.
@@ -78,6 +78,8 @@ class AgentLog {
     if (info.exitCode !== undefined) entry.exitCode = info.exitCode;
     /* destructive.js category of a command that needed the user's approval */
     if (info.category) entry.category = String(info.category).slice(0, 40);
+    /* Who answered an approval: 'pc' or 'web:<login>' */
+    if (info.answeredBy) entry.answeredBy = String(info.answeredBy).slice(0, 120);
     if (info.error) entry.error = String(info.error).slice(0, 300);
     return this._serial(async () => {
       const list = await this._read();

@@ -431,7 +431,7 @@ function registerIpcHandlers(mainWindow) {
   ipcMain.handle('ssh:host-key-response', wrapHandler(async (event, payload) => {
     const { requestId, accept } = payload || {};
     if (typeof requestId !== 'string') throw new Error('requestId missing');
-    return await hostKeyService.respond(requestId, accept === true);
+    return await hostKeyService.respond(requestId, accept === true, event && event.sender);
   }));
 
   // ─── Known Hosts (local only, never synced) ───────────
@@ -625,6 +625,13 @@ function registerIpcHandlers(mainWindow) {
   ipcMain.handle('web:enable', wrapHandler(async () => remoteAccess.enable()));
   ipcMain.handle('web:disable', wrapHandler(async () => remoteAccess.disable()));
   ipcMain.handle('web:set-name', wrapHandler(async (event, name) => remoteAccess.setName(name)));
+  // The other Termilabs of this tailnet (PC switcher, the one web:* the browser
+  // may call: gateway.js). electron/web/discovery.js, cached ~60 s.
+  ipcMain.handle('web:peers', wrapHandler(async () => {
+    const ra = ((await storeService.getSettings()) || {}).remoteAccess || {};
+    const selfName = (typeof ra.hostName === 'string' && ra.hostName.trim()) || os.hostname();
+    return require('./web/discovery').peers({ selfName, selfVersion: app.getVersion() });
+  }));
 
   // ─── Images into a terminal (drag & drop, clipboard) ───
   // upload-service.js: saved to / uploaded into ~/.termilab/uploads, the
@@ -837,6 +844,13 @@ function registerIpcHandlers(mainWindow) {
   })));
 
   // ─── Settings ─────────────────────────────────────────
+
+  /* Settings → Remote access: quit for real (closing the last window only
+     hides it while the web mirror is on). Not reachable from the web. */
+  ipcMain.handle('app:quit', wrapHandler(async () => {
+    setImmediate(() => { try { app.quit(); } catch (err) { console.error('[IPC] quit failed:', err.message); } });
+    return true;
+  }));
 
   ipcMain.handle('app:get-settings', wrapHandler(async () => {
     return await storeService.getSettings();
@@ -1261,7 +1275,7 @@ function removeIpcHandlers() {
     'logs:list', 'logs:clear',
     'agent:status', 'agent:logs', 'agent:clear-logs', 'agent:approval-response',
     'cli:status', 'cli:install', 'cli:uninstall',
-    'web:status', 'web:enable', 'web:disable', 'web:set-name',
+    'web:status', 'web:enable', 'web:disable', 'web:set-name', 'web:peers', 'app:quit',
     'sftp:list', 'sftp:realpath', 'sftp:stat', 'sftp:mkdir', 'sftp:create-file',
     'sftp:rename', 'sftp:delete', 'sftp:chmod',
     'sftp:transfer-start', 'sftp:transfer-cancel',

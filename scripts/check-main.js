@@ -1463,6 +1463,14 @@ async function main() {
     process.exit(failures ? 1 : 0);
   }
 
+  // TERMILAB_CHECK_ONLY=AM: solo el grafo + avisos a varios clientes (PC + navegadores)
+  if (process.env.TERMILAB_CHECK_ONLY === 'AM') {
+    await require('./lib/check-approvals-multi').seccionAprobacionesMulti({ check, ROOT, handlers });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo AM)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // TERMILAB_CHECK_ONLY=DX: solo el grafo + comandos destructivos de agentes (aprobacion)
   if (process.env.TERMILAB_CHECK_ONLY === 'DX') {
     await require('./lib/check-destructive').seccionDestructive({ check, ROOT });
@@ -1484,6 +1492,14 @@ async function main() {
     await require('./lib/check-tailscale').seccionTailscale({ check, ROOT, handlers });
     console.log(results.join('\n'));
     console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo TS)');
+    process.exit(failures ? 1 : 0);
+  }
+
+  // TERMILAB_CHECK_ONLY=PC: solo el grafo + el selector de PC (tailscale falso, peers HTTPS locales)
+  if (process.env.TERMILAB_CHECK_ONLY === 'PC') {
+    await require('./lib/check-discovery').seccionDiscovery({ check, ROOT, handlers });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo PC)');
     process.exit(failures ? 1 : 0);
   }
 
@@ -1528,10 +1544,14 @@ async function main() {
   await require('./lib/check-agent-pool').seccionAgentPool({ check, ROOT });
   // ── DX. Comandos destructivos de agentes: clasificador + Run once / Block ──
   await require('./lib/check-destructive').seccionDestructive({ check, ROOT });
+  // ── AM. Avisos (aprobaciones, huellas) a la ventana del PC y a todos los navegadores ──
+  await require('./lib/check-approvals-multi').seccionAprobacionesMulti({ check, ROOT, handlers });
   // ── CI. termilab-cli / termilab-mcp en el PATH (macOS, ~/.local/bin) ──
   await require('./lib/check-cli-install').seccionCliInstall({ check, ROOT, handlers });
   // ── TS. Acceso remoto por Tailscale (tailscale falso, nunca el real) ──
   await require('./lib/check-tailscale').seccionTailscale({ check, ROOT, handlers });
+  // ── PC. Selector de PC del espejo web: peers de la tailnet (falsos), web:peers ──
+  await require('./lib/check-discovery').seccionDiscovery({ check, ROOT, handlers });
 
   // ── R/A. Restaurar el espacio de trabajo; reconexion automatica ──
   await require('./lib/check-workspace').seccionWorkspace({ check, ROOT });

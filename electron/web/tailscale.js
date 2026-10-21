@@ -121,6 +121,16 @@ async function status(opts) {
   return interpretStatus(parseJson(r.stdout));
 }
 
+/** The raw `tailscale status --json` (parsed), or null when it cannot be read. discovery.js reads Peer from it. */
+async function statusJson(opts) {
+  try {
+    const r = await run(['status', '--json'], opts);
+    return parseJson(r.stdout);
+  } catch (_) {
+    return null;
+  }
+}
+
 /* ─── Serve config ───────────────────────────────────────── */
 
 async function serveStatus(opts) {
@@ -301,6 +311,6 @@ async function disable({ port = DEFAULT_PORT, target } = {}, opts = {}) {
 
 module.exports = {
   DEFAULT_PORT, OPERATOR_COMMAND, REASONS, TailscaleError,
-  resolveBinary, run, status, interpretStatus, serveStatus, portUsage,
+  resolveBinary, run, status, statusJson, interpretStatus, serveStatus, portUsage,
   preflight, enable, disable, socketPath, ensureSocketDir, isAccessDenied,
 };

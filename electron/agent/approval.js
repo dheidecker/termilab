@@ -4,10 +4,18 @@
  *
  *   main pushes  'agent:approval-prompt'  {requestId, client, host, tool, category, label, reason, command, timeoutMs}
  *   renderer     invoke('agent:approval-response', {requestId, approve})
- *   main pushes  'agent:approval-cancel'  {requestId, reason} when it gives up (timeout) so the modal closes
+ *   main pushes  'agent:approval-cancel'  {requestId, reason} when it gives up (timeout) so the modal closes,
+ *                                         and {requestId, reason:'answered', by} to the clients that did not answer
  *
- * Anything but an explicit approve from the window it was shown in is a
- * Block: no window, a failed send, a timeout (2 min), the window closing
+ * Where it is asked: ONE PC window (the focused one, else the first) and
+ * EVERY web mirror client connected (virtual webContents, window-registry
+ * listVirtual()): the owner may be at home on the browser. The first answer
+ * wins; every other client gets 'agent:approval-cancel' {requestId, reason:
+ * 'answered', by} so its modal closes, and a late answer is ignored. The
+ * result says who answered (`by`: 'pc' or 'web:<login>') for the agent log.
+ *
+ * Anything but an explicit approve from a client it was shown in is a
+ * Block: no client, failed sends, a timeout (2 min), every client closing
  * with no other window to move to. One answer per request: approving runs
  * that one call, once; nothing is remembered.
  *
@@ -15,15 +23,22 @@
  * window to the front and the desktop notification come in as `present`.
  */
 const crypto = require('crypto');
+const { isVirtualWc } = require('../window-registry');
 
 const APPROVAL_TIMEOUT_MS = 120 * 1000;
 
+/** Who answered, for the agent log: 'pc' or 'web:<login>'. */
+function clientLabel(wc) {
+  if (!wc) return null;
+  return isVirtualWc(wc) ? `web:${String(wc.login || 'unknown').slice(0, 100)}` : 'pc';
+}
+
 class ApprovalBroker {
   constructor() {
-    this.router = null;          // window-registry: focused() / liveWindows() / sendTo()
+    this.router = null;          // window-registry: focused() / liveWindows() / listVirtual() / sendTo()
     this.present = null;         // (entry, payload) => void: front + notification if unfocused
     this.timeoutMs = APPROVAL_TIMEOUT_MS;
-    /** requestId -> { payload, resolve, timer, target } */
+    /** requestId -> { payload, resolve, timer, targets: Set<wc>, pc: wc|null } */
     this._pending = new Map();
   }
 
@@ -38,25 +53,46 @@ class ApprovalBroker {
     try { return this.router.sendTo(wc, channel, payload) !== false; } catch (_) { return false; }
   }
 
-  /* The focused window, else the first live one; `except` skips a closing window */
+  /* The focused PC window, else the first live one; `except` skips a closing window */
   _pickWindow(except) {
     if (!this.router) return null;
+    const ok = (e) => e && e.wc !== except && !isVirtualWc(e.wc) && this._alive(e.wc);
     const f = this.router.focused && this.router.focused();
-    if (f && f.wc !== except && this._alive(f.wc)) return f;
+    if (ok(f)) return f;
     const live = (this.router.liveWindows && this.router.liveWindows()) || [];
-    return live.find(e => e.wc !== except && this._alive(e.wc)) || null;
+    return live.find(ok) || null;
   }
 
-  _show(req, entry) {
-    req.target = entry.wc;
+  /* Every live web mirror client */
+  _virtuals() {
+    if (!this.router) return [];
+    const list = typeof this.router.listVirtual === 'function'
+      ? this.router.listVirtual()
+      : ((this.router.liveWindows && this.router.liveWindows()) || []).filter(e => isVirtualWc(e.wc));
+    return (list || []).filter(e => e && this._alive(e.wc));
+  }
+
+  /* One client more for `req`; the PC one is also brought forward */
+  _showTo(req, entry, isPc) {
+    if (req.targets.has(entry.wc)) return true;
     if (!this._send(entry.wc, 'agent:approval-prompt', req.payload)) return false;
-    try { if (this.present) this.present(entry, req.payload); } catch (err) { console.error('[Approval] present failed:', err.message); }
+    req.targets.add(entry.wc);
+    if (isPc) {
+      req.pc = entry.wc;
+      try { if (this.present) this.present(entry, req.payload); } catch (err) { console.error('[Approval] present failed:', err.message); }
+    }
     return true;
   }
 
+  _arm(requestId, req) {
+    clearTimeout(req.timer);
+    /* Not unref'd: a question in flight keeps the process (and the agent's call) alive */
+    req.timer = setTimeout(() => this._finish(requestId, false, 'timeout'), this.timeoutMs);
+  }
+
   /**
-   * Ask the user. Resolves { approved: boolean, reason: 'approved'|'blocked'|'timeout'|'no-window' }.
-   * Never throws.
+   * Ask the user. Resolves { approved: boolean, reason: 'approved'|'blocked'|'timeout'|'no-window', by? }
+   * (`by` only when someone answered: 'pc' or 'web:<login>'). Never throws.
    */
   ask(info) {
     const requestId = crypto.randomUUID();
@@ -73,45 +109,63 @@ class ApprovalBroker {
       timeoutMs: this.timeoutMs,
     };
     return new Promise((resolve) => {
-      const req = { payload, resolve, timer: null, target: null };
-      const entry = this._pickWindow(null);
-      if (!entry) { resolve({ approved: false, reason: 'no-window' }); return; }
+      const req = { payload, resolve, timer: null, targets: new Set(), pc: null };
+      const pc = this._pickWindow(null);
+      const web = this._virtuals();
+      if (!pc && !web.length) { resolve({ approved: false, reason: 'no-window' }); return; }
       this._pending.set(requestId, req);
-      /* Not unref'd: a question in flight keeps the process (and the agent's call) alive */
-      req.timer = setTimeout(() => this._finish(requestId, false, 'timeout'), this.timeoutMs);
-      if (!this._show(req, entry)) this._finish(requestId, false, 'no-window');
+      this._arm(requestId, req);
+      if (pc) this._showTo(req, pc, true);
+      for (const e of web) this._showTo(req, e, false);
+      if (!req.targets.size) this._finish(requestId, false, 'no-window');
     });
   }
 
-  /** The renderer's answer. Only the window that shows the prompt can answer it. */
+  /**
+   * An answer. Only a client it was shown in can answer it (`from` = the
+   * sender's webContents); the first one wins, a late one returns false.
+   */
   respond(requestId, approve, from) {
     const req = this._pending.get(requestId);
     if (!req) return false;
-    if (from !== undefined && from !== null && req.target && from !== req.target) return false;
-    this._finish(requestId, approve === true, approve === true ? 'approved' : 'blocked');
+    if (from !== undefined && from !== null && req.targets.size && !req.targets.has(from)) return false;
+    this._finish(requestId, approve === true, approve === true ? 'approved' : 'blocked', from || null);
     return true;
   }
 
-  _finish(requestId, approved, reason) {
+  _finish(requestId, approved, reason, from = null) {
     const req = this._pending.get(requestId);
     if (!req) return;
     this._pending.delete(requestId);
     clearTimeout(req.timer);
-    if (reason !== 'approved' && reason !== 'blocked' && req.target) {
-      this._send(req.target, 'agent:approval-cancel', { requestId, reason });
+    const answered = reason === 'approved' || reason === 'blocked';
+    const by = answered ? clientLabel(from) : null;
+    /* Every other client closes its modal (the one that answered already did).
+       An answer with no sender came from the only client, if there is just one. */
+    if (!(answered && !from && req.targets.size <= 1)) {
+      const cancel = answered ? { requestId, reason: 'answered', by } : { requestId, reason };
+      for (const wc of req.targets) {
+        if (from && wc === from) continue;
+        this._send(wc, 'agent:approval-cancel', cancel);
+      }
     }
-    req.resolve({ approved, reason });
+    req.resolve(by ? { approved, reason, by } : { approved, reason });
   }
 
-  /** A window closed: its open prompts move to another window (fresh timeout), or are blocked. */
+  /**
+   * A client closed. A browser just leaves the request; the PC window hands
+   * it to another PC window (fresh timeout). With no client left: Block.
+   */
   rejectFor(wc) {
     for (const [id, req] of [...this._pending]) {
-      if (req.target !== wc) continue;
-      const next = this._pickWindow(wc);
-      if (!next) { req.target = null; this._finish(id, false, 'no-window'); continue; }
-      clearTimeout(req.timer);
-      req.timer = setTimeout(() => this._finish(id, false, 'timeout'), this.timeoutMs);
-      if (!this._show(req, next)) this._finish(id, false, 'no-window');
+      if (!req.targets.has(wc)) continue;
+      req.targets.delete(wc);
+      if (req.pc === wc) {
+        req.pc = null;
+        const next = this._pickWindow(wc);
+        if (next && !req.targets.has(next.wc) && this._showTo(req, next, true)) this._arm(id, req);
+      }
+      if (!req.targets.size) this._finish(id, false, 'no-window');
     }
   }
 
@@ -126,3 +180,4 @@ class ApprovalBroker {
 module.exports = new ApprovalBroker();
 module.exports.ApprovalBroker = ApprovalBroker;
 module.exports.APPROVAL_TIMEOUT_MS = APPROVAL_TIMEOUT_MS;
+module.exports.clientLabel = clientLabel;

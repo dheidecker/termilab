@@ -20,8 +20,7 @@
 (function (root) {
   'use strict';
 
-  /* `web` is the PC's own Remote access settings and its list of browsers */
-  var WEB_OMITTED = ['sftp', 'localFs', 'portForward', 'dialog', 'clipboard', 'claudeHistory', 'paths', 'cli', 'sync', 'knownHosts', 'logs', 'updater', 'web'];
+  var WEB_OMITTED = ['sftp', 'localFs', 'portForward', 'dialog', 'clipboard', 'claudeHistory', 'paths', 'cli', 'sync', 'knownHosts', 'logs', 'updater', 'lifecycle'];
 
   // ─── Binary values on the wire: {"$b": base64} ───────────
 

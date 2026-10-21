@@ -238,6 +238,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return listener;
     },
     offClients: (listener) => { if (listener) ipcRenderer.removeListener('web:clients', listener); },
+    /* [{name, dnsName, url, self, version}]: this PC + the other Termilabs of the tailnet */
+    peers: () => invoke('web:peers'),
+  },
+
+  // ─── App lifecycle (desktop only, never from the web) ─────
+  // quit(): really quit. With remote access on, closing the last window only hides it.
+  lifecycle: {
+    quit: () => invoke('app:quit'),
   },
 
   // ─── Local filesystem (SFTP Local pane) ────────────────

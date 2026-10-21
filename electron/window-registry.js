@@ -137,6 +137,11 @@ function cleanSessionRows(rows) {
   return out;
 }
 
+const VIRTUAL_WC_ID = 1000000;   // electron/web/gateway.js BASE_WC_ID
+function isVirtualWc(wc) {
+  return !!wc && (wc.isWeb === true || (typeof wc.id === 'number' && wc.id >= VIRTUAL_WC_ID));
+}
+
 class WindowRegistry {
   constructor() {
     /** webContents -> { id, number, win, wc, ready, adoptions: [] } */
@@ -226,7 +231,7 @@ class WindowRegistry {
     if (!wc) throw new Error('addWindow: no webContents');
     const existing = this._windows.get(wc);
     if (existing) return existing;
-    const virtual = opts.virtual === true;
+    const virtual = opts.virtual === true || isVirtualWc(wc);
     const used = new Set([...this._windows.values()].map(e => e.number));
     let number = 0;
     if (!virtual) { number = 1; while (used.has(number)) number++; }
@@ -284,16 +289,23 @@ class WindowRegistry {
 
   /** Live PC windows only (no web mirror clients). */
   pcWindows() {
-    return this.liveWindows().filter(e => !e.virtual);
-  }
-
-  isVirtual(winOrWc) {
-    const e = this._windows.get(this._wc(winOrWc));
-    return !!(e && e.virtual);
+    return this.liveWindows().filter(e => !e.virtual && !isVirtualWc(e.wc));
   }
 
   primary() {
     return this.pcWindows()[0] || null;
+  }
+
+  /* Web mirror clients (electron/web/gateway.js): a browser's virtual
+     webContents, id >= 1000000 / isWeb. Prompts that need a human
+     (approvals, host keys) go to every one of them as well as to a PC window. */
+  isVirtual(winOrWc) {
+    return isVirtualWc(this._wc(winOrWc));
+  }
+
+  /** Live entries of the web mirror's virtual webContents. */
+  listVirtual() {
+    return this.liveWindows().filter(e => isVirtualWc(e.wc));
   }
 
   /** The focused window, else the first one (a prompt with no session owner). */
@@ -843,3 +855,4 @@ module.exports = new WindowRegistry();
 module.exports.WindowRegistry = WindowRegistry;
 module.exports.MOVE_TIMEOUT_MS = MOVE_TIMEOUT_MS;
 module.exports.JOIN_TIMEOUT_MS = JOIN_TIMEOUT_MS;
+module.exports.isVirtualWc = isVirtualWc;
