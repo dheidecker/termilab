@@ -219,6 +219,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     uninstall: () => invoke('cli:uninstall'),
   },
 
+  // ─── Remote access (web mirror through Tailscale, desktop only) ─────
+  // Each returns RemoteAccessState = {tailscale: {installed, running, login,
+  // dnsName, httpsEnabled, tagged, reason}, remoteAccess: {enabled, port,
+  // hostName}, serving, url, error: null|{code, message, command?}}.
+  web: {
+    status: () => invoke('web:status'),
+    enable: () => invoke('web:enable'),
+    disable: () => invoke('web:disable'),
+    setName: (name) => invoke('web:set-name', name),
+  },
+
   // ─── Local filesystem (SFTP Local pane) ────────────────
   // Absolute paths; names are one segment; trash() uses the OS trash.
   localFs: {

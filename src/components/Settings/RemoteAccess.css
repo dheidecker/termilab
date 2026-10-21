@@ -1,0 +1,64 @@
+/* Settings → General → Remote access (RemoteAccess.jsx). Copy blocks and the
+   error box come from CommandLine.css (.cli-copy, .cli-error). */
+
+.settings-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Why the switch is off: not an error, a missing step */
+.ra-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--color-warning);
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-muted);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+.ra-note p {
+  margin: 0;
+}
+
+.ra-note p + p {
+  margin-top: 6px;
+}
+
+.ra-link {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.ra-link:hover {
+  text-decoration: underline;
+}
+
+.ra-strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.ra-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ra-url {
+  margin: 0 0 12px;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.ra-url p {
+  margin: 0 0 6px;
+}
+
+.ra-error-cmd {
+  margin-top: 6px;
+}

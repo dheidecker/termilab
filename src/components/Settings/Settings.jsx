@@ -3,6 +3,7 @@ import { useApp } from '../../contexts/AppContext';
 import { getThemeList } from '../../themes/terminal-themes';
 import SyncPanel from '../Sync/SyncPanel';
 import CommandLine from './CommandLine';
+import RemoteAccess from './RemoteAccess';
 import { IS_ANDROID } from '../../platform';
 import { MobileTopBar } from '../Mobile/MobileScreen';
 import './Settings.css';
@@ -247,6 +248,9 @@ export default function Settings({ fullPage = false, onBack }) {
 
             {/* Renders nothing unless main says the platform needs it (macOS) or the package ships it (Linux) */}
             {!IS_ANDROID && <CommandLine />}
+
+            {/* Web mirror through Tailscale; renders nothing without electronAPI.web */}
+            {!IS_ANDROID && <RemoteAccess />}
 
             <div className="settings-section">
               <div className="settings-section-title">Data Management</div>

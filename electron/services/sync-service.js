@@ -599,7 +599,8 @@ class SyncService {
   async _readLocal(serverCollection) {
     if (serverCollection === 'settings') {
       const settings = await storeService.getSettings();
-      const { [VAULT_ITEM_ID]: _vault, ...clean } = settings || {};
+      // remoteAccess es de este equipo (nombre, puerto, encendido): no viaja.
+      const { [VAULT_ITEM_ID]: _vault, remoteAccess: _local, ...clean } = settings || {};
       return [{ id: SETTINGS_ITEM_ID, ...clean }];
     }
     const items = await storeService.readRaw(COLLECTIONS[serverCollection]);

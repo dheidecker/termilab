@@ -2,6 +2,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 const { app } = require('electron');
 
 /**
@@ -189,6 +190,15 @@ class StoreService {
         minimizeToTray: false,
         checkUpdates: true,
         language: 'en',
+      },
+      /* Termilab web mirror through Tailscale (electron/web/). Per device:
+         never synced, never written by saveSettings — only by
+         saveRemoteAccess (the web:* IPC). hostName is how this PC is shown
+         when picking between several from the web. */
+      remoteAccess: {
+        enabled: false,
+        port: 7443,
+        hostName: os.hostname(),
       },
     };
   }
@@ -781,12 +791,25 @@ class StoreService {
 
   async saveSettings(settings) {
     const current = await this.getSettings();
-    const merged = this._deepMerge(current, settings);
+    // remoteAccess is per device and only changes through saveRemoteAccess:
+    // the Settings page saves a stale copy of the whole object, sync brings
+    // another PC's, and a backup must never switch remote access on.
+    const { remoteAccess: _ignored, ...incoming } = settings || {};
+    const merged = this._deepMerge(current, incoming);
     // Belt and braces: never let an `ai` block back onto disk, whatever the
     // caller sends. See _purgeAiCredentials.
     delete merged.ai;
     await this._writeSettings(merged);
     return merged;
+  }
+
+  /** Field-level write of settings.remoteAccess (web:* IPC only). Returns it. */
+  async saveRemoteAccess(patch) {
+    const current = await this.getSettings();
+    const next = { ...current, remoteAccess: { ...(current.remoteAccess || {}), ...(patch || {}) } };
+    delete next.ai;
+    await this._writeSettings(next);
+    return next.remoteAccess;
   }
 
   /**

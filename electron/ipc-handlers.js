@@ -24,6 +24,7 @@ const openPathService = require('./services/open-path-service');
 const cliInstallService = require('./services/cli-install-service');
 const agentService = require('./agent/agent-service');
 const agentApprovals = require('./agent/approval');
+const remoteAccess = require('./web/remote-access');
 
 /**
  * Wraps an async handler with standardized error handling.
@@ -591,6 +592,15 @@ function registerIpcHandlers(mainWindow) {
   ipcMain.handle('cli:status', wrapHandler(async () => cliInstallService.status()));
   ipcMain.handle('cli:install', wrapHandler(async () => cliInstallService.install()));
   ipcMain.handle('cli:uninstall', wrapHandler(async () => cliInstallService.uninstall()));
+
+  // ─── Remote access: web mirror through Tailscale serve (desktop only) ───
+  // electron/web/remote-access.js. Every call answers the full state; expected
+  // failures (Tailscale not ready, Funnel on, port busy, operator-required)
+  // travel in state.error = {code, message, command?}, not as a throw.
+  ipcMain.handle('web:status', wrapHandler(async () => remoteAccess.status()));
+  ipcMain.handle('web:enable', wrapHandler(async () => remoteAccess.enable()));
+  ipcMain.handle('web:disable', wrapHandler(async () => remoteAccess.disable()));
+  ipcMain.handle('web:set-name', wrapHandler(async (event, name) => remoteAccess.setName(name)));
 
   // ─── Images into a terminal (drag & drop, clipboard) ───
   // upload-service.js: saved to / uploaded into ~/.termilab/uploads, the
@@ -1190,6 +1200,7 @@ function removeIpcHandlers() {
     'logs:list', 'logs:clear',
     'agent:status', 'agent:logs', 'agent:clear-logs', 'agent:approval-response',
     'cli:status', 'cli:install', 'cli:uninstall',
+    'web:status', 'web:enable', 'web:disable', 'web:set-name',
     'sftp:list', 'sftp:realpath', 'sftp:stat', 'sftp:mkdir', 'sftp:create-file',
     'sftp:rename', 'sftp:delete', 'sftp:chmod',
     'sftp:transfer-start', 'sftp:transfer-cancel',

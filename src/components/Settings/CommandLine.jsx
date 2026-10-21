@@ -25,7 +25,7 @@ const MCP_EXAMPLE = 'claude mcp add termilab -- termilab-mcp';
 
 const cliApi = () => (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.cli) || null;
 
-function CopyBlock({ text, label }) {
+export function CopyBlock({ text, label }) {
   const [copied, setCopied] = useState(false);
   const timer = useRef(null);
   useEffect(() => () => clearTimeout(timer.current), []);

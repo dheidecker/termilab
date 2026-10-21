@@ -58,6 +58,7 @@ const hostKeyService = require('./services/host-key-service');
 const connectionLogService = require('./services/connection-log-service');
 const workspaceService = require('./services/workspace-service');
 const agentService = require('./agent/agent-service');
+const remoteAccess = require('./web/remote-access');
 
 // Every open window (keeps them from being garbage collected). Several since
 // multi-window; what goes to which one is electron/window-registry.js.
@@ -453,6 +454,10 @@ app.whenReady().then(async () => {
      next to the installed app) keeps it. */
   agentService.start({ userDataDir: app.getPath('userData') })
     .catch(err => console.error('[Main] Agent API not started:', err.message));
+  /* Remote access (Tailscale serve): revalidate a stored "on" and serve again,
+     or turn it off if Tailscale is no longer ready. Never blocks the launch. */
+  remoteAccess.resume()
+    .catch(err => console.error('[Main] Remote access not resumed:', err.message));
 
   // Back to the window: pick up what other devices changed meanwhile.
   app.on('browser-window-focus', () => syncService.onFocus());
@@ -518,6 +523,7 @@ app.on('before-quit', async (event) => {
     sftpService.closeAll();
     await portForwardService.stopAll();
     await agentService.stop();
+    await remoteAccess.stop();
     await localShellService.killAll();
     syncService.stop();
     removeIpcHandlers();
