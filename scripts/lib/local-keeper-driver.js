@@ -126,6 +126,20 @@ async function main() {
   out.steps.kid = (t.match(/\nKID=(\S*)/) || [])[1];
   const pidA = await pidOf(a, 'MARKB');
 
+  // ── resize path end to end: service.resize → node-pty → attach SIGWINCH →
+  //    RESIZE frame → daemon TIOCSWINSZ → the shell's stty size ──
+  const sttyOf = async (sid, mark) => {
+    const t2 = await run(sid, 'echo "SZ=$(stty size)"', mark);
+    const m = t2.match(/SZ=(\d+) (\d+)/);
+    return m ? `${m[2]}x${m[1]}` : null;
+  };
+  out.steps.sizes = [];
+  for (const [i, [c, r]] of [[100, 30], [61, 17], [200, 50], [132, 43], [80, 24]].entries()) {
+    service.resize(a, c, r);
+    await sleep(250);
+    out.steps.sizes.push({ want: `${c}x${r}`, got: await sttyOf(a, `MRS${i}X`) });
+  }
+
   // ── close plan: shell / background job / foreground command ──
   out.steps.fgShell = await service.keeperForeground(a);
   service.write(a, 'sleep 600 &\r');
@@ -143,13 +157,27 @@ async function main() {
   out.steps.closedA = !!(await waitFor(() => closes.has(a), 5000));
   out.steps.afterDetach = list().filter(r => r.id === id).map(r => ({ attached: r.attached, shellPid: r.shellPid }));
   await sleep(3000);                             // the loop finishes with nobody attached
-  const b = await service.spawn({ shell: '/bin/bash', cols: 80, rows: 24, cwd: tmp, sessionKey: K });
+  /* A resize sent right after spawn, while the attach is still starting
+     (SIGWINCH ignored until it sets up): the shell must still end up there */
+  const KR = key('r');
+  const rc = await service.spawn({ shell: '/bin/bash', cols: 80, rows: 24, cwd: tmp, sessionKey: KR });
+  service.resize(rc, 133, 41);
+  await ready(rc);
+  await sleep(300);
+  out.steps.sizeEarlyResize = await sttyOf(rc, 'MRSRX');
+  await service.keeperEnd(rc);
+
+  /* Reattached at another size than the session last had: the shell must
+     follow the attach's size (the renderer spawns at its fitted size) */
+  const b = await service.spawn({ shell: '/bin/bash', cols: 97, rows: 31, cwd: tmp, sessionKey: K });
   out.steps.infoB = service.spawnInfo(b);
   await waitFor(() => clean(data.get(b) || '').includes('SEQDONE'), 8000);
   const replay = clean(data.get(b) || '');
   const nums = [...replay.matchAll(/(?:^|\n)L(\d+)(?=\n)/g)].map(m => Number(m[1]));
   out.steps.seq = { count: nums.length, inOrder: nums.every((n, i) => n === i + 1), done: replay.includes('SEQDONE') };
   out.steps.pidSame = (await pidOf(b, 'MARKE')) === pidA;
+  await sleep(300);
+  out.steps.sizeReattach = await sttyOf(b, 'MRSBX');
 
   // ── the attach client killed from outside: the tab reattaches by itself ──
   const ptyPid = service.shells.get(b).pid;

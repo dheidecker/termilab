@@ -1,5 +1,6 @@
 const { Client } = require('ssh2');
 const crypto = require('crypto');
+const { StringDecoder } = require('string_decoder');
 const { detectOs } = require('./os-detect');
 const hostKeyService = require('./host-key-service');
 const connectionLogService = require('./connection-log-service');
@@ -390,7 +391,14 @@ class SSHService {
         e.code = KEEPER_ELSEWHERE;
         return cb(e);
       }
-      const command = keeperService.attachCommand(prep.bin, sess, shellOpts.cols, shellOpts.rows);
+      /* Until the terminal has said its size, the attach waits for it: the
+         shell would otherwise get SIGWINCH at 80x24 and redraw its prompt for
+         that width into a wider xterm, erasing lines above (measured on a
+         restore). A reconnect of a sized terminal attaches at once. */
+      const waitSize = !(entry && entry.sized);
+      const command = waitSize
+        ? keeperService.attachCommandWaiting(prep.bin, sess)
+        : keeperService.attachCommand(prep.bin, sess, shellOpts.cols, shellOpts.rows);
       client.exec(command, { pty: { term: shellOpts.term, cols: shellOpts.cols, rows: shellOpts.rows }, env: shellOpts.env }, (err, stream) => {
         if (err) {
           return plain([...notices, `Session keeping unavailable on this host (${err.message}): using a plain shell`]);
@@ -400,6 +408,8 @@ class SSHService {
         /* An adopted session that is gone must not be recreated by a reconnect */
         if (sess.adopted) stream._termilabKeeper.session.create = false;
         stream._termilabNotices = notices;
+        if (waitSize) stream._termilabWaitSize = true;
+        else stream._termilabStartSize = { cols: shellOpts.cols, rows: shellOpts.rows };
         cb(null, stream);
       });
     })().catch((err) => {
@@ -513,16 +523,34 @@ class SSHService {
       s0.hold = [];
       s0.holdTimer = setTimeout(() => this._release(sessionId), 3000);
     }
+    /* The attach is waiting for the terminal's size (attachCommandWaiting):
+       resize() lets it go. A renderer that said it will size the terminal
+       (waitSize: a hidden tab sizes itself when shown) is waited for; anyone
+       else gets the old 3 s. */
+    if (s0 && stream._termilabWaitSize) {
+      s0.goPending = stream;
+      clearTimeout(s0.goTimer);
+      if (!(s0.config && s0.config.waitSize)) s0.goTimer = setTimeout(() => this._go(sessionId), 3000);
+    }
     if (s0) s0.everWired = true;
     if (stream._termilabPreface && stream._termilabPreface.length) out(this._dim(stream._termilabPreface));
     /* Keeper notices go right after the replay's ESC c (which would wipe
        anything printed before it) */
     let notices = stream._termilabNotices && stream._termilabNotices.length ? this._dim(stream._termilabNotices) : null;
     let noted = !keeper;
+    /* A UTF-8 character split across two packets must not become two U+FFFD
+       (each one a column more than the shell counted: a misaligned line) */
+    const outDecoder = new StringDecoder('utf8');
+    const errDecoder = new StringDecoder('utf8');
     stream.on('data', (data) => {
       if (!current()) return;
-      if (!noted) { noted = true; this._noteAttach(client, keeper); }
-      let text = data.toString('utf-8');
+      if (!noted) {
+        noted = true;
+        this._noteAttach(client, keeper);
+        if (keeper) this._resyncSize(sessionId, stream);
+      }
+      let text = outDecoder.write(data);
+      if (!text) return;
       if (notices) {
         const i = text.indexOf('\x1bc');
         text = i === -1 ? notices + text : text.slice(0, i + 2) + notices + text.slice(i + 2);
@@ -534,8 +562,9 @@ class SSHService {
       if (!current()) return;
       const s = this.sessions.get(sessionId);
       /* The attach client's own messages: kept, and said in our words at exit */
-      if (keeper && s) { if (s.keeperStderr.length < 4096) s.keeperStderr += data.toString('utf-8'); return; }
-      out(data.toString('utf-8'));
+      const text = errDecoder.write(data);
+      if (keeper && s) { if (s.keeperStderr.length < 4096) s.keeperStderr += text; return; }
+      if (text) out(text);
     });
     /* exit-status / exit-signal: the shell ended (`exit`, killed). That close
        is the session's normal end, never a reason to reconnect. For the
@@ -596,6 +625,40 @@ class SSHService {
     const why = (s.keeperStderr || '').replace(/\[termilab-keeper: |\]/g, '').trim().slice(0, 400);
     say(`\r\n\x1b[31m[Session keeper error (exit ${code === null ? 'unknown' : code})${why ? `: ${why}` : ''}]\x1b[0m\r\n`);
     return 'error';
+  }
+
+  /* Let a waiting attach start (attachCommandWaiting): the pty already has
+     the terminal's size, so the attach reads it and the shell never sees the
+     placeholder. One newline, before anything the user types. */
+  _go(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (!s || !s.goPending) return;
+    clearTimeout(s.goTimer);
+    const stream = s.goPending;
+    s.goPending = null;
+    if (s.stream !== stream) return;
+    /* The attach reads the pty's size now: this one */
+    stream._termilabStartSize = { cols: s.cols, rows: s.rows };
+    try { stream.write('\n'); } catch (_) { /* gone */ }
+    const queued = s.preGo;
+    s.preGo = null;
+    if (queued) for (const d of queued) this.sendData(sessionId, d);
+  }
+
+  /* The attach client on the server ignores SIGWINCH until it has set up:
+     a resize that reached the pty meanwhile was lost and the shell stayed at
+     the size the attach started with. Its first output means it listens: if
+     the terminal's size moved since, make the pty signal again (one row off
+     and back: the same size twice is no SIGWINCH). */
+  _resyncSize(sessionId, stream) {
+    const s = this.sessions.get(sessionId);
+    const start = stream._termilabStartSize;
+    if (!s || s.stream !== stream || !start || !s.sized) return;
+    if (s.cols === start.cols && s.rows === start.rows) return;
+    try {
+      stream.setWindow(s.rows > 1 ? s.rows - 1 : s.rows + 1, s.cols, 0, 0);
+      stream.setWindow(s.rows, s.cols, 0, 0);
+    } catch (_) { /* gone */ }
   }
 
   /* Flush output held for a terminal that was not listening yet */
@@ -766,6 +829,14 @@ class SSHService {
       console.warn(`[SSHService] No active stream for session ${sessionId}`);
       return;
     }
+    /* The attach is still waiting for the terminal's size (_go): input
+       now (broadcast into a hidden tab) would be read as the go line. It
+       waits for the go, then follows it. Capped: nobody types 64 KB blind. */
+    if (session.goPending) {
+      const q = session.preGo || (session.preGo = []);
+      if (q.reduce((n, d) => n + d.length, 0) < 65536) q.push(data);
+      return;
+    }
     /* A big paste goes out in slices, after 'drain' when the channel's
        window is full, and keys typed meanwhile queue behind it. The writer
        looks the stream up per slice: a reconnect swaps it. */
@@ -794,15 +865,18 @@ class SSHService {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     /* Remembered for the shell a reconnect opens */
-    if (cols > 0 && rows > 0) { session.cols = cols; session.rows = rows; }
+    const real = cols > 0 && rows > 0;
+    if (real) { session.cols = cols; session.rows = rows; session.sized = true; }
     /* The terminal is listening now (it resizes once its listeners exist) */
     if (session.hold) this._release(sessionId);
-    if (!session.stream) return;
+    if (!session.stream || !real) return;
     try {
       session.stream.setWindow(rows, cols, 0, 0);
     } catch (err) {
       console.error(`[SSHService] Error resizing session ${sessionId}:`, err.message);
     }
+    /* After setWindow: same channel, so sshd applies the size first */
+    if (session.goPending) this._go(sessionId);
   }
 
   /* ── Session keeper, for a live terminal ── */
@@ -895,6 +969,7 @@ class SSHService {
     if (session) {
       if (session.reconnecting) clearTimeout(session.reconnecting.timer);
       clearTimeout(session.holdTimer);
+      clearTimeout(session.goTimer);
       if (session.writer) session.writer.dispose();
       connectionLogService.end(session.logId);
       try {

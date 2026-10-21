@@ -63,7 +63,10 @@ export function markAbandoned(tabs, ids) {
    UPDATE_TAB) or, if the tab closed meanwhile, disconnect it and add nothing. */
 export async function connectTab({ tabId, host, config, ssh, dispatch }) {
   try {
-    const { sessionId } = await ssh.connect(config);
+    /* waitSize: this tab's TerminalView will report the terminal's real size
+       (a hidden tab, once it is shown); a kept session's attach waits for it
+       instead of starting the shell at 80x24 (ssh-service _openShell) */
+    const { sessionId } = await ssh.connect({ ...config, waitSize: true });
     if (abandoned.delete(tabId)) {
       try { await ssh.disconnect(sessionId); } catch (_) { /* already gone */ }
       return { tabId, sessionId: null, abandoned: true };

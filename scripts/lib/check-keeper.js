@@ -48,6 +48,16 @@
  *       ssh:disconnect la lista (sin la clave privada en el archivo);
  *       adoptarla la quita; matarla en el servidor y listar el host
  *       (ssh:keeper-list) la reconcilia; End (ssh:keeper-end) no la lista.
+ *  KP22 con waitSize el attach espera al primer resize: el shell nace al
+ *       tamano de la terminal (nunca 80x24) y stty size la sigue en cada
+ *       resize (la ruta entera: setWindow → SIGWINCH del attach → RESIZE →
+ *       TIOCSWINSZ del demonio).
+ *  KP23 sin waitSize el attach arranca solo a los 3 s.
+ *  KP24 UTF-8 partido entre paquetes: sin U+FFFD (falso byte a byte y real).
+ *  KP25 dos resizes seguidos al arrancar el attach: gana el ultimo. (El
+ *       reenvio al primer dato, _resyncSize, cubre el hueco de ms entre que el
+ *       attach lee el tamano y escucha SIGWINCH; ese hueco no se puede forzar
+ *       desde aqui. En local si: LK4i.)
  */
 const assert = require('assert');
 const crypto = require('crypto');
@@ -179,7 +189,8 @@ async function seccionKeeper({ check, ROOT, handlers = null }) {
     `  *sftp*) exec '${sftpServer}' ;;`,
     '  "") exec /bin/bash -l ;;',
     'esac',
-    'if [ -f "$CTL/attach-exit" ]; then case "$SSH_ORIGINAL_COMMAND" in *termilab-keeper-*" attach "*) exit "$(cat "$CTL/attach-exit")";; esac; fi',
+    /* attach directo (`<bin> attach <id>`) o en espera de tamano (`/bin/sh -c '... "$0" attach "$@"' <bin> <id>`) */
+    'if [ -f "$CTL/attach-exit" ]; then case "$SSH_ORIGINAL_COMMAND" in *termilab-keeper-*) case "$SSH_ORIGINAL_COMMAND" in *" attach "*) exit "$(cat "$CTL/attach-exit")";; esac;; esac; fi',
     'if [ -f "$CTL/noexec" ]; then case "$SSH_ORIGINAL_COMMAND" in *termilab-keeper-*) echo "Permission denied" >&2; exit 126;; esac; fi',
     'exec /bin/sh -c "$SSH_ORIGINAL_COMMAND"',
     '',
@@ -687,6 +698,98 @@ async function seccionKeeper({ check, ROOT, handlers = null }) {
         assert.strictEqual(preguntas.length, 1);
         assert.deepStrictEqual(preguntas[0].map(r => [r.tab.id, r.fgCommand, r.background]), [['tb', 'sleep', true]]);
       } finally { global.window = prevWindow; delete global.__kpAsk; }
+    });
+
+    await check('KP22 el attach espera el tamano real de la terminal: el shell nace a ese tamano y nunca ve 80x24; stty size == terminal tras cada resize', async () => {
+      /* Arrancado a 80x24 y luego ensanchado, el shell redibujaba el prompt
+         para 80 columnas en un xterm mas ancho y borraba lineas de encima
+         (medido al restaurar). Un perfil que apunta cada tamano que ve. */
+      const perfil = path.join(home, '.bash_profile');
+      const log = path.join(home, 'sizes.log');
+      fs.writeFileSync(perfil, `echo "START $(stty size)" >> ~/sizes.log\ntrap 'echo "WINCH $(stty size)" >> ~/sizes.log' WINCH\n`);
+      try { fs.rmSync(log, { force: true }); } catch (_) { /* no estaba */ }
+      const leer = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf-8').trim().split('\n') : []);
+      try {
+        const s = await sshService.connect({ ...base(sshd), sessionKey: clave(22), waitSize: true });
+        abiertas.push(s);
+        await sleep(3800);
+        assert.deepStrictEqual(leer(), [], `el shell arranco sin tamano (sin resize, waitSize): ${leer()}`);
+        assert.strictEqual(texto(s), '', 'salio algo antes del primer resize');
+        /* Lo tecleado antes (broadcast a una pestana oculta) espera, no se come el arranque */
+        sshService.sendData(s, 'echo PRE$((1+1))\r');
+        await sleep(300);
+        assert.deepStrictEqual(leer(), [], 'la entrada antes del resize arranco el attach');
+        sshService.resize(s, 123, 37);
+        assert.ok(await espera(() => leer().length > 0, 8000), 'el attach no arranco tras el resize');
+        assert.ok(await pidDe(s, 'PID'), `el shell no responde: ${JSON.stringify(texto(s).slice(-200))}`);
+        assert.ok(/PRE2/.test(texto(s)), 'lo tecleado antes del resize se perdio');
+        const tam = async (tag) => {
+          sshService.sendData(s, `echo ${tag}:$(stty size)\r`);
+          const re = new RegExp(`${tag}:(\\d+) (\\d+)`);
+          let m = null;
+          await espera(() => (m = re.exec(texto(s))), 8000);
+          return m ? `${m[2]}x${m[1]}` : null;
+        };
+        /* El demonio rebota filas-1 durante 100 ms al enganchar (redibujo) */
+        await sleep(300);
+        assert.strictEqual(await tam('T0'), '123x37');
+        for (const [i, [c, r]] of [[80, 24], [200, 50], [61, 17], [132, 43]].entries()) {
+          sshService.resize(s, c, r);
+          await sleep(250);
+          assert.strictEqual(await tam(`T${i + 1}`), `${c}x${r}`, `tras resize ${c}x${r}`);
+        }
+        const vistos = leer();
+        assert.ok(/^START \d+ 123$/.test(vistos[0]), `nacio a otro ancho: ${vistos[0]}`);
+        const antes = vistos.slice(0, vistos.findIndex(l => / 80$/.test(l)));
+        assert.ok(antes.length >= 1 && antes.every(l => / 123$/.test(l)), `antes del resize a 80 el shell vio: ${vistos.join(' | ')}`);
+        await sshService.keeperEnd(s);
+      } finally { fs.rmSync(perfil, { force: true }); fs.rmSync(log, { force: true }); }
+    });
+
+    await check('KP25 dos resizes seguidos justo al arrancar el attach: el shell acaba en el ultimo', async () => {
+      const s = await sshService.connect({ ...base(sshd), sessionKey: clave(25), waitSize: true });
+      abiertas.push(s);
+      sshService.resize(s, 90, 20);
+      sshService.resize(s, 140, 45);   // llega al pty mientras el attach aun arranca
+      assert.ok(await pidDe(s, 'PID'), `el shell no responde: ${JSON.stringify(texto(s).slice(-200))}`);
+      await sleep(400);
+      sshService.sendData(s, 'echo T25:$(stty size)\r');
+      let m = null;
+      await espera(() => (m = /T25:(\d+) (\d+)/.exec(texto(s))), 8000);
+      assert.strictEqual(m && `${m[2]}x${m[1]}`, '140x45');
+      await sshService.keeperEnd(s);
+    });
+
+    await check('KP23 sin waitSize (arneses, clientes viejos) el attach arranca solo a los 3 s; con waitSize espera lo que haga falta', async () => {
+      const s = await sshService.connect({ ...base(sshd), sessionKey: clave(23) });
+      abiertas.push(s);
+      assert.ok(await espera(() => texto(s).includes('\x1bc'), 7000), 'sin resize ni waitSize no arranco a los 3 s');
+      assert.ok(await pidDe(s, 'PID'));
+      await sshService.keeperEnd(s);
+    });
+
+    await check('KP24 UTF-8 partido entre dos paquetes no se convierte en U+FFFD (sshd real y corte byte a byte)', async () => {
+      /* Determinista: un stream falso que entrega cada byte por separado */
+      const { EventEmitter } = require('events');
+      const sid = `utf8-${crypto.randomBytes(3).toString('hex')}`;
+      const st = new EventEmitter(); st.stderr = new EventEmitter();
+      sshService.sessions.set(sid, { client: {}, stream: st, config: {} });
+      try {
+        sshService._wireStream(sid, {}, st);
+        const muestra = 'a─b日c🚀dé✅ ñ\r\n';
+        for (const b of Buffer.from(muestra.repeat(3))) st.emit('data', Buffer.from([b]));
+        const err = Buffer.from('error: ñandú ─');
+        for (const b of err) st.stderr.emit('data', Buffer.from([b]));
+        assert.strictEqual(texto(sid), muestra.repeat(3) + err.toString('utf-8'));
+      } finally { st.removeAllListeners(); st.stderr.removeAllListeners(); sshService.sessions.delete(sid); }
+      /* De verdad: 2000 lineas multibyte por el keeper */
+      const s = await conecta({ sessionKey: clave(24) });
+      assert.ok(await pidDe(s, 'PID'));
+      sshService.sendData(s, `python3 -c "import sys; [sys.stdout.write(('─é✓日🚀' * 40)[:150] + '\\n') for _ in range(2000)]"; echo FIN$((40+2))\r`);
+      assert.ok(await espera(() => texto(s).includes('FIN42'), 20000), 'no termino');
+      const malos = (texto(s).match(/\uFFFD/g) || []).length;
+      assert.strictEqual(malos, 0, `${malos} U+FFFD en la salida`);
+      await sshService.keeperEnd(s);
     });
   } finally {
     for (const s of abiertas) { try { await sshService.disconnect(s); } catch (_) { /* ya */ } }

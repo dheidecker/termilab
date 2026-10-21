@@ -479,6 +479,19 @@ class KeeperService {
     return `${sq(bin)} attach ${sess.id} --cols ${c} --rows ${r}${sess.create ? ' --create' : ''}`;
   }
 
+  /**
+   * The attach for a terminal whose size is not known yet: /bin/sh holds it
+   * until one line arrives on the pty (ssh-service._go, sent right after the
+   * first resize), then runs it WITHOUT --cols/--rows, so the client reads the
+   * pty's real size (TIOCGWINSZ) for its HELLO. Echo off: the newline must not
+   * show. `exec /bin/sh -c` works from sh, bash, zsh, fish and csh logins; the
+   * exit codes the fallback reads (126/127) come through unchanged.
+   */
+  attachCommandWaiting(bin, sess) {
+    if (!ID_RE.test(sess.id)) throw new Error('bad keeper id');
+    return `exec /bin/sh -c ${sq('stty -echo 2>/dev/null; read -r _ && exec "$0" attach "$@"')} ${sq(bin)} ${sess.id}${sess.create ? ' --create' : ''}`;
+  }
+
   /** Rows of `<bin> list` (2 s cap) */
   async list(client, bin) {
     const r = await run(client, `${sq(bin)} list`, { timeout: LIST_TIMEOUT_MS, maxOut: 256 * 1024 });

@@ -104,7 +104,9 @@ async function seccionLocalKeeper({ check, ROOT }) {
       assert.deepStrictEqual(calls, ['confirm'], 'una local normal sigue preguntando');
     } finally { global.window = prevWindow; delete global.__lkAsk; }
     const tv = fs.readFileSync(path.join(ROOT, 'src', 'components', 'Terminal', 'TerminalView.jsx'), 'utf-8');
-    assert.ok(/localShell\.spawn\(\{ cols, rows, sessionKey: tab\.sessionKey \|\| tab\.id \}\)/.test(tv), 'TerminalView no pasa el sessionKey al spawn local');
+    assert.ok(/localShell\.spawn\(\{ cols: term\.cols \|\| 80, rows: term\.rows \|\| 24, sessionKey: tab\.sessionKey \|\| tab\.id \}\)/.test(tv), 'TerminalView no pasa el sessionKey al spawn local');
+    /* Y lo lanza ya ajustado al panel (whenLaidOut + fit), no a 80x24 */
+    assert.ok(/whenLaidOut\(\)\.then\(\(\) => \{[\s\S]{0,80}fitNow\(\);\s*return window\.electronAPI\.localShell\.spawn/.test(tv), 'TerminalView lanza el pty local sin ajustar antes');
     assert.ok(/if \(fresh && !info\.kept\) term\.clear\(\)/.test(tv), 'TerminalView borra encima de la repeticion del keeper');
   });
 
@@ -251,6 +253,14 @@ async function seccionLocalKeeper({ check, ROOT }) {
     assert.ok(s.infoB.kept);
     assert.deepStrictEqual(s.seq, { count: 60, inOrder: true, done: true }, JSON.stringify(s.seq));
     assert.strictEqual(s.pidSame, true, 'reenganchar abrio otro shell');
+  });
+
+  await check('LK4i tamano de punta a punta: cada resize llega al shell del demonio (stty size) y reenganchar a otro tamano lo aplica', () => {
+    const s = r1.steps;
+    assert.ok(Array.isArray(s.sizes) && s.sizes.length === 5, JSON.stringify(s.sizes));
+    for (const x of s.sizes) assert.strictEqual(x.got, x.want, JSON.stringify(s.sizes));
+    assert.strictEqual(s.sizeReattach, '97x31', `reenganche a 97x31: ${s.sizeReattach}`);
+    assert.strictEqual(s.sizeEarlyResize, '133x41', `resize justo tras el spawn (el attach aun arrancaba): ${s.sizeEarlyResize}`);
   });
 
   await check('LK4e attach matado con SIGKILL → la pestana se reengancha sola al mismo shell; parar unidades de pestana no toca la sesion', () => {

@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
 import { SerializeAddon } from '@xterm/addon-serialize';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import { useApp } from '../../contexts/AppContext';
 import { getTheme } from '../../themes/terminal-themes';
@@ -28,6 +29,7 @@ import { showToast } from '../Keeper/toast';
 import { attachImages, canAttach, isFilesDrag } from './imageAttach';
 import Composer, { ComposeButton } from './Composer';
 import { attachPathLinks } from './pathLinkProvider';
+import { terminalFontFamily } from './fontStack';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 
@@ -223,7 +225,7 @@ export default function TerminalView({ tab }) {
 
     const term = new Terminal({
       ...adoptSize,
-      fontFamily: termSettings.fontFamily || 'JetBrains Mono, Consolas, monospace',
+      fontFamily: terminalFontFamily(termSettings.fontFamily),
       fontSize: (IS_ANDROID && readPinchedFont()) || termSettings.fontSize || 14,
       cursorStyle: termSettings.cursorStyle || 'block',
       cursorBlink: true,
@@ -250,6 +252,50 @@ export default function TerminalView({ tab }) {
     termRef.current = term;
 
     term.open(containerRef.current);
+
+    /* Character widths as the shell counts them. xterm's default table is
+       Unicode 6, where most emoji (🚀 ✅ ⚡ 🦀, prompt themes, CLI output) are
+       one cell; glibc/macOS wcwidth say two. Every such character put the
+       cursor one column off the shell's idea of it: typed text and redraws
+       landed in the wrong column. */
+    try {
+      term.loadAddon(new Unicode11Addon());
+      term.unicode.activeVersion = '11';
+    } catch (e) { /* stays on 6 */ }
+
+    /* ─── Size reported to the pty ───
+       Only a terminal that is laid out has a size: a hidden tab
+       (display:none) would report xterm's 80x24 placeholder, the shell would
+       redraw its prompt for that width, and the wider xterm would show it
+       over the lines above. So: measure first, report only real sizes, and
+       report each size once. */
+    const laidOut = () => {
+      try {
+        const d = fitAddon.proposeDimensions();
+        return !!d && Number.isFinite(d.cols) && Number.isFinite(d.rows) && d.cols > 0 && d.rows > 0;
+      } catch (e) { return false; }
+    };
+    let lastSentSize = '';
+    let sendSize = null;   // set once the session can take it
+    const pushSize = (force = false) => {
+      if (!sendSize || disposed || !laidOut()) return;
+      const key = `${term.cols}x${term.rows}`;
+      if (!force && key === lastSentSize) return;
+      lastSentSize = key;
+      sendSize(term.cols, term.rows);
+    };
+    /* Resolves once the pane has a size (a hidden tab: when it is shown) */
+    let layoutWait = null;
+    const whenLaidOut = () => new Promise((resolve) => {
+      if (laidOut()) { resolve(); return; }
+      layoutWait = new ResizeObserver(() => {
+        if (disposed || !laidOut()) return;
+        layoutWait.disconnect();
+        layoutWait = null;
+        resolve();
+      });
+      layoutWait.observe(containerRef.current);
+    });
 
     /* File paths in the output: Ctrl/Cmd+click opens, right-click menu (pathLinkProvider.js) */
     const detachPaths = IS_ANDROID ? () => {} : attachPathLinks(term, containerRef.current, {
@@ -685,9 +731,11 @@ export default function TerminalView({ tab }) {
           }
         });
 
-        /* Now spawn the shell */
-        const cols = term.cols || 80;
-        const rows = term.rows || 24;
+        /* Now spawn the shell, at the size the pane really has (fitted
+           first; a hidden tab spawns when it is shown). Spawned at xterm's
+           80x24 placeholder, the shell drew its first prompt (and a kept
+           session its SIGWINCH redraw) for 80 columns in a wider terminal. */
+        const fitNow = () => { try { fitAddon.fit(); } catch (e) { /* not laid out */ } };
 
         /* The pty is there (spawned now, or adopted from another window):
            wire input, resize and the first fit to it */
@@ -736,26 +784,28 @@ export default function TerminalView({ tab }) {
             });
 
             /* Resize */
-            term.onResize(({ cols: c, rows: r }) => {
-              if (sessionIdRef.current) {
-                window.electronAPI.localShell.resize(sessionIdRef.current, c, r);
-              }
-            });
+            sendSize = (c, r) => {
+              if (sessionIdRef.current) window.electronAPI.localShell.resize(sessionIdRef.current, c, r);
+            };
+            term.onResize(() => pushSize());
 
             /* Send initial fit resize */
             restored.then(() => {
               if (disposed) return;
-              try {
-                fitAddon.fit();
-                window.electronAPI.localShell.resize(realSessionId, term.cols, term.rows);
-              } catch (e) { /* ignore */ }
+              try { fitAddon.fit(); } catch (e) { /* ignore */ }
+              pushSize(true);
             });
         };
 
         if (adopt) {
           if (tab.ptySessionId) wireLocal(tab.ptySessionId, false);
-        } else window.electronAPI.localShell.spawn({ cols, rows, sessionKey: tab.sessionKey || tab.id })
+        } else whenLaidOut().then(() => {
+          if (disposed) return null;
+          fitNow();
+          return window.electronAPI.localShell.spawn({ cols: term.cols || 80, rows: term.rows || 24, sessionKey: tab.sessionKey || tab.id });
+        })
           .then((result) => {
+            if (result === null) return;
             const realSessionId = result?.sessionId;
             /* Closed before the pty existed: nobody else knows its id, so
                nobody else would ever kill it */
@@ -817,7 +867,7 @@ export default function TerminalView({ tab }) {
           if (!mountedRef.current || !p || p.sessionId !== sessionIdRef.current) return;
           if (p.state === 'reconnected') {
             setConnected(true);
-            try { window.electronAPI.ssh.resize(sessionIdRef.current, term.cols, term.rows); } catch (_) { /* gone */ }
+            pushSize(true);
           } else if (p.state === 'lost' || p.state === 'reconnecting') {
             setConnected(false);
           }
@@ -844,22 +894,20 @@ export default function TerminalView({ tab }) {
           }
         });
 
-        /* Resize */
-        term.onResize(({ cols: c, rows: r }) => {
-          if (sessionIdRef.current) {
-            window.electronAPI.ssh.resize(sessionIdRef.current, c, r);
-          }
-        });
+        /* Resize. A kept session's attach on the server waits for the first
+           one (ssh-service _go): a hidden tab sends it when it is shown. */
+        sendSize = (c, r) => {
+          if (sessionIdRef.current) window.electronAPI.ssh.resize(sessionIdRef.current, c, r);
+        };
+        term.onResize(() => pushSize());
 
         setConnected(adopt ? adopt.connected !== false : true);
 
         /* Send initial resize to sync terminal dimensions */
         restored.then(() => setTimeout(() => {
           if (!mountedRef.current || disposed) return;
-          try {
-            fitAddon.fit();
-            window.electronAPI.ssh.resize(sessionIdRef.current, term.cols, term.rows);
-          } catch (e) { /* ignore */ }
+          try { fitAddon.fit(); } catch (e) { /* ignore */ }
+          pushSize(true);
         }, 100));
       }
     } else {
@@ -887,6 +935,9 @@ export default function TerminalView({ tab }) {
     /* ResizeObserver for auto-fit (an adopted screen: once it is written) */
     const ro = new ResizeObserver(() => {
       try { fitAddon.fit(); } catch (e) { /* ignore */ }
+      /* Shown at last (a tab restored hidden), or at a size equal to the
+         placeholder: nothing resized, but the pty has not heard it yet */
+      pushSize();
     });
     const observed = containerRef.current;
     restored.then(() => { if (!disposed) ro.observe(observed); });
@@ -948,6 +999,7 @@ export default function TerminalView({ tab }) {
       mountedRef.current = false;
       initializedRef.current = false;  // Allow re-init on StrictMode remount
       ro.disconnect();
+      if (layoutWait) layoutWait.disconnect();
       document.fonts?.removeEventListener?.('loadingdone', remeasure);
       document.removeEventListener('keydown', keyHandler);
       wrapperEl.removeEventListener('contextmenu', onContextMenu);
@@ -1014,7 +1066,7 @@ export default function TerminalView({ tab }) {
     }
     lastSettingsFontRef.current = settingsFont;
     const newFontSize = (IS_ANDROID && readPinchedFont()) || settingsFont;
-    const newFontFamily = termSettings.fontFamily || 'JetBrains Mono, Consolas, monospace';
+    const newFontFamily = terminalFontFamily(termSettings.fontFamily);
     const newCursorStyle = termSettings.cursorStyle || 'block';
 
     if (term.options.fontSize !== newFontSize) term.options.fontSize = newFontSize;

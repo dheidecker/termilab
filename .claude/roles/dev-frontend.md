@@ -873,3 +873,28 @@ Chrome está en `/opt/google/chrome/chrome`. Para clicar/hover antes de capturar
   12px). `.sync-banner-error` lo usa igual; en `.cli-error` el rojo va en la barra y el texto en
   `--text-primary`. Mac: PIL sí está en el python3 del sistema, numpy no.
 - Sin mirar en Electron real ni con el backend vivo: solo SSR + Chrome headless con estados inyectados.
+
+## Terminal alineada: tamaño, anchos, fuente (rama `fix/terminal-layout`, 2026-10-21)
+
+- **El tamaño que se manda al pty pasa por `pushSize()`** (TerminalView): solo si `laidOut()`
+  (`fitAddon.proposeDimensions()` finito y >0), y cada tamaño una vez. Un panel oculto (`display:none`)
+  no manda nada: antes mandaba el 80x24 de relleno de xterm y el shell redibujaba el prompt para 80
+  columnas en un xterm más ancho → borraba líneas de encima (medido: LINE8 perdida al restaurar). El RO
+  llama `pushSize()` también cuando nada cambió de tamaño (pestaña mostrada al fin).
+- **Local: el pty se lanza ya ajustado** (`whenLaidOut()` + `fit()` antes de `localShell.spawn`); una
+  pestaña oculta lanza su shell al mostrarse. Antes se lanzaba a 80x24 y el primer fit llegaba mientras
+  el attach del keeper aún no escuchaba SIGWINCH: el shell se quedaba en 80x24 (medido en un xterm 141x40).
+  LK2 mira esa línea por regex: si la cambias, cambia el regex.
+- SSH: `connectTab` manda `waitSize: true` → el attach del keeper espera al primer `ssh.resize` (ver
+  dev-backend). Sin resize del renderer, una sesión guardada nunca arranca: no quites el resize inicial.
+- **Unicode 11** (`@xterm/addon-unicode11`, `activeVersion = '11'`): con la tabla 6 por defecto 🚀 ✅ ⚡ 🦀
+  medían 1 celda y glibc/macOS 2 → texto tecleado y redibujos en otra columna. 🫠 (Unicode 14) sigue en 1:
+  no hay addon estable posterior para xterm 5.5.
+- **JetBrains Mono va empaquetado** (`src/assets/fonts/*.woff2`, 400/700 normal e itálica, OFL en
+  `public/licenses/`); Google Fonts solo da Inter. De Google venía solo latin (el box drawing salía de otra
+  fuente), sin 700 (negrita sintética) y nada sin red. `main.jsx` espera a la fuente (máx. 1 s) antes de
+  montar. `fontStack.js` añade siempre una cadena monoespaciada tras la fuente elegida: un nombre no
+  instalado ("Consolas" en Mac) caía a la fuente PROPORCIONAL por defecto. `monospace` solo = tal cual.
+- Medido bajo xvfb: renderer DOM desvía ≤0,62 px en 100 columnas (normal, negrita, itálica, box): no hace
+  falta WebGL (y cada xterm montado gastaría un contexto; Chromium tumba los más viejos pasados ~16).
+- E2E: `node scripts/e2e-terminal-size.mjs [ssh|local|all]` (67 comprobaciones; base: 14 FAIL).

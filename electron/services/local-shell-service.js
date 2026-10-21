@@ -193,6 +193,18 @@ class LocalShellService {
 
     ptyProcess.onData((data) => {
       if (this.ents.get(sessionId) !== ent) return;
+      /* A kept session's attach client ignores SIGWINCH until it has set up
+         (SIG_DFL): a resize the terminal sent meanwhile — always the first
+         fit right after spawn — was lost, and the shell stayed at the spawn
+         size (measured: 80x24 in a 141x40 xterm). Its first output means it
+         is listening now: if the size moved since spawn, tell it again. */
+      if (kept && !ent.synced) {
+        ent.synced = true;
+        const z = ent.size;
+        if (z && (z.cols !== spec.cols || z.rows !== spec.rows)) {
+          try { process.kill(ptyProcess.pid, 'SIGWINCH'); } catch (_) { /* gone */ }
+        }
+      }
       this._send('local:data', sessionId, data);
     });
 

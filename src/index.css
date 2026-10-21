@@ -9,6 +9,15 @@
    colour — use these tokens, or the light theme will not follow.
    ============================================================ */
 
+/* ----- JetBrains Mono, bundled (OFL 1.1: public/licenses/JetBrainsMono-OFL.txt) -----
+   The terminal font must never depend on the network: from Google Fonts it
+   came latin-only (box drawing from another font, other widths), 400/500 only
+   (bold synthesized) and, offline, not at all. All four styles xterm draws. */
+@font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 400; font-display: swap; src: url('./assets/fonts/JetBrainsMono-Regular.woff2') format('woff2'); }
+@font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 700; font-display: swap; src: url('./assets/fonts/JetBrainsMono-Bold.woff2') format('woff2'); }
+@font-face { font-family: 'JetBrains Mono'; font-style: italic; font-weight: 400; font-display: swap; src: url('./assets/fonts/JetBrainsMono-Italic.woff2') format('woff2'); }
+@font-face { font-family: 'JetBrains Mono'; font-style: italic; font-weight: 700; font-display: swap; src: url('./assets/fonts/JetBrainsMono-BoldItalic.woff2') format('woff2'); }
+
 /* ----- CSS Custom Properties — dark (default) ----- */
 :root {
   /* Surface colors — deep blue-grey. Main area is the darkest; the sidebar

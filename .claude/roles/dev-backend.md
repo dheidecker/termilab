@@ -1034,3 +1034,21 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
 - El arnés completo en Mac tiene ~27 fallos preexistentes (Linux: systemd-run, /proc, sshd...) y algunos
   flojos por carga (CH4, F7, S9 cambian entre corridas). Para saber si rompiste algo: `git archive HEAD` a
   scratch + symlink de `node_modules`, corre ahí, y compara las listas de `FALLA`.
+
+## Keeper y tamaño / UTF-8 (rama `fix/terminal-layout`, 2026-10-21, KP22–KP25, LK4i)
+
+- **UTF-8 por stream con `StringDecoder`** en `_wireStream` (stdout y stderr): `data.toString()` por
+  paquete convertía un carácter partido en 2–3 U+FFFD, cada uno una columna más de las que contó el
+  shell (medido: 160–366 en 2000–3000 líneas multibyte por el keeper). Local no lo tenía (node-pty decodifica).
+- **Primer attach de una pestaña = `attachCommandWaiting`**: `exec /bin/sh -c 'stty -echo; read -r _ &&
+  exec "$0" attach "$@"' <bin> <id> [--create]`, SIN `--cols/--rows`. `resize()` hace `setWindow` y luego
+  `_go` (un `\n`): el attach lee el tamaño real del pty. Antes el shell nacía/recibía SIGWINCH a 80x24 (el
+  connect no sabe el tamaño) y su redibujo borraba líneas. `config.waitSize` (lo pone `connectTab`) =
+  sin límite; sin él, `_go` a los 3 s (arneses). Reconexión de una sesión ya `sized` = attach directo.
+  Entrada antes del go (broadcast a pestaña oculta) se encola en `preGo`: si no, `read` se la comería.
+- **El attach ignora SIGWINCH hasta instalar su manejador** (SIG_DFL): un resize en ese hueco se pierde
+  y el shell se queda al tamaño de arranque. Al primer dato del attach: local manda `SIGWINCH` al pid del
+  pty (`process.kill`), SSH rebota `setWindow` filas-1 y vuelta (`_resyncSize`). LK4i lo prueba (control
+  negativo rojo: 80x24); en SSH el hueco no se puede forzar (KP25 solo prueba la ráfaga).
+- El demonio rebota filas-1 durante 100 ms al enganchar: un `stty size` en ese rato da una fila menos.
+  Los tests esperan 300 ms. El arnés KP: el patrón `attach-exit` del envoltorio acepta las dos formas.
