@@ -1497,6 +1497,8 @@ async function main() {
 
   // ── W. Varias ventanas: enrutado por sesion, mudanzas con bufer, cierre ──
   await require('./lib/check-windows').seccionVentanas({ check, ROOT, handlers, onHandlers });
+  // ── V. Varios espectadores por sesion: join sin perdidas, conductor del tamano ──
+  await require('./lib/check-viewers').seccionEspectadores({ check, ROOT, handlers, onHandlers });
   // ── BG. Sessions → Background: sesiones guardadas que este equipo solto ──
   await require('./lib/check-background').seccionBackground({ check, ROOT, handlers });
   // ── CH. Conversaciones de Claude Code: local y por la conexion de la pestana ──

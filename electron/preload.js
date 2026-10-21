@@ -532,6 +532,40 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  // ─── Viewers: several clients on one session ────────────
+  /* See electron/window-registry.js. join(sid) resolves {joinId}; the screen
+     then arrives as onJoinScreen {joinId, sessionId, history, data, cols,
+     rows, connected} (history:false = the owner did not answer: no screen,
+     only what came after), followed by the session's live events. The owner
+     gets onSnapshotRequest {joinId, sessionId} and answers snapshot(). */
+  session: {
+    join: (sessionId) => invoke('session:join', sessionId),
+    leave: (sessionId) => invoke('session:leave', sessionId),
+    snapshot: (joinId, snap) => invoke('session:snapshot', joinId, snap || null),
+    onSnapshotRequest: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('session:snapshot-request', listener);
+      return listener;
+    },
+    onJoinScreen: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('session:join-screen', listener);
+      return listener;
+    },
+    /* {sessionId, cols, rows}: the pty's size changed (another client conducts) */
+    onSize: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('session:size', listener);
+      return listener;
+    },
+    offEvents: (listener) => {
+      if (!listener) return;
+      ipcRenderer.removeListener('session:snapshot-request', listener);
+      ipcRenderer.removeListener('session:join-screen', listener);
+      ipcRenderer.removeListener('session:size', listener);
+    },
+  },
+
   // ─── Auto-Updater ───────────────────────────────────────
   updater: {
     check: () => invoke('updater:check'),

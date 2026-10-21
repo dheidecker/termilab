@@ -467,14 +467,19 @@ function registerIpcHandlers(mainWindow) {
     return agentApprovals.respond(requestId, approve === true, event && event.sender);
   }));
 
+  /* With viewers on a session (windowRegistry: join), whoever types conducts
+     its size: noteInput first (it may resize the pty to that client), then
+     the keystroke. A resize reaches the pty only from the conductor (or
+     the first real size, from anyone); without viewers, every one does. */
   ipcMain.on('ssh:send-data', (event, sessionId, data) => {
     if (!mayUse(event, sessionId, 'ssh:send-data')) return;
+    windowRegistry.noteInput(sessionId, event && event.sender, data);
     sshService.sendData(sessionId, data);
   });
 
   ipcMain.on('ssh:resize', (event, sessionId, cols, rows) => {
     if (!mayUse(event, sessionId, 'ssh:resize')) return;
-    sshService.resize(sessionId, cols, rows);
+    windowRegistry.resize(sessionId, event && event.sender, cols, rows, (c, r) => sshService.resize(sessionId, c, r));
   });
 
   // ─── SFTP Handlers ────────────────────────────────────
@@ -836,6 +841,8 @@ function registerIpcHandlers(mainWindow) {
      → { sessionId, kept, notice } */
   ipcMain.handle('local:spawn', wrapHandler(async (event, options) => {
     const sessionId = await localShellService.spawn(options, event.sender);
+    /* Spawned at the pane's size: a viewer's resize is not "the first size" */
+    windowRegistry.noteSize(sessionId, options && options.cols, options && options.rows);
     return { sessionId, ...localShellService.spawnInfo(sessionId) };
   }));
 
@@ -872,12 +879,13 @@ function registerIpcHandlers(mainWindow) {
 
   ipcMain.on('local:write', (event, sessionId, data) => {
     if (!mayUse(event, sessionId, 'local:write')) return;
+    windowRegistry.noteInput(sessionId, event && event.sender, data);
     localShellService.write(sessionId, data);
   });
 
   ipcMain.on('local:resize', (event, sessionId, cols, rows) => {
     if (!mayUse(event, sessionId, 'local:resize')) return;
-    localShellService.resize(sessionId, cols, rows);
+    windowRegistry.resize(sessionId, event && event.sender, cols, rows, (c, r) => localShellService.resize(sessionId, c, r));
   });
 
   // ─── Clipboard (terminal copy / paste) ────────────────
@@ -1007,6 +1015,20 @@ function registerIpcHandlers(mainWindow) {
   ipcMain.handle('window:workspace-take', wrapHandler(async (event) => workspaceService.take(event.sender)));
   ipcMain.handle('window:workspace-report', wrapHandler(async (event, snapshot) => workspaceService.report(event.sender, snapshot)));
   ipcMain.handle('window:workspace-restored', wrapHandler(async (event) => workspaceService.restored(event.sender)));
+
+  /* ─── Viewers: several clients on one session (window-registry.js) ───
+     A window that does not own a session may show it too. join() answers
+     the join id; the screen arrives as 'session:join-screen', then the
+     live stream. The owner is asked for its screen with
+     'session:snapshot-request' and answers with session:snapshot. */
+  ipcMain.handle('session:join', wrapHandler(async (event, sessionId) => {
+    return { joinId: windowRegistry.join(sessionId, event.sender) };
+  }));
+  ipcMain.handle('session:leave', wrapHandler(async (event, sessionId) => windowRegistry.leave(sessionId, event.sender)));
+  /* Only the session's owner can answer (answerJoin checks the sender) */
+  ipcMain.handle('session:snapshot', wrapHandler(async (event, joinId, snapshot) => {
+    return windowRegistry.answerJoin(joinId, event.sender, snapshot || null);
+  }));
 
   /* A new empty window: offset from the one asking, or at {x, y} */
   ipcMain.handle('window:new', wrapHandler(async (event, opts) => {
@@ -1214,6 +1236,7 @@ function removeIpcHandlers() {
     'window:agents-report', 'window:agents', 'window:focus-agent', 'window:session-action',
     'window:background-sessions', 'window:background-forget', 'window:background-rename',
     'window:workspace-take', 'window:workspace-report', 'window:workspace-restored',
+    'session:join', 'session:leave', 'session:snapshot',
     'system:info',
     'sync:status', 'sync:login', 'sync:logout', 'sync:now',
     'sync:devices', 'sync:revoke-device',

@@ -37,11 +37,60 @@
  * Nothing lost, nothing twice. A move that
  * does not finish in `moveTimeoutMs` (target crashed, closed) is aborted: the
  * buffer is flushed back to the source, which still has its tabs.
+ *
+ * Viewers (several clients on ONE session: the PC window and, later, a
+ * browser registered here as one more webContents). The owner stays the one
+ * that opened it; any other window may `join` it as a viewer:
+ *
+ *  - every per-session event goes to the owner AND to each viewer;
+ *  - a viewer may type and resize (mayUse), like the owner;
+ *  - the pty has one size, set by the session's CONDUCTOR: the last client
+ *    that typed in it (the owner until someone else types). Only the
+ *    conductor's resize reaches the pty; the others' are remembered, and
+ *    applied the moment that client types (it becomes the conductor). The
+ *    very first real size of a session is taken from ANY client, so a
+ *    waitSize session opens even when the owner's window is hidden. Each
+ *    time the pty's size changes, 'session:size' {sessionId, cols, rows}
+ *    goes to every client so the others fit their xterm to it. With no
+ *    viewers none of this runs: every resize passes, nothing is emitted.
+ *  - a viewer's window closing (removeWindow) or leave() only drops that
+ *    viewer: it never ends the session.
+ *  - the OWNER's window closing while viewers remain does not end the
+ *    session either: the oldest viewer is promoted to owner (prompts and
+ *    host-key questions go there from then on) and the session lives on.
+ *    Only when no viewer is left does the old rule apply (the caller ends it).
+ *
+ * Joining without loss or duplicates (same idea as a move, but the owner is
+ * not paused):
+ *
+ *   main             join(sid, viewer): from this moment the session's events
+ *                    for THAT viewer are buffered (strings, already decoded
+ *                    by the stream's StringDecoder), and
+ *                    'session:snapshot-request' {joinId, sessionId} goes to
+ *                    the owner, on the same ordered pipe as the session's data
+ *   owner renderer   serializes its xterm at exactly that point of its write
+ *                    queue (windowMove.js) and answers with snapshot(joinId)
+ *   main             'session:join-screen' {joinId, sessionId, history, data,
+ *                    cols, rows} to the viewer, then the buffer, in order,
+ *                    then live.
+ *
+ * The screen covers everything sent before the request, the buffer everything
+ * after it. An owner that does not answer within `joinTimeoutMs` (hung,
+ * closed) still releases the viewer: join-screen with history:false and no
+ * data, then the buffer. A session being moved cannot be joined (its owner's
+ * screen stops at the move mark).
  */
 
 const crypto = require('crypto');
 
 const MOVE_TIMEOUT_MS = 15000;
+const JOIN_TIMEOUT_MS = 3000;
+/* A serialized screen bigger than this is not history, it is a bug */
+const MAX_SNAPSHOT_CHARS = 16 * 1024 * 1024;
+/* What xterm sends by itself, not the user: focus reports (CSI I / CSI O),
+   cursor-position / device-attribute / status replies, OSC colour replies.
+   Every client answers those, so they must not make it the conductor. */
+const AUTO_REPLY = /^(?:\x1b\[[IO]|\x1b\[[?>]?[\d;]*[Rcn]|\x1b\][\d;]*[^\x07\x1b]*(?:\x07|\x1b\\))+$/;
 
 const AGENT_STATES = new Set(['working', 'blocked', 'done', 'idle']);
 const MAX_SESSION_ROWS = 200;
@@ -96,9 +145,22 @@ class WindowRegistry {
         being ended): their events and prompts go NOWHERE, never to another
         window. Cleared by release(). */
     this._closedOwner = new Set();
+    /** sessionId -> Set<webContents> (viewers, besides the owner) */
+    this._viewers = new Map();
+    /** joinId -> { id, sessionId, viewer, buffer: [channel, args][], timer } */
+    this._joins = new Map();
+    /** sessionId -> webContents that typed last (see conductorOf) */
+    this._conductor = new Map();
+    /** sessionId -> {cols, rows} the pty has (as far as main applied it) */
+    this._ptySize = new Map();
+    /** sessionId -> Map<webContents, {cols, rows}> each client's own size */
+    this._wanted = new Map();
+    /** sessionId -> (cols, rows) => void: how to resize its pty (from resize()) */
+    this._applySize = new Map();
     this._seq = 0;
     this._factory = null;
     this.moveTimeoutMs = MOVE_TIMEOUT_MS;
+    this.joinTimeoutMs = JOIN_TIMEOUT_MS;
     /** Sessions left with no live window (a move aborted after its source closed). */
     this.onOrphaned = null;
 
@@ -177,10 +239,17 @@ class WindowRegistry {
       if (move.to === wc) this.abort(move.id, 'target-closed');
     }
     this._windows.delete(wc);
+    /* As a viewer: only it goes, the sessions stay */
+    for (const [sid, set] of [...this._viewers]) {
+      if (set.has(wc)) this.leave(sid, wc);
+    }
+    for (const sizes of this._wanted.values()) sizes.delete(wc);
     const owned = [];
     for (const [sid, owner] of this._owners) {
       if (owner !== wc) continue;
       if (this._moving.has(sid)) continue;   // on its way to a live window
+      /* Viewers left: the oldest one owns it now, the session goes on */
+      if (this._promoteViewer(sid)) continue;
       owned.push(sid);
     }
     for (const sid of owned) {
@@ -300,11 +369,13 @@ class WindowRegistry {
     const wc = this._wc(by);
     if (!wc) return false;
     if (owner === wc) return true;
+    if (this.isViewer(sessionId, wc)) return true;
     return !!move && (move.from === wc || move.to === wc);
   }
 
   /** The session ended. While a move buffers it, its last events still flush. */
   release(sessionId) {
+    this._dropViewers(sessionId);
     if (this._moving.has(sessionId)) {
       this._releasedWhileMoving.add(sessionId);
       return;
@@ -349,6 +420,9 @@ class WindowRegistry {
   }
 
   sendToSession(sessionId, channel, ...args) {
+    /* Each viewer has its own pipe; within it, order is kept (a viewer still
+       joining gets it buffered) */
+    this._toViewers(sessionId, channel, args);
     const move = this._moving.get(sessionId);
     if (move) {
       move.buffers.get(sessionId).push([channel, args]);
@@ -369,6 +443,231 @@ class WindowRegistry {
   broadcastExcept(except, channel, ...args) {
     const skip = this._wc(except);
     for (const e of this.liveWindows()) if (e.wc !== skip) this.sendTo(e.wc, channel, ...args);
+  }
+
+  // ─── Viewers (several clients on one session) ──────────
+
+  isViewer(sessionId, winOrWc) {
+    const set = this._viewers.get(sessionId);
+    return !!set && set.has(this._wc(winOrWc));
+  }
+
+  viewersOf(sessionId) {
+    return [...(this._viewers.get(sessionId) || [])];
+  }
+
+  _hasViewers(sessionId) {
+    const set = this._viewers.get(sessionId);
+    return !!set && set.size > 0;
+  }
+
+  _pendingJoin(sessionId, wc) {
+    for (const j of this._joins.values()) if (j.sessionId === sessionId && j.viewer === wc) return j;
+    return null;
+  }
+
+  _toViewers(sessionId, channel, args) {
+    const set = this._viewers.get(sessionId);
+    if (!set || !set.size) return false;
+    for (const wc of set) {
+      const join = this._pendingJoin(sessionId, wc);
+      if (join) join.buffer.push([channel, args]);
+      else this.sendTo(wc, channel, ...args);
+    }
+    return true;
+  }
+
+  /**
+   * Window `viewer` starts showing `sessionId` too. Returns the join id; the
+   * screen arrives as 'session:join-screen', then the live stream. Joining
+   * again (a reloaded page) starts over with a fresh screen.
+   */
+  join(sessionId, viewer) {
+    const wc = this._wc(viewer);
+    if (!sessionId || typeof sessionId !== 'string') throw new Error('Missing session id');
+    if (!wc || !this._windows.has(wc) || !this._alive(wc)) throw new Error('Unknown window');
+    const owner = this._owners.get(sessionId);
+    if (!owner || this._closedOwner.has(sessionId)) throw new Error('No such session');
+    if (owner === wc) throw new Error('That window already owns this session');
+    if (this._moving.has(sessionId)) throw new Error('That session is being moved');
+    if (this.isViewer(sessionId, wc)) this.leave(sessionId, wc);
+    if (!this._viewers.has(sessionId)) this._viewers.set(sessionId, new Set());
+    this._viewers.get(sessionId).add(wc);
+    const join = { id: crypto.randomUUID(), sessionId, viewer: wc, buffer: [], timer: null };
+    this._joins.set(join.id, join);
+    join.timer = setTimeout(() => this._finishJoin(join.id, null, 'timeout'), this.joinTimeoutMs);
+    /* Behind every event already sent to the owner, on the same pipe */
+    if (!this.sendTo(owner, 'session:snapshot-request', { joinId: join.id, sessionId })) {
+      this._finishJoin(join.id, null, 'owner-gone');
+    }
+    return join.id;
+  }
+
+  /** The owner's serialized screen for join `joinId` (null: it has none). */
+  answerJoin(joinId, by, snapshot) {
+    const join = this._joins.get(joinId);
+    if (!join) return false;
+    if (this._owners.get(join.sessionId) !== this._wc(by)) return false;
+    this._finishJoin(joinId, snapshot || null, 'empty');
+    return true;
+  }
+
+  _finishJoin(joinId, snapshot, reason) {
+    const join = this._joins.get(joinId);
+    if (!join) return;
+    clearTimeout(join.timer);
+    this._joins.delete(joinId);
+    if (!this.isViewer(join.sessionId, join.viewer)) return;
+    const snap = snapshot && typeof snapshot === 'object' && typeof snapshot.data === 'string'
+      && snapshot.data.length <= MAX_SNAPSHOT_CHARS ? snapshot : null;
+    const pty = this._ptySize.get(join.sessionId);
+    const num = (v) => (Number.isInteger(v) && v > 0 && v < 10000 ? v : null);
+    this.sendTo(join.viewer, 'session:join-screen', {
+      joinId,
+      sessionId: join.sessionId,
+      history: !!snap,
+      reason: snap ? 'ok' : reason,
+      data: snap ? snap.data : '',
+      cols: pty ? pty.cols : (snap ? num(snap.cols) : null),
+      rows: pty ? pty.rows : (snap ? num(snap.rows) : null),
+      connected: snap ? snap.connected !== false : null,
+    });
+    for (const [channel, args] of join.buffer) this.sendTo(join.viewer, channel, ...args);
+  }
+
+  /** `viewer` stops showing `sessionId`. Never ends the session. */
+  leave(sessionId, viewer) {
+    const wc = this._wc(viewer);
+    const set = this._viewers.get(sessionId);
+    if (!set || !set.has(wc)) return false;
+    set.delete(wc);
+    if (!set.size) this._viewers.delete(sessionId);
+    for (const j of [...this._joins.values()]) {
+      if (j.sessionId === sessionId && j.viewer === wc) { clearTimeout(j.timer); this._joins.delete(j.id); }
+    }
+    const sizes = this._wanted.get(sessionId);
+    if (sizes) sizes.delete(wc);
+    if (this._conductor.get(sessionId) === wc) {
+      this._conductor.delete(sessionId);
+      /* The pty goes back to whoever conducts now (the owner) */
+      this._conduct(sessionId);
+    }
+    return true;
+  }
+
+  /* The owner's window closed and viewers remain: the oldest live one owns
+     the session now. Joins still waiting on the dead owner's screen go on
+     without history. */
+  _promoteViewer(sessionId) {
+    const set = this._viewers.get(sessionId);
+    if (!set) return false;
+    const next = [...set].find(wc => this._windows.has(wc) && this._alive(wc));
+    if (!next) return false;
+    for (const j of [...this._joins.values()]) {
+      if (j.sessionId === sessionId) this._finishJoin(j.id, null, 'owner-closed');
+    }
+    set.delete(next);
+    if (!set.size) this._viewers.delete(sessionId);
+    this._owners.set(sessionId, next);
+    if (this._conductor.get(sessionId) !== next) this._conductor.delete(sessionId);
+    this._conduct(sessionId);
+    return true;
+  }
+
+  _dropViewers(sessionId) {
+    for (const j of [...this._joins.values()]) {
+      if (j.sessionId === sessionId) { clearTimeout(j.timer); this._joins.delete(j.id); }
+    }
+    this._viewers.delete(sessionId);
+    this._conductor.delete(sessionId);
+    this._ptySize.delete(sessionId);
+    this._wanted.delete(sessionId);
+    this._applySize.delete(sessionId);
+  }
+
+  // ─── Size: one pty, one conductor ──────────────────────
+
+  /** Whose size the pty follows: the last client that typed, else the owner. */
+  conductorOf(sessionId) {
+    const c = this._conductor.get(sessionId);
+    if (c && this._alive(c) && (this._owners.get(sessionId) === c || this.isViewer(sessionId, c))) return c;
+    return this._owners.get(sessionId) || null;
+  }
+
+  /**
+   * A resize from client `by`. `apply(cols, rows)` resizes the pty (the
+   * service's resize). Returns whether it was applied. With no viewers it
+   * always is (what the app did before viewers existed).
+   */
+  resize(sessionId, by, cols, rows, apply) {
+    const wc = this._wc(by);
+    const real = Number.isInteger(cols) && Number.isInteger(rows) && cols > 0 && rows > 0;
+    if (typeof apply === 'function') this._applySize.set(sessionId, apply);
+    if (real && wc) {
+      if (!this._wanted.has(sessionId)) this._wanted.set(sessionId, new Map());
+      this._wanted.get(sessionId).set(wc, { cols, rows });
+    }
+    let pass = true;
+    if (this._hasViewers(sessionId)) {
+      /* The first real size is anyone's (waitSize: a hidden owner never sends one) */
+      if (real && !this._ptySize.has(sessionId)) pass = true;
+      else pass = wc === this.conductorOf(sessionId);
+    }
+    if (!pass) return false;
+    if (typeof apply === 'function') apply(cols, rows);
+    if (real) this._sized(sessionId, cols, rows);
+    return true;
+  }
+
+  /** The pty got this size some other way (a spawn at a known size). */
+  noteSize(sessionId, cols, rows) {
+    if (Number.isInteger(cols) && Number.isInteger(rows) && cols > 0 && rows > 0) this._sized(sessionId, cols, rows);
+  }
+
+  ptySizeOf(sessionId) {
+    const s = this._ptySize.get(sessionId);
+    return s ? { ...s } : null;
+  }
+
+  _sized(sessionId, cols, rows) {
+    const prev = this._ptySize.get(sessionId);
+    this._ptySize.set(sessionId, { cols, rows });
+    if (prev && prev.cols === cols && prev.rows === rows) return;
+    /* To every client: owner, viewers (a joining one's buffer, a move's) */
+    if (this._hasViewers(sessionId)) this.sendToSession(sessionId, 'session:size', { sessionId, cols, rows });
+  }
+
+  /**
+   * Client `by` typed in `sessionId`: it conducts the size from now on. Call
+   * it BEFORE writing the input, so the pty already has this client's size
+   * when the keystroke lands. No-op without viewers.
+   */
+  noteInput(sessionId, by, data) {
+    if (!this._hasViewers(sessionId)) return;
+    if (typeof data === 'string' && AUTO_REPLY.test(data)) return;
+    const wc = this._wc(by);
+    if (!wc) return;
+    const was = this.conductorOf(sessionId);
+    this._conductor.set(sessionId, wc);
+    if (was !== wc) this._conduct(sessionId);
+  }
+
+  /* The pty to the conductor's own size, if it differs */
+  _conduct(sessionId) {
+    const c = this.conductorOf(sessionId);
+    const sizes = this._wanted.get(sessionId);
+    const want = c && sizes ? sizes.get(c) : null;
+    const apply = this._applySize.get(sessionId);
+    if (!want || !apply) return;
+    const pty = this._ptySize.get(sessionId);
+    if (pty && pty.cols === want.cols && pty.rows === want.rows) return;
+    try {
+      apply(want.cols, want.rows);
+    } catch (err) {
+      console.error('[WindowRegistry] resize failed:', err.message);
+      return;
+    }
+    this._sized(sessionId, want.cols, want.rows);
   }
 
   // ─── Moving sessions between windows ───────────────────
@@ -415,6 +714,11 @@ class WindowRegistry {
     const toWc = this._wc(to);
     if (!this._windows.has(toWc)) throw new Error('Unknown window');
     if (toWc === move.from) throw new Error('The tab is already in that window');
+    /* It already gets these sessions as a viewer: owning them too would
+       deliver everything twice */
+    for (const sid of move.sessionIds) {
+      if (this.isViewer(sid, toWc)) throw new Error('That window already shows this session');
+    }
     move.to = toWc;
     const entry = this._windows.get(toWc);
     const payload = { ...(adoption || {}), moveId };
@@ -510,3 +814,4 @@ class WindowRegistry {
 module.exports = new WindowRegistry();
 module.exports.WindowRegistry = WindowRegistry;
 module.exports.MOVE_TIMEOUT_MS = MOVE_TIMEOUT_MS;
+module.exports.JOIN_TIMEOUT_MS = JOIN_TIMEOUT_MS;
