@@ -1052,3 +1052,8 @@ puente, dilo en la entrega para que lo arregle `dev-frontend`.
   negativo rojo: 80x24); en SSH el hueco no se puede forzar (KP25 solo prueba la ráfaga).
 - El demonio rebota filas-1 durante 100 ms al enganchar: un `stty size` en ese rato da una fila menos.
   Los tests esperan 300 ms. El arnés KP: el patrón `attach-exit` del envoltorio acepta las dos formas.
+- **Shell normal (keeper apagado o fallback) con `waitSize`**: `client.shell` se aplaza al primer resize
+  (`openDeferred` → `_openDeferred`, sesión con `stream: null` mientras; lo tecleado va a `preGo`). KP26.
+- **ssh2 `client.shell(obj)` con `env` dentro toma el objeto como OPCIONES** y abre el pty a 80x24 por
+  defecto: todo shell normal (y sus reconexiones) nacía a 80x24 aunque se pasaran cols/rows. Ventana y
+  opciones van separadas: `client.shell({term, cols, rows}, {env}, cb)`.

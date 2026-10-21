@@ -222,12 +222,14 @@ class SSHService {
 
           const logId = startLog();
           established = true;
+          const deferred = stream._termilabDeferred || null;
+          const live = deferred ? null : stream;
           if (reconnect) {
-            Object.assign(existing, { client, stream, logId, negotiated, lost: false, exited: false });
+            Object.assign(existing, { client, stream: live, logId, negotiated, lost: false, exited: false, openDeferred: deferred });
           } else {
-            this.sessions.set(sessionId, { client, stream, config, logId, negotiated, cols: config.cols || 80, rows: config.rows || 24 });
+            this.sessions.set(sessionId, { client, stream: live, config, logId, negotiated, cols: config.cols || 80, rows: config.rows || 24, openDeferred: deferred });
           }
-          this._wireStream(sessionId, client, stream);
+          if (live) this._wireStream(sessionId, client, live);
           resolve(sessionId);
           if (!reconnect) detectAfterReady(logId);
         });
@@ -352,7 +354,11 @@ class SSHService {
   }
 
   _plainShell(client, shellOpts, lines, cb) {
-    client.shell(shellOpts, (err, stream) => {
+    /* Window and options apart: ssh2 takes a single object that has `env`
+       as the OPTIONS and opens the pty at its default 80x24 (every plain
+       shell, reconnects included, started at 80x24 that way) */
+    const { env, ...win } = shellOpts;
+    client.shell(win, { env: env || {} }, (err, stream) => {
       if (!err && stream) stream._termilabPreface = lines;
       cb(err, stream);
     });
@@ -362,7 +368,13 @@ class SSHService {
     /* Only a reconnect finds its entry here: a first connect adds it later */
     const entry = this.sessions.get(sessionId);
     const shellOpts = this._shellOpts(config, entry);
-    const plain = (lines) => this._plainShell(client, shellOpts, lines, cb);
+    /* A plain shell for a terminal that has not said its size yet (waitSize)
+       opens on its first resize, at that size: opened at 80x24 the shell
+       drew its first prompt for 80 columns in a wider xterm */
+    const deferPlain = !!config.waitSize && !(entry && entry.sized);
+    const plain = (lines) => (deferPlain
+      ? cb(null, { _termilabDeferred: (cols, rows, done) => this._plainShell(client, { ...shellOpts, cols, rows }, lines, done) })
+      : this._plainShell(client, shellOpts, lines, cb));
     (async () => {
       if (!this.keeperEnabled || !(await keeperService.wanted(config))) return plain(null);
       /* A slow server delays the shell, it never blocks it: past the cap the
@@ -627,6 +639,42 @@ class SSHService {
     return 'error';
   }
 
+  /* The deferred plain shell (see _openShell), at the terminal's first size */
+  _openDeferred(sessionId, cols, rows) {
+    const s = this.sessions.get(sessionId);
+    const open = s && s.openDeferred;
+    if (!open) return;
+    s.openDeferred = null;
+    s.opening = true;
+    const client = s.client;
+    try {
+      open(cols, rows, (err, stream) => {
+        s.opening = false;
+        if (this.sessions.get(sessionId) !== s || s.userClosed || s.client !== client) {
+          try { if (stream) stream.close(); } catch (_) { /* gone */ }
+          return;
+        }
+        if (err) {
+          this._send('ssh:data', sessionId, `\r\n\x1b[31m[Failed to open shell: ${err.message}]\x1b[0m\r\n`);
+          this._send('ssh:close', sessionId, { reason: 'error' });
+          this._cleanup(sessionId);
+          try { client.end(); } catch (_) { /* gone */ }
+          return;
+        }
+        s.stream = stream;
+        this._wireStream(sessionId, client, stream);
+        /* The size may have moved while the channel opened */
+        if (s.cols !== cols || s.rows !== rows) { try { stream.setWindow(s.rows, s.cols, 0, 0); } catch (_) { /* gone */ } }
+        const queued = s.preGo;
+        s.preGo = null;
+        if (queued) for (const d of queued) this.sendData(sessionId, d);
+      });
+    } catch (err) {
+      s.opening = false;
+      this._send('ssh:data', sessionId, `\r\n\x1b[31m[Failed to open shell: ${err.message}]\x1b[0m\r\n`);
+    }
+  }
+
   /* Let a waiting attach start (attachCommandWaiting): the pty already has
      the terminal's size, so the attach reads it and the shell never sees the
      placeholder. One newline, before anything the user types. */
@@ -711,6 +759,7 @@ class SSHService {
     connectionLogService.end(s.logId);
     s.logId = null;
     try { if (s.stream) s.stream.removeAllListeners(); } catch (_) { /* ignore */ }
+    s.openDeferred = null;
     try {
       s.client.removeAllListeners();
       s.client.on('error', () => {});   // a late socket error must not go unhandled
@@ -825,6 +874,12 @@ class SSHService {
   sendData(sessionId, data) {
     const session = this.sessions.get(sessionId);
     if (session && session.reconnecting) return;   // typed into a dead link: dropped
+    /* The plain shell opens on the first resize (_openDeferred): wait for it */
+    if (session && !session.stream && (session.openDeferred || session.opening)) {
+      const q = session.preGo || (session.preGo = []);
+      if (q.reduce((n, d) => n + d.length, 0) < 65536) q.push(data);
+      return;
+    }
     if (!session || !session.stream) {
       console.warn(`[SSHService] No active stream for session ${sessionId}`);
       return;
@@ -869,6 +924,7 @@ class SSHService {
     if (real) { session.cols = cols; session.rows = rows; session.sized = true; }
     /* The terminal is listening now (it resizes once its listeners exist) */
     if (session.hold) this._release(sessionId);
+    if (real && !session.stream && session.openDeferred) { this._openDeferred(sessionId, cols, rows); return; }
     if (!session.stream || !real) return;
     try {
       session.stream.setWindow(rows, cols, 0, 0);

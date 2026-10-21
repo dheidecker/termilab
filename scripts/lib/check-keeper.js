@@ -58,6 +58,8 @@
  *       reenvio al primer dato, _resyncSize, cubre el hueco de ms entre que el
  *       attach lee el tamano y escucha SIGWINCH; ese hueco no se puede forzar
  *       desde aqui. En local si: LK4i.)
+ *  KP26 keeper apagado + waitSize: el shell normal se abre en el primer
+ *       resize, a ese tamano (nunca 80x24); lo tecleado antes espera.
  */
 const assert = require('assert');
 const crypto = require('crypto');
@@ -743,6 +745,42 @@ async function seccionKeeper({ check, ROOT, handlers = null }) {
         const antes = vistos.slice(0, vistos.findIndex(l => / 80$/.test(l)));
         assert.ok(antes.length >= 1 && antes.every(l => / 123$/.test(l)), `antes del resize a 80 el shell vio: ${vistos.join(' | ')}`);
         await sshService.keeperEnd(s);
+      } finally { fs.rmSync(perfil, { force: true }); fs.rmSync(log, { force: true }); }
+    });
+
+    await check('KP26 sin keeper (shell normal) con waitSize: el shell se abre en el primer resize, a ese tamano; nunca ve 80x24', async () => {
+      const perfil = path.join(home, '.bash_profile');
+      const log = path.join(home, 'sizes.log');
+      fs.writeFileSync(perfil, `echo "START $(stty size)" >> ~/sizes.log\ntrap 'echo "WINCH $(stty size)" >> ~/sizes.log' WINCH\n`);
+      try { fs.rmSync(log, { force: true }); } catch (_) { /* no estaba */ }
+      const leer = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf-8').trim().split('\n') : []);
+      try {
+        const s = await sshService.connect({ ...base(sshd), sessionKey: clave(26), keepSessions: false, waitSize: true });
+        abiertas.push(s);
+        assert.ok(!sshService.sessions.get(s).keeper, 'uso el keeper');
+        await sleep(1500);
+        assert.deepStrictEqual(leer(), [], `el shell se abrio sin tamano: ${leer()}`);
+        sshService.sendData(s, 'echo PRE$((2+1))\r');
+        sshService.resize(s, 117, 33);
+        assert.ok(await pidDe(s, 'PLAIN'), `el shell no responde: ${JSON.stringify(texto(s).slice(-200))}`);
+        assert.ok(/PRE3/.test(texto(s)), 'lo tecleado antes del resize se perdio');
+        sshService.sendData(s, 'echo T26:$(stty size)\r');
+        let m = null;
+        await espera(() => (m = /T26:(\d+) (\d+)/.exec(texto(s))), 8000);
+        assert.strictEqual(m && `${m[2]}x${m[1]}`, '117x33');
+        sshService.resize(s, 70, 20);
+        await sleep(250);
+        sshService.sendData(s, 'echo U26:$(stty size)\r');
+        await espera(() => (m = /U26:(\d+) (\d+)/.exec(texto(s))), 8000);
+        assert.strictEqual(m && `${m[2]}x${m[1]}`, '70x20');
+        const vistos = leer();
+        assert.strictEqual(vistos[0], 'START 33 117', `nacio a: ${vistos.join(' | ')}`);
+        assert.ok(!vistos.some(l => / 80$/.test(l)), `vio 80 columnas: ${vistos.join(' | ')}`);
+        await sshService.disconnect(s);
+        /* Sin waitSize (arneses) el shell normal se abre enseguida, como antes */
+        const s2 = await conecta({ sessionKey: clave('26b'), keepSessions: false });
+        assert.ok(await pidDe(s2, 'PLAIN2'));
+        await sshService.disconnect(s2);
       } finally { fs.rmSync(perfil, { force: true }); fs.rmSync(log, { force: true }); }
     });
 
