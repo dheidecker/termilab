@@ -846,15 +846,15 @@ export default function TerminalView({ tab }) {
 
         if (adopt) {
           if (tab.ptySessionId) wireLocal(tab.ptySessionId, false);
-        } else (tab.spawnSize && !laidOut() ? Promise.resolve(tab.spawnSize) : whenLaidOut()).then((given) => {
-          if (disposed) return null;
+        } else (tab.spawnSize && !laidOut()
           /* Opened from the web mirror while this pane is hidden here: at the
              browser's size, not when (if ever) it is shown on the PC */
-          const at = given && !laidOut() ? given : null;
-          if (at) return window.electronAPI.localShell.spawn({ cols: at.cols, rows: at.rows, sessionKey: tab.sessionKey || tab.id });
-          fitNow();
-          return window.electronAPI.localShell.spawn({ cols: term.cols || 80, rows: term.rows || 24, sessionKey: tab.sessionKey || tab.id });
-        })
+          ? Promise.resolve().then(() => (disposed ? null : window.electronAPI.localShell.spawn({ cols: tab.spawnSize.cols, rows: tab.spawnSize.rows, sessionKey: tab.sessionKey || tab.id })))
+          : whenLaidOut().then(() => {
+            if (disposed) return null;
+            fitNow();
+            return window.electronAPI.localShell.spawn({ cols: term.cols || 80, rows: term.rows || 24, sessionKey: tab.sessionKey || tab.id });
+          }))
           .then((result) => {
             if (result === null) return;
             const realSessionId = result?.sessionId;
