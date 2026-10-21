@@ -1479,6 +1479,14 @@ async function main() {
     process.exit(failures ? 1 : 0);
   }
 
+  // TERMILAB_CHECK_ONLY=PC: solo el grafo + el selector de PC (tailscale falso, peers HTTPS locales)
+  if (process.env.TERMILAB_CHECK_ONLY === 'PC') {
+    await require('./lib/check-discovery').seccionDiscovery({ check, ROOT, handlers });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo PC)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // TERMILAB_CHECK_ONLY=KP: solo el grafo + la seccion KP (iterar sobre el keeper)
   if (process.env.TERMILAB_CHECK_ONLY === 'KP') {
     await require('./lib/check-keeper').seccionKeeper({ check, ROOT, handlers });
@@ -1524,6 +1532,8 @@ async function main() {
   await require('./lib/check-cli-install').seccionCliInstall({ check, ROOT, handlers });
   // ── TS. Acceso remoto por Tailscale (tailscale falso, nunca el real) ──
   await require('./lib/check-tailscale').seccionTailscale({ check, ROOT, handlers });
+  // ── PC. Selector de PC del espejo web: peers de la tailnet (falsos), web:peers ──
+  await require('./lib/check-discovery').seccionDiscovery({ check, ROOT, handlers });
 
   // ── R/A. Restaurar el espacio de trabajo; reconexion automatica ──
   await require('./lib/check-workspace').seccionWorkspace({ check, ROOT });

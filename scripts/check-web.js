@@ -68,6 +68,8 @@ fakeIpcMain.handle('store:get-groups', envelope(async () => []));
 fakeIpcMain.handle('store:save-host', envelope(async () => { throw new Error('should never run from the web'); }));
 fakeIpcMain.handle('sync:status', envelope(async () => { seen.syncCalled = true; return { token: 'x' }; }));
 fakeIpcMain.handle('web:status', envelope(async () => ({ enabled: true })));
+fakeIpcMain.handle('web:peers', envelope(async () => [{ name: 'test-pc', dnsName: 'pc.tail.ts.net', url: 'https://pc.tail.ts.net:7443/', self: true, version: '9.9.9' }]));
+fakeIpcMain.handle('web:enable', envelope(async () => { seen.webEnable = true; return {}; }));
 fakeIpcMain.handle('system:info', envelope(async (event, ...args) => ({ echo: args, platform: 'linux' })));
 fakeIpcMain.handle('ssh:connect', envelope(async (event, config) => { seen.connect = config; return { sessionId: 's1' }; }));
 fakeIpcMain.handle('attach:upload', envelope(async (event, sid, uploadId, items) => {
@@ -394,9 +396,24 @@ async function main() {
       assert.ok(!WEB_CHANNELS.has(ch), `${ch} no debe estar en la lista blanca`);
     }
     for (const ch of WEB_CHANNELS) {
+      if (ch === 'web:peers') continue;   // the one web:* allowed (WS22)
       assert.ok(!/^(sync|web|clipboard|dialog|sftp|port-forward|local-fs|keys):/.test(ch), ch);
       assert.ok(!/^store:(save|delete)-/.test(ch), ch);
     }
+  });
+
+  await check('WS22 web:peers (selector de PC) permitido; cualquier otro web:* sigue rechazado', async () => {
+    const r = await c.invoke('web:peers', []);
+    assert.strictEqual(r.ok, true, r.e);
+    assert.strictEqual(r.v.success, true);
+    assert.strictEqual(r.v.data[0].self, true);
+    assert.deepStrictEqual([...WEB_CHANNELS].filter(ch => ch.startsWith('web:')), ['web:peers']);
+    for (const ch of ['web:status', 'web:enable', 'web:disable', 'web:set-name', 'web:peers2', 'web:']) {
+      const x = await c.invoke(ch, []);
+      assert.strictEqual(x.ok, false, ch);
+      assert.ok(/not available/i.test(x.e), ch);
+    }
+    assert.ok(!seen.webEnable, 'web:enable corrio desde la web');
   });
 
   await check('WS9 fragmentacion + mascara: 3 fragmentos con un ping en medio; tambien sin mascara', async () => {

@@ -228,6 +228,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     enable: () => invoke('web:enable'),
     disable: () => invoke('web:disable'),
     setName: (name) => invoke('web:set-name', name),
+    /* [{name, dnsName, url, self, version}]: this PC + the other Termilabs of the tailnet */
+    peers: () => invoke('web:peers'),
   },
 
   // ─── Local filesystem (SFTP Local pane) ────────────────

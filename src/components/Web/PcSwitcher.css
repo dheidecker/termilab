@@ -1,0 +1,111 @@
+/* PC switcher (web mirror only). Colors come from the tokens in src/index.css,
+   so dark and light follow data-theme like the rest of the title bar. */
+.pc-switcher {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-left: var(--space-xs);
+  -webkit-app-region: no-drag;
+}
+
+.pc-switcher-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  height: 26px;
+  max-width: 220px;
+  padding: 0 var(--space-sm);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: background var(--transition-base), border-color var(--transition-base);
+}
+
+.pc-switcher-btn:hover {
+  background: var(--hover-overlay);
+  border-color: var(--border-primary);
+}
+
+.pc-switcher-btn:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.pc-switcher-label {
+  color: var(--text-tertiary);
+}
+
+.pc-switcher-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc-switcher-caret {
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.pc-switcher-menu {
+  position: absolute;
+  top: calc(100% + var(--space-xs));
+  left: 0;
+  z-index: 1000;
+  min-width: 220px;
+  max-width: 320px;
+  padding: var(--space-xs);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+.pc-switcher-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  width: 100%;
+  padding: var(--space-sm);
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+button.pc-switcher-item:hover,
+button.pc-switcher-item:focus-visible {
+  outline: none;
+  background: var(--hover-overlay);
+}
+
+.pc-switcher-item.current {
+  cursor: default;
+  background: var(--accent-subtle);
+}
+
+.pc-switcher-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc-switcher-item-meta {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+}
+
+.pc-switcher-empty {
+  padding: var(--space-sm);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}

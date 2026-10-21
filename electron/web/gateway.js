@@ -14,7 +14,7 @@
  *    browser asks. Kept out on purpose: sync:*, saves and deletes in the store,
  *    backups, keys material, clipboard:*, dialog:*, sftp:*, port-forward:*,
  *    local-fs:*, paths:*, cli:*, updater actions, window moves and window
- *    chrome, and any web:* channel.
+ *    chrome, and any web:* channel but web:peers (the PC switcher's list).
  *  - SECRET_FIELDS, stripped (at any depth) from everything that goes down
  *    the socket: replies and pushes. store:get-hosts returns passwords and
  *    passphrases to the desktop renderer; the browser never sees them.
@@ -56,6 +56,8 @@ const WEB_CHANNELS = new Set([
   'attach:save-local', 'attach:upload',
   // Read-only odds and ends
   'updater:version', 'system:info',
+  // The PC switcher: the ONLY web:* allowed (enable/disable/set-name stay out)
+  'web:peers',
 ]);
 
 /** Pushes never forwarded to a browser, even when the registry broadcasts them. */

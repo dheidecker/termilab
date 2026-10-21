@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import TabBar from '../TabBar/TabBar';
+import PcSwitcher from '../Web/PcSwitcher';
 import { MenuIcon } from '../Icons/icons';
 import { FEATURES } from '../../platform';
 import './Titlebar.css';
@@ -46,6 +47,7 @@ export default function Titlebar({ sidebarCollapsed = false, onToggleSidebar }) 
         >
           <MenuIcon />
         </button>
+        <PcSwitcher />
       </div>
 
       {/* Tabs live in the title bar; the empty space after them still drags the window */}

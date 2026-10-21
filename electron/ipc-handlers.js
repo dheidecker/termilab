@@ -606,6 +606,13 @@ function registerIpcHandlers(mainWindow) {
   ipcMain.handle('web:enable', wrapHandler(async () => remoteAccess.enable()));
   ipcMain.handle('web:disable', wrapHandler(async () => remoteAccess.disable()));
   ipcMain.handle('web:set-name', wrapHandler(async (event, name) => remoteAccess.setName(name)));
+  // The other Termilabs of this tailnet (PC switcher, the one web:* the browser
+  // may call: gateway.js). electron/web/discovery.js, cached ~60 s.
+  ipcMain.handle('web:peers', wrapHandler(async () => {
+    const ra = ((await storeService.getSettings()) || {}).remoteAccess || {};
+    const selfName = (typeof ra.hostName === 'string' && ra.hostName.trim()) || os.hostname();
+    return require('./web/discovery').peers({ selfName, selfVersion: app.getVersion() });
+  }));
 
   // ─── Images into a terminal (drag & drop, clipboard) ───
   // upload-service.js: saved to / uploaded into ~/.termilab/uploads, the
@@ -1222,7 +1229,7 @@ function removeIpcHandlers() {
     'logs:list', 'logs:clear',
     'agent:status', 'agent:logs', 'agent:clear-logs', 'agent:approval-response',
     'cli:status', 'cli:install', 'cli:uninstall',
-    'web:status', 'web:enable', 'web:disable', 'web:set-name',
+    'web:status', 'web:enable', 'web:disable', 'web:set-name', 'web:peers',
     'sftp:list', 'sftp:realpath', 'sftp:stat', 'sftp:mkdir', 'sftp:create-file',
     'sftp:rename', 'sftp:delete', 'sftp:chmod',
     'sftp:transfer-start', 'sftp:transfer-cancel',
