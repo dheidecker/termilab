@@ -133,6 +133,20 @@ export function RemoteAccessView({ state, busy, error, nameDraft, onNameChange, 
           )}
         </div>
       )}
+
+      {/* With remote access on, closing the window only hides it: this quits for real.
+          Desktop only (lifecycle is not exposed to the web or Android). */}
+      {typeof window !== 'undefined' && typeof window.electronAPI?.lifecycle?.quit === 'function' && (
+        <div className="settings-field">
+          <div className="settings-field-label">
+            <span>Quit Termilab</span>
+            <small>Closing the window keeps Termilab running for your browser. This stops it, and remote access with it.</small>
+          </div>
+          <button className="settings-test-btn" onClick={() => { window.electronAPI.lifecycle.quit().catch(() => {}); }}>
+            Quit Termilab
+          </button>
+        </div>
+      )}
     </div>
   );
 }

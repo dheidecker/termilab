@@ -412,7 +412,7 @@ function registerIpcHandlers(mainWindow) {
   ipcMain.handle('ssh:host-key-response', wrapHandler(async (event, payload) => {
     const { requestId, accept } = payload || {};
     if (typeof requestId !== 'string') throw new Error('requestId missing');
-    return await hostKeyService.respond(requestId, accept === true);
+    return await hostKeyService.respond(requestId, accept === true, event && event.sender);
   }));
 
   // ─── Known Hosts (local only, never synced) ───────────
@@ -819,6 +819,13 @@ function registerIpcHandlers(mainWindow) {
 
   // ─── Settings ─────────────────────────────────────────
 
+  /* Settings → Remote access: quit for real (closing the last window only
+     hides it while the web mirror is on). Not reachable from the web. */
+  ipcMain.handle('app:quit', wrapHandler(async () => {
+    setImmediate(() => { try { app.quit(); } catch (err) { console.error('[IPC] quit failed:', err.message); } });
+    return true;
+  }));
+
   ipcMain.handle('app:get-settings', wrapHandler(async () => {
     return await storeService.getSettings();
   }));
@@ -1222,7 +1229,7 @@ function removeIpcHandlers() {
     'logs:list', 'logs:clear',
     'agent:status', 'agent:logs', 'agent:clear-logs', 'agent:approval-response',
     'cli:status', 'cli:install', 'cli:uninstall',
-    'web:status', 'web:enable', 'web:disable', 'web:set-name',
+    'web:status', 'web:enable', 'web:disable', 'web:set-name', 'app:quit',
     'sftp:list', 'sftp:realpath', 'sftp:stat', 'sftp:mkdir', 'sftp:create-file',
     'sftp:rename', 'sftp:delete', 'sftp:chmod',
     'sftp:transfer-start', 'sftp:transfer-cancel',

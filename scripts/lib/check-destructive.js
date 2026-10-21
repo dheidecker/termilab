@@ -108,12 +108,12 @@ async function seccionDestructive({ check, ROOT }) {
     assert.deepStrictEqual([pay.client, pay.host, pay.category, pay.command.length, pay.timeoutMs], ['Claude Code', 'produccion', 'databases', big.length, 120000]);
     assert.deepStrictEqual(presented, [['A', pay.requestId]], 'present() no se llamo con la ventana elegida');
     assert.strictEqual(b.respond(pay.requestId, true, a.wc), true);
-    assert.deepStrictEqual(await p1, { approved: true, reason: 'approved' });
+    assert.deepStrictEqual(await p1, { approved: true, reason: 'approved', by: 'pc' });
     assert.strictEqual(b.respond(pay.requestId, true, a.wc), false, 'una respuesta repetida cuenta');
     const p2 = b.ask({ host: 'h', command: 'git reset --hard', category: 'projects' });
     await until(() => a.sent.length === 2);
     b.respond(a.sent[1][1].requestId, false, a.wc);
-    assert.deepStrictEqual(await p2, { approved: false, reason: 'blocked' });
+    assert.deepStrictEqual(await p2, { approved: false, reason: 'blocked', by: 'pc' });
     /* approve tiene que ser exactamente true */
     const p3 = b.ask({ host: 'h', command: 'x', category: 'projects' });
     await until(() => a.sent.length === 3);
