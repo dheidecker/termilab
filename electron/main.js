@@ -254,13 +254,31 @@ async function syncWebServer(identity) {
 
 /* While the web mirror is on, closing the last window hides it instead: the
    browser mirrors this renderer's tabs, and the app keeps running for it
-   (second-instance / dock click shows it again). */
+   (second-instance / dock click shows it again). macOS quits from its app
+   menu (Cmd+Q). Linux and Windows have no menu, so there the user is asked:
+   keep running (the default, also Escape) or quit. Settings → Remote access
+   has a Quit button too (app:quit). */
+let askingKeepRunning = false;
 function hideForWeb(win, event) {
   if (quitCleanupDone || !webServerActive()) return false;
   const others = [...windows].filter(w => w !== win && !w.isDestroyed() && w.isVisible());
   if (others.length > 0) return false;
   event.preventDefault();
-  win.hide();
+  if (process.platform === 'darwin') { win.hide(); return true; }
+  if (askingKeepRunning) return true;
+  askingKeepRunning = true;
+  const hide = () => { try { if (!win.isDestroyed()) win.hide(); } catch (_) { /* gone */ } };
+  Promise.resolve(dialog.showMessageBox(win, {
+    type: 'question',
+    buttons: ['Keep running for remote access', 'Quit Termilab'],
+    defaultId: 0,
+    cancelId: 0,
+    message: 'Keep Termilab running for remote access?',
+    detail: 'Remote access is on: your browser keeps using this computer while Termilab runs hidden. Open Termilab again to bring the window back.',
+  })).then(({ response }) => {
+    if (response === 1) app.quit();
+    else hide();
+  }).catch(hide).finally(() => { askingKeepRunning = false; });
   return true;
 }
 
@@ -628,6 +646,9 @@ module.exports = {
     confirmClose,
     setupAutoUpdater,
     onSecondInstance,
+    hideForWeb,
+    /* Stand-in web server for hideForWeb ({isRunning}) */
+    setWebServer: (srv) => { webServer = srv; },
     markLaunched: () => { launched = true; },
     state: () => ({ installingUpdate, relaunchAfterUpdate, relaunchArmed, relaunchScheduled, primaryInstance }),
   },

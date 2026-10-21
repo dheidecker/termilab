@@ -311,4 +311,4 @@ async function seccionCicloVida({ check, ROOT }) {
   });
 }
 
-module.exports = { seccionCicloVida };
+module.exports = { seccionCicloVida, cargaMain };

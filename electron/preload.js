@@ -232,6 +232,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     peers: () => invoke('web:peers'),
   },
 
+  // ─── App lifecycle (desktop only, never from the web) ─────
+  // quit(): really quit. With remote access on, closing the last window only hides it.
+  lifecycle: {
+    quit: () => invoke('app:quit'),
+  },
+
   // ─── Local filesystem (SFTP Local pane) ────────────────
   // Absolute paths; names are one segment; trash() uses the OS trash.
   localFs: {

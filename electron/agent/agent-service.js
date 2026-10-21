@@ -428,6 +428,8 @@ class AgentService {
       answer = { approved: false, reason: 'error' };
     }
     const entry = { ...this._logInfo(t), command, category: d.category, durationMs: Date.now() - t0, startedAt: new Date(t0).toISOString() };
+    /* Which client answered: 'pc' or 'web:<login>' (none on a timeout / no window) */
+    if (answer && typeof answer.by === 'string' && answer.by) entry.answeredBy = answer.by;
     if (answer && answer.approved === true) {
       await this.log.add({ tool: `${tool} (approved)`, ...entry, ok: true });
       return d;

@@ -15,6 +15,12 @@
  *                (timeout, connection gone) so the modal closes.
  * No window, a destroyed window, a timeout or a failed send all REJECT.
  *
+ * Where it is asked: the window that owns the connecting session (else the
+ * focused / first PC window) AND every web mirror client connected (virtual
+ * webContents, window-registry listVirtual()). The first answer wins; the
+ * other clients get the cancel {requestId, reason:'answered'} and a late
+ * answer is ignored.
+ *
  * Concurrent connections to the same host:port share one prompt when they saw
  * the same key; a different key waits for the first prompt and is re-decided
  * against the store afterwards (so an accept there usually settles it).
@@ -24,6 +30,7 @@
  */
 
 const crypto = require('crypto');
+const { isVirtualWc } = require('../window-registry');
 const storeService = require('./store-service');
 const { decide, hostKeyAlgorithms, hostKeyId, normalizeHost, normalizePort } = require('./known-hosts');
 
@@ -56,9 +63,22 @@ class HostKeyService {
     this.mainWindow = null;
   }
 
-  /** The webContents a new prompt for `sessionId` goes to, or null. */
+  /**
+   * The webContents a new prompt for `sessionId` goes to: the session's
+   * window (else the focused / first PC one), or null when there is none or
+   * the session's window closed (then nobody is asked at all).
+   */
   _target(sessionId) {
-    if (this.router) return this.router.windowForSession(sessionId || null);
+    if (this.router) {
+      const wc = this.router.windowForSession(sessionId || null);
+      /* A browser picked only as the fallback: a PC window is "the primary" */
+      if (wc && isVirtualWc(wc) && !(sessionId && this.router.ownerOf && this.router.ownerOf(sessionId) === wc)) {
+        const live = (this.router.liveWindows && this.router.liveWindows()) || [];
+        const pc = live.find(e => e && !isVirtualWc(e.wc) && this._windowAlive(e.wc));
+        if (pc) return pc.wc;
+      }
+      return wc;
+    }
     try {
       if (this.mainWindow && !this.mainWindow.isDestroyed()
         && this.mainWindow.webContents && !(this.mainWindow.webContents.isDestroyed?.())) {
@@ -66,6 +86,16 @@ class HostKeyService {
       }
     } catch (_) { /* gone */ }
     return null;
+  }
+
+  /** Every live web mirror client (none without a router). */
+  _virtuals() {
+    if (!this.router || typeof this.router.listVirtual !== 'function') return [];
+    try {
+      return (this.router.listVirtual() || []).map(e => e && e.wc).filter(wc => this._windowAlive(wc));
+    } catch (_) {
+      return [];
+    }
   }
 
   _windowAlive(target) {
@@ -226,7 +256,10 @@ class HostKeyService {
       resolve,
       promise,
       timer: null,
-      target,
+      /* The PC (or session) window, and every client it is shown in */
+      pc: target,
+      targets: new Set(),
+      answered: false,
     };
     this._pending.set(requestId, req);
     /* Not unref'd: a pending question must keep the process alive until it
@@ -234,17 +267,24 @@ class HostKeyService {
     req.timer = setTimeout(() => this._finish(requestId, false, 'timeout'), this.timeoutMs);
 
     const joined = this._join(req, hooks);
-    if (!this._send('ssh:host-key-prompt', payload, target)) {
-      this._finish(requestId, false, 'no-window');
+    for (const wc of [target, ...this._virtuals()]) {
+      if (req.targets.has(wc)) continue;
+      if (this._send('ssh:host-key-prompt', payload, wc)) req.targets.add(wc);
     }
+    if (!req.targets.size) this._finish(requestId, false, 'no-window');
     return joined;
   }
 
   /** Renderer's answer. Accepting stores (or, for 'changed', replaces) the key;
-      for 'new-key-type' it is added next to the other types. */
-  async respond(requestId, accept) {
+      for 'new-key-type' it is added next to the other types. Only a client
+      it was shown in may answer (`from`, the sender); the first answer wins. */
+  async respond(requestId, accept, from) {
     const req = this._pending.get(requestId);
-    if (!req) return false;
+    if (!req || req.answered) return false;
+    if (from !== undefined && from !== null && req.targets.size && !req.targets.has(from)) return false;
+    /* Decided: a second client, or the timer, cannot change it while the key is saved */
+    req.answered = true;
+    clearTimeout(req.timer);
     if (accept) {
       try {
         await storeService.saveKnownHost({
@@ -260,17 +300,24 @@ class HostKeyService {
         console.error('[HostKeyService] Could not save known host:', err.message);
       }
     }
-    this._finish(requestId, !!accept, accept ? 'accepted' : 'rejected');
+    this._finish(requestId, !!accept, accept ? 'accepted' : 'rejected', from || null);
     return true;
   }
 
-  _finish(requestId, accepted, why) {
+  _finish(requestId, accepted, why, from = null) {
     const req = this._pending.get(requestId);
     if (!req) return;
     this._pending.delete(requestId);
     clearTimeout(req.timer);
-    if (why !== 'accepted' && why !== 'rejected') {
-      this._send('ssh:host-key-prompt-cancel', { requestId, reason: why }, req.target);
+    const answered = why === 'accepted' || why === 'rejected';
+    /* The clients that did not answer close their dialog. An answer with no
+       sender (the harness) came from the only client, if there is just one. */
+    if (!(answered && !from && req.targets.size <= 1)) {
+      const cancel = answered ? { requestId, reason: 'answered' } : { requestId, reason: why };
+      for (const wc of req.targets) {
+        if (from && wc === from) continue;
+        this._send('ssh:host-key-prompt-cancel', cancel, wc);
+      }
     }
     req.resolve(accepted);
   }
@@ -289,13 +336,22 @@ class HostKeyService {
    */
   rejectFor(target) {
     for (const [id, req] of [...this._pending]) {
-      if (req.target !== target) continue;
-      const next = this._otherWindow(req, target);
-      if (!next) { this._finish(id, false, 'no-window'); continue; }
-      req.target = next;
-      clearTimeout(req.timer);
-      req.timer = setTimeout(() => this._finish(id, false, 'timeout'), this.timeoutMs);
-      if (!this._send('ssh:host-key-prompt', req.payload, next)) this._finish(id, false, 'no-window');
+      if (!req.targets.has(target)) continue;
+      req.targets.delete(target);
+      /* A browser just leaves; the session's window hands it on */
+      if (req.pc === target) {
+        req.pc = null;
+        const next = this._otherWindow(req, target);
+        if (next && !req.targets.has(next) && this._send('ssh:host-key-prompt', req.payload, next)) {
+          req.pc = next;
+          req.targets.add(next);
+          if (!req.answered) {
+            clearTimeout(req.timer);
+            req.timer = setTimeout(() => this._finish(id, false, 'timeout'), this.timeoutMs);
+          }
+        }
+      }
+      if (!req.targets.size && !req.answered) this._finish(id, false, 'no-window');
     }
   }
 

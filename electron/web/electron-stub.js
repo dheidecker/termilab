@@ -20,7 +20,7 @@
 (function (root) {
   'use strict';
 
-  var WEB_OMITTED = ['sftp', 'localFs', 'portForward', 'dialog', 'clipboard', 'claudeHistory', 'paths', 'cli', 'sync', 'knownHosts', 'logs', 'updater'];
+  var WEB_OMITTED = ['sftp', 'localFs', 'portForward', 'dialog', 'clipboard', 'claudeHistory', 'paths', 'cli', 'sync', 'knownHosts', 'logs', 'updater', 'lifecycle'];
 
   // ─── Binary values on the wire: {"$b": base64} ───────────
 
