@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
+    <!-- The CSP comes as a header from electron/web/server.js (no third-party
+         fonts here: the terminal font is bundled, Inter falls back to system). -->
+    <title>Termilab</title>
+    <!-- Served by electron/web/server.js: electron-stub.js + electron/preload.js.
+         A classic script, so window.electronAPI exists before any module runs. -->
+    <script src="./termilab-preload.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./entry.jsx"></script>
+  </body>
+</html>
