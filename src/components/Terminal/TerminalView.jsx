@@ -277,8 +277,14 @@ export default function TerminalView({ tab }) {
     };
     let lastSentSize = '';
     let sendSize = null;   // set once the session can take it
+    /* Another client (a viewer, window-registry.js) conducts this session's
+       size: {cols, rows} the pty has, which this xterm follows until the
+       user types here again. Null: this pane's own fit rules. */
+    let follow = null;
     const pushSize = (force = false) => {
       if (!sendSize || disposed || !laidOut()) return;
+      /* Following the conductor: its size is not ours to report */
+      if (follow && term.cols === follow.cols && term.rows === follow.rows) return;
       const key = `${term.cols}x${term.rows}`;
       if (!force && key === lastSentSize) return;
       lastSentSize = key;
@@ -321,6 +327,38 @@ export default function TerminalView({ tab }) {
         rows: term.rows,
         connected: connectedRef.current,
       })),
+      /* Another client joins this session: serialized IN the callback, so
+         nothing that arrives after the request is in it (main buffers that
+         for the viewer). A .then() would run after xterm parsed more. */
+      snapshotAt: () => new Promise((resolve, reject) => term.write('', () => {
+        try {
+          resolve({
+            data: serializeAddon.serialize({ scrollback: term.options.scrollback }),
+            cols: term.cols,
+            rows: term.rows,
+            connected: connectedRef.current,
+          });
+        } catch (err) { reject(err); }
+      })),
+      sessionId: () => sessionIdRef.current || null,
+    });
+    /* The pty's size changed because another client conducts it: this xterm
+       follows, without refitting (that would fight it). The next key typed
+       here makes this client the conductor again (main applies its size) and
+       the pane fits itself back. */
+    const sizeListener = window.electronAPI?.session?.onSize?.((p) => {
+      if (disposed || !p || p.sessionId !== sessionIdRef.current) return;
+      const { cols, rows } = p;
+      if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols <= 0 || rows <= 0) return;
+      if (cols === term.cols && rows === term.rows) { follow = null; return; }
+      follow = { cols, rows };
+      try { term.resize(cols, rows); } catch (_) { /* disposed */ }
+    }) || null;
+    const followKey = term.onKey(() => {
+      if (!follow) return;
+      follow = null;
+      try { fitAddon.fit(); } catch (_) { /* not laid out */ }
+      pushSize(true);
     });
 
     /* ─── Attention: bell mark, agent chime, desktop notification ───
@@ -934,6 +972,7 @@ export default function TerminalView({ tab }) {
 
     /* ResizeObserver for auto-fit (an adopted screen: once it is written) */
     const ro = new ResizeObserver(() => {
+      if (follow) return;   // another client conducts the size (see sizeListener)
       try { fitAddon.fit(); } catch (e) { /* ignore */ }
       /* Shown at last (a tab restored hidden), or at a size equal to the
          placeholder: nothing resized, but the pty has not heard it yet */
@@ -993,6 +1032,8 @@ export default function TerminalView({ tab }) {
       disposed = true;
       detachPaths();
       if (reconnectListener) window.electronAPI?.ssh?.removeReconnectListener?.(reconnectListener);
+      if (sizeListener) window.electronAPI?.session?.offEvents?.(sizeListener);
+      followKey.dispose();
       clearTimeout(scanTimer);
       if (term.textarea) term.textarea.removeEventListener('keydown', onKey);
       unregister();

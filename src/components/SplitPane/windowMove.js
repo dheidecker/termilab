@@ -24,10 +24,44 @@ const api = () => (typeof window !== 'undefined' ? window.electronAPI?.window : 
 /* ── Terminals of this window, by tab id (TerminalView registers its own) ── */
 const terminals = new Map();
 
-/** entry = { snapshot(): Promise<{data, cols, rows, connected}> } */
+/**
+ * entry = {
+ *   snapshot(): Promise<{data, cols, rows, connected}>   (a move: main is buffering)
+ *   snapshotAt(): Promise<same>   serialized INSIDE xterm's write callback,
+ *                                 i.e. exactly at this point of its queue
+ *                                 (a join: main keeps sending meanwhile)
+ *   sessionId(): string|null      the live session it shows
+ * }
+ */
 export function registerTerminal(tabId, entry) {
   terminals.set(tabId, entry);
+  ensureJoinListener();
   return () => { if (terminals.get(tabId) === entry) terminals.delete(tabId); };
+}
+
+/* ── Another client joins a session this window owns (window-registry.js:
+   join). Main pushes 'session:snapshot-request' right behind every byte it
+   already sent us, and buffers what comes after for the viewer. So the
+   screen must be taken at the request's place in the stream: snapshotAt()
+   queues an empty write NOW (behind the data already received) and
+   serializes in its callback, before xterm parses anything that arrives
+   later. No terminal for it, or a failure: null, and the viewer goes on
+   without history. ── */
+const sessionApi = () => (typeof window !== 'undefined' ? window.electronAPI?.session : null);
+let joinListener = null;
+function ensureJoinListener() {
+  const s = sessionApi();
+  if (joinListener || !s?.onSnapshotRequest) return;
+  joinListener = s.onSnapshotRequest(({ joinId, sessionId } = {}) => {
+    if (!joinId) return;
+    let entry = null;
+    for (const t of terminals.values()) {
+      try { if (t.sessionId && t.sessionId() === sessionId) { entry = t; break; } } catch (_) { /* gone */ }
+    }
+    const answer = (snap) => s.snapshot(joinId, snap).catch(() => {});
+    if (!entry || !entry.snapshotAt) { answer(null); return; }
+    entry.snapshotAt().then(answer, () => answer(null));
+  });
 }
 
 /* ── Sessions an SFTP pane of this window borrows from a terminal tab ──
