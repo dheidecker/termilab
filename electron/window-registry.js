@@ -588,6 +588,7 @@ class WindowRegistry {
       this._conductor.delete(sessionId);
       /* The pty goes back to whoever conducts now (the owner) */
       this._conduct(sessionId);
+      this._announceConductor(sessionId);
     }
     return true;
   }
@@ -687,7 +688,23 @@ class WindowRegistry {
     if (!wc) return;
     const was = this.conductorOf(sessionId);
     this._conductor.set(sessionId, wc);
-    if (was !== wc) this._conduct(sessionId);
+    if (was !== wc) {
+      this._conduct(sessionId);
+      this._announceConductor(sessionId);
+    }
+  }
+
+  /* Every client of the session learns whether it conducts now
+     ('session:conductor' {sessionId, conducting}). The renderer applies an
+     OSC 52 copy only while it conducts, so the PC and a browser never fight
+     over the clipboard. A client sets itself back to conducting when it
+     types (it knows before main does). */
+  _announceConductor(sessionId) {
+    const c = this.conductorOf(sessionId);
+    const owner = this._owners.get(sessionId);
+    const clients = new Set(this.viewersOf(sessionId));
+    if (owner && this._windows.has(owner)) clients.add(owner);
+    for (const wc of clients) this.sendTo(wc, 'session:conductor', { sessionId, conducting: wc === c });
   }
 
   /* The pty to the conductor's own size, if it differs */

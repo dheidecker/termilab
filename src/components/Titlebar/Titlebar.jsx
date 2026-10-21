@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import TabBar from '../TabBar/TabBar';
 import PcSwitcher from '../Web/PcSwitcher';
+import FullscreenButton from '../Web/FullscreenButton';
 import { MenuIcon } from '../Icons/icons';
-import { FEATURES } from '../../platform';
+import { FEATURES, IS_WEB } from '../../platform';
 import './Titlebar.css';
 
 const api = () => window.electronAPI;
@@ -11,7 +12,9 @@ const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 /* On macOS the window keeps its native traffic lights (main.js sets
    titleBarStyle: 'hidden'), so drawing our own controls would show two sets at
    once. We hide ours and leave room on the left for the system's. */
-const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
+/* In the web mirror electronAPI.platform is the PC's OS, and a browser has no
+   traffic lights to leave room for. */
+const isMac = !IS_WEB && typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
 /* Android: no window controls at all (the activity owns the window, and the
    shim has no `window` namespace). */
 const ownControls = !isMac && FEATURES.windowControls;
@@ -52,6 +55,8 @@ export default function Titlebar({ sidebarCollapsed = false, onToggleSidebar }) 
 
       {/* Tabs live in the title bar; the empty space after them still drags the window */}
       <TabBar />
+
+      {IS_WEB && <FullscreenButton />}
 
       {ownControls && <div className="titlebar-controls">
         <button className="titlebar-btn" onClick={handleMinimize} aria-label="Minimize">

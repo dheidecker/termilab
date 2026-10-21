@@ -23,7 +23,8 @@ import { useMirrorSource } from './components/Mirror/mirror';
 import HostKeyPrompt from './components/HostKeyPrompt/HostKeyPrompt';
 import AgentApproval from './components/AgentApproval/AgentApproval';
 import UpdateNotification from './components/UpdateNotification/UpdateNotification';
-import { FEATURES, IS_ANDROID } from './platform';
+import { FEATURES, IS_ANDROID, IS_WEB } from './platform';
+import { webShortcutAction } from './components/Web/webKeys';
 import { useBackFallback } from './hooks/useBackHandler';
 import MobileNav, { MORE_SECTIONS } from './components/Mobile/MobileNav';
 import MobileScreen, { MobileTopBar } from './components/Mobile/MobileScreen';
@@ -110,9 +111,44 @@ function AppContent() {
     return false;
   });
 
-  /* ─── Global Keyboard Shortcuts ─── */
+  /* ─── Global Keyboard Shortcuts ───
+     In the web mirror the browser keeps Ctrl+W / Ctrl+T / Ctrl+N / Ctrl+Tab
+     (they never reach the page), so the same actions also answer to Alt+Shift
+     there (components/Web/webKeys.js). In full screen with the keyboard
+     locked Ctrl+T and Ctrl+Tab arrive and work as on the desktop; Ctrl+W
+     never closes a tab in the browser: it goes to the shell (delete word). */
   useEffect(() => {
+    const closeActive = () => {
+      if (!activeTabId) return;
+      const tab = tabs.find(t => t.id === activeTabId);
+      /* A split tab closes all its panes, like its × in the tab bar */
+      const members = isTerminalTab(tab) ? memberTabs({ tabs, layouts }, activeTabId) : (tab ? [tab] : []);
+      if (!confirmCloseSessions(members, groupLabel(members).label)) return;
+      if (!confirmCloseSftp(tab)) return;
+      planKeeperClose(members).then((plan) => {
+        if (!plan) return;
+        endSessions(members, disconnectSession, plan);
+        removeTab(members.map(t => t.id));
+      });
+    };
+    /* The home tab (null) comes first */
+    const cycle = (step) => {
+      const order = [null, ...tabs.filter(t => !t.hidden).map(t => t.id)];
+      const current = tabs.some(t => t.id === activeTabId) ? activeTabId : null;
+      const idx = order.indexOf(current);
+      setActiveTab(order[(idx + step + order.length) % order.length]);
+    };
     const handler = (e) => {
+      if (IS_WEB) {
+        const action = webShortcutAction(e);
+        if (action) {
+          e.preventDefault();
+          if (action === 'newTab') { if (FEATURES.localTerminal) openLocalTerminal(); }
+          else if (action === 'closeTab') closeActive();
+          else cycle(action === 'nextTab' ? 1 : -1);
+          return;
+        }
+      }
       // Ctrl+T → New local terminal
       if (e.ctrlKey && !e.shiftKey && e.key === 't' && FEATURES.localTerminal) {
         e.preventDefault();
@@ -126,32 +162,32 @@ function AppContent() {
       // Ctrl+W → Close active tab (the home tab has no id and never closes)
       if (e.ctrlKey && !e.shiftKey && e.key === 'w') {
         e.preventDefault();
-        if (activeTabId) {
-          const tab = tabs.find(t => t.id === activeTabId);
-          /* A split tab closes all its panes, like its × in the tab bar */
-          const members = isTerminalTab(tab) ? memberTabs({ tabs, layouts }, activeTabId) : (tab ? [tab] : []);
-          if (!confirmCloseSessions(members, groupLabel(members).label)) return;
-          if (!confirmCloseSftp(tab)) return;
-          planKeeperClose(members).then((plan) => {
-            if (!plan) return;
-            endSessions(members, disconnectSession, plan);
-            removeTab(members.map(t => t.id));
-          });
-        }
+        if (!IS_WEB) closeActive();
       }
-      // Ctrl+Tab / Ctrl+Shift+Tab → cycle tabs; the home tab (null) comes first
+      // Ctrl+Tab / Ctrl+Shift+Tab → cycle tabs
       if (e.ctrlKey && e.key === 'Tab') {
         e.preventDefault();
-        const order = [null, ...tabs.filter(t => !t.hidden).map(t => t.id)];
-        const current = tabs.some(t => t.id === activeTabId) ? activeTabId : null;
-        const idx = order.indexOf(current);
-        const step = e.shiftKey ? -1 : 1;
-        setActiveTab(order[(idx + step + order.length) % order.length]);
+        cycle(e.shiftKey ? -1 : 1);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [tabs, layouts, activeTabId, openLocalTerminal, setActiveTab, removeTab, disconnectSession, newWindow]);
+
+  /* Web: closing or reloading the browser tab with terminals open asks
+     first. Nothing ends on the PC either way (the browser only mirrors), but
+     a stray Ctrl+W meant for the shell should not drop the view. */
+  const hasTerminals = IS_WEB && tabs.some(t => isTerminalTab(t));
+  useEffect(() => {
+    if (!hasTerminals) return undefined;
+    const onBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [hasTerminals]);
 
   if (loading) {
     return (

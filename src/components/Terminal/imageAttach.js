@@ -16,6 +16,7 @@
  */
 import { DRAG_MIME } from '../SplitPane/dragState';
 import { liveSessionId } from '../SplitPane/sessions';
+import { IS_WEB } from '../../platform';
 
 export const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
@@ -70,6 +71,27 @@ export function refusal(items) {
 
 let seq = 0;
 
+/* Web mirror: every call is one WebSocket message, base64'd (4/3 the
+   bytes), and the PC refuses one over 32 MB (electron/web/server.js
+   MAX_MESSAGE). A browser File has no path on the PC, so all of it travels
+   as bytes: the items go in groups that stay under the frame, a 20 MB image
+   (MAX_BYTES) alone. On the desktop IPC has no such limit: one call. */
+export const WEB_BATCH_BYTES = 22 * 1024 * 1024;
+export function batches(items, sizeOf, limit = WEB_BATCH_BYTES) {
+  const out = [];
+  let cur = [];
+  let total = 0;
+  for (const it of items) {
+    const n = sizeOf(it);
+    if (cur.length && total + n > limit) { out.push(cur); cur = []; total = 0; }
+    cur.push(it);
+    total += n;
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
+const groups = (items) => (IS_WEB ? batches(items, it => it.size || 0) : [items]);
+
 /**
  * Attach `items` (File objects, or {png, mime, name} from the clipboard) to
  * the terminal of `tab`: save/upload as needed, then type their paths in
@@ -97,24 +119,37 @@ export async function attachImages(term, tab, rawItems, { onStatus = () => {}, p
       let saved = [];
       if (toSave.length) {
         onStatus({ text: `Saving ${toSave.length === 1 ? toSave[0].name : `${toSave.length} images`}…`, kind: 'progress' });
-        saved = await a.saveLocal(await Promise.all(toSave.map(async it => ({ data: await bytesOf(it), name: it.name }))));
+        for (const group of groups(toSave)) {
+          const got = await a.saveLocal(await Promise.all(group.map(async it => ({ data: await bytesOf(it), name: it.name }))));
+          if (!Array.isArray(got) || got.length !== group.length) throw new Error('Could not attach the image');
+          saved = saved.concat(got);
+        }
       }
       let k = 0;
       paths = items.map(it => it.path || saved[k++]);
     } else {
       const sid = liveSessionId(tab);
       if (!sid) throw new Error('This terminal is not connected');
-      const uploadId = `up-${Date.now()}-${++seq}`;
-      const label = (p) => (p.count > 1 ? `${p.name} (${p.index + 1}/${p.count})` : p.name);
+      /* One upload id per call; `before` = images already sent by earlier
+         calls, so the label counts over the whole set */
+      const ids = new Map();   // uploadId -> before
+      const label = (p, before) => (items.length > 1 ? `${p.name} (${before + p.index + 1}/${items.length})` : p.name);
       const listener = a.onProgress((p) => {
-        if (!p || p.uploadId !== uploadId) return;
+        if (!p || !ids.has(p.uploadId)) return;
         const pct = p.total ? Math.floor((p.sent / p.total) * 100) : 0;
-        onStatus({ text: `Uploading ${label(p)}… ${pct}%`, kind: 'progress' });
+        onStatus({ text: `Uploading ${label(p, ids.get(p.uploadId))}… ${pct}%`, kind: 'progress' });
       });
       onStatus({ text: `Uploading ${items.length === 1 ? items[0].name : `${items.length} images`}…`, kind: 'progress' });
       try {
-        const payload = await Promise.all(items.map(async it => (it.path ? { path: it.path } : { data: await bytesOf(it), name: it.name })));
-        paths = await a.upload(sid, uploadId, payload);
+        paths = [];
+        for (const group of groups(items)) {
+          const uploadId = `up-${Date.now()}-${++seq}`;
+          ids.set(uploadId, paths.length);
+          const payload = await Promise.all(group.map(async it => (it.path ? { path: it.path } : { data: await bytesOf(it), name: it.name })));
+          const got = await a.upload(sid, uploadId, payload);
+          if (!Array.isArray(got) || got.length !== group.length) throw new Error('Could not attach the image');
+          paths = paths.concat(got);
+        }
       } finally {
         a.offProgress(listener);
       }

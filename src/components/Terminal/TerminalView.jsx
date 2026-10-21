@@ -28,6 +28,7 @@ import '../Keeper/Keeper.css';
 import { showToast } from '../Keeper/toast';
 import { attachImages, canAttach, isFilesDrag } from './imageAttach';
 import Composer, { ComposeButton } from './Composer';
+import { isWebAppShortcut } from '../Web/webKeys';
 import { attachPathLinks } from './pathLinkProvider';
 import { terminalFontFamily } from './fontStack';
 
@@ -62,6 +63,9 @@ export default function TerminalView({ tab }) {
   const [hasSelection, setHasSelection] = useState(false);
   /* "Copied" hint on the pane (time of the last copy; 0 = hidden) */
   const [copiedAt, setCopiedAt] = useState(0);
+  /* Web: an OSC 52 copy the browser refused (no user gesture), waiting for
+     a click on the "Click to copy" hint ({ text, at }) */
+  const [clickToCopy, setClickToCopy] = useState(null);
   /* A multi-line paste waiting for "Paste N lines?" ({ lines, resolve }) */
   const [pasteAsk, setPasteAsk] = useState(null);
   const askPasteRef = useRef(null);
@@ -361,6 +365,16 @@ export default function TerminalView({ tab }) {
       follow = { cols, rows };
       try { term.resize(cols, rows); } catch (_) { /* disposed */ }
     }) || null;
+    /* OSC 52 copies apply only in the client that typed last in this
+       session (main: 'session:conductor'), so the PC and a browser never
+       fight over the clipboard. A browser pane joins as a viewer: the PC
+       conducts until the browser types. Typing or clicking here takes it
+       back at once (main agrees as soon as the input arrives). */
+    let conducting = !(IS_WEB && tab.mirror);
+    const conductorListener = window.electronAPI?.session?.onConductor?.((p) => {
+      if (disposed || !p || p.sessionId !== sessionIdRef.current) return;
+      conducting = !!p.conducting;
+    }) || null;
     const followKey = term.onKey(() => {
       if (!follow) return;
       follow = null;
@@ -555,9 +569,16 @@ export default function TerminalView({ tab }) {
         text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
       } catch (_) { return true; }
       if (!text) return true;
+      /* Another client (the PC, or a browser) typed last: the copy is its */
+      if (!conducting) return true;
       const clipboard = /[cs0-7]/.test(targets) || !/p/.test(targets);
       const selection = /p/.test(targets);
-      writeClipboardText(text, { clipboard, selection }).then((ok) => { if (ok && !disposed) setCopiedAt(Date.now()); }).catch(() => {});
+      writeClipboardText(text, { clipboard, selection }).then((ok) => {
+        if (disposed) return;
+        if (ok) setCopiedAt(Date.now());
+        /* A browser refuses writeText without a recent user gesture: offer a click */
+        else if (IS_WEB && clipboard) setClickToCopy({ text, at: Date.now() });
+      }).catch(() => {});
       return true;
     });
 
@@ -590,14 +611,14 @@ export default function TerminalView({ tab }) {
        on the document, since a drag may end outside the pane. */
     let lastSelected = '';
     let selecting = false;
-    const onSelectStart = (e) => { if (e.button === 0) selecting = true; };
+    const onSelectStart = (e) => { conducting = true; if (e.button === 0) selecting = true; };
     const onSelectEnd = (e) => {
       if (e.button !== 0 || !selecting) return;
       selecting = false;
       setTimeout(() => {
         if (disposed || !term.hasSelection()) return;
         const onSelect = (termSettingsRef.current || {}).copyOnSelect !== false;
-        if (!onSelect && PLATFORM !== 'linux') return;
+        if (!onSelect && (IS_WEB || PLATFORM !== 'linux')) return;
         const text = term.getSelection();
         if (!text || text === lastSelected) return;
         lastSelected = text;
@@ -613,7 +634,10 @@ export default function TerminalView({ tab }) {
     let afterDeadKey = false;
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown') return true;
+      conducting = true;
       if (ev.key === 'Dead') { afterDeadKey = true; return true; }
+      /* Web: the app's Alt+Shift shortcuts (App.jsx) are not for the shell */
+      if (IS_WEB && isWebAppShortcut(ev)) return false;
       /* Shift+Enter → ESC CR (Meta+Enter): a newline without sending in
          Claude Code, Codex and other agent prompts — what their own
          /terminal-setup configures in terminals that don't do it. */
@@ -698,12 +722,21 @@ export default function TerminalView({ tab }) {
       doPaste('selection');
     };
     const onMiddleUp = (e) => { if (e.button === 1 && !mouseIsApps(e)) e.preventDefault(); };
+    /* Web: a browser has no PRIMARY to read, and pasting the clipboard on a
+       stray wheel press could run commands: middle-click does nothing (it
+       is swallowed, so a Linux browser cannot paste its own PRIMARY into
+       the textarea either). A program that took the mouse still gets it. */
+    const onMiddleWeb = (e) => { if (e.button === 1 && !mouseIsApps(e)) e.preventDefault(); };
     const wrapperEl = containerRef.current;
     if (!IS_ANDROID) {
       wrapperEl.addEventListener('contextmenu', onContextMenu);
       wrapperEl.addEventListener('mousedown', onSelectStart, true);
       document.addEventListener('mouseup', onSelectEnd);
-      if (PLATFORM === 'linux') {
+      if (IS_WEB) {
+        wrapperEl.addEventListener('mousedown', onMiddleWeb, true);
+        wrapperEl.addEventListener('mouseup', onMiddleWeb, true);
+        wrapperEl.addEventListener('auxclick', onMiddleWeb, true);
+      } else if (PLATFORM === 'linux') {
         wrapperEl.addEventListener('mousedown', onMiddleDown, true);
         wrapperEl.addEventListener('mouseup', onMiddleUp, true);
         wrapperEl.addEventListener('auxclick', onMiddleUp, true);
@@ -1130,6 +1163,7 @@ export default function TerminalView({ tab }) {
       if (mirrorCleanup) mirrorCleanup();
       if (reconnectListener) window.electronAPI?.ssh?.removeReconnectListener?.(reconnectListener);
       if (sizeListener) window.electronAPI?.session?.offEvents?.(sizeListener);
+      if (conductorListener) window.electronAPI?.session?.offEvents?.(conductorListener);
       followKey.dispose();
       clearTimeout(scanTimer);
       if (term.textarea) term.textarea.removeEventListener('keydown', onKey);
@@ -1146,6 +1180,9 @@ export default function TerminalView({ tab }) {
       wrapperEl.removeEventListener('mousedown', onMiddleDown, true);
       wrapperEl.removeEventListener('mouseup', onMiddleUp, true);
       wrapperEl.removeEventListener('auxclick', onMiddleUp, true);
+      wrapperEl.removeEventListener('mousedown', onMiddleWeb, true);
+      wrapperEl.removeEventListener('mouseup', onMiddleWeb, true);
+      wrapperEl.removeEventListener('auxclick', onMiddleWeb, true);
       if (term.textarea) {
         term.textarea.removeEventListener('focus', seen);
         term.textarea.removeEventListener('keydown', seen);
@@ -1179,6 +1216,13 @@ export default function TerminalView({ tab }) {
     ask.resolve(ok);
   };
   useEffect(() => () => { if (pasteAskRef.current) pasteAskRef.current.resolve(false); }, []);
+
+  /* "Click to copy" waits a few seconds, then the copy is dropped */
+  useEffect(() => {
+    if (!clickToCopy) return undefined;
+    const t = setTimeout(() => setClickToCopy(null), 8000);
+    return () => clearTimeout(t);
+  }, [clickToCopy]);
 
   /* The "Copied" hint goes away by itself */
   useEffect(() => {
@@ -1453,6 +1497,20 @@ export default function TerminalView({ tab }) {
       {composer}
 
       {copiedAt > 0 && <div className="terminal-copied-hint" key={copiedAt} role="status">Copied</div>}
+      {clickToCopy && !copiedAt && (
+        <button
+          type="button"
+          className="terminal-copied-hint terminal-click-copy"
+          key={clickToCopy.at}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            const { text } = clickToCopy;
+            setClickToCopy(null);
+            writeClipboardText(text).then((ok) => { if (ok) setCopiedAt(Date.now()); }).catch(() => {});
+            termRef.current?.focus();
+          }}
+        >Click to copy</button>
+      )}
       {pasteAsk && (
         <div
           className="terminal-paste-confirm"

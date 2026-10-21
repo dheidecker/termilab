@@ -109,3 +109,34 @@ button.pc-switcher-item:focus-visible {
   color: var(--text-secondary);
   font-size: var(--font-size-sm);
 }
+
+/* Full screen toggle (web mirror only), at the right end of the title bar */
+.web-fullscreen-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 26px;
+  margin: 0 var(--space-xs);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background var(--transition-base), color var(--transition-base);
+}
+
+.web-fullscreen-btn svg { width: 15px; height: 15px; }
+
+.web-fullscreen-btn:hover {
+  background: var(--hover-overlay);
+  color: var(--text-primary);
+}
+
+.web-fullscreen-btn:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
+}

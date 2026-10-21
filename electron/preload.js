@@ -587,11 +587,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('session:size', listener);
       return listener;
     },
+    /* {sessionId, conducting}: whether this client is the one that typed
+       last in that session (OSC 52 copies apply only there) */
+    onConductor: (cb) => {
+      const listener = (event, payload) => cb(payload);
+      ipcRenderer.on('session:conductor', listener);
+      return listener;
+    },
     offEvents: (listener) => {
       if (!listener) return;
       ipcRenderer.removeListener('session:snapshot-request', listener);
       ipcRenderer.removeListener('session:join-screen', listener);
       ipcRenderer.removeListener('session:size', listener);
+      ipcRenderer.removeListener('session:conductor', listener);
     },
   },
 
