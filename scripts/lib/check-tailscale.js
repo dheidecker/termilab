@@ -20,10 +20,11 @@
  *  TS12 si Termilab muere (kill -9), serve-guard mata a serve.
  *  TS13 el hijo cae: se reintenta con backoff y el error queda visible.
  *  TS14 arranque: enabled + Tailscale ya no esta → enabled:false, nada lanzado.
- *  TS15 saveSettings no toca remoteAccess; set-name valida; socket dir 0700.
+ *  TS15 saveSettings no toca remoteAccess; set-name valida; destino TCP port+1.
  *  TS16 canales web:* registrados y por el sobre de wrapHandler.
  *  TS17 el servidor web (syncServer) sigue a enable / resume / disable.
  *  TS19 argv del boton Allow (operator por pkexec).
+ *  TS20 tailscaled que no es root → tailscaled-not-root, nada servido.
  *  TS18 fuera de Linux (process.platform simulado): unsupported-platform,
  *       enable rechazado en main, resume apaga, nunca serve ni servidor.
  *
@@ -98,8 +99,6 @@ async function seccionTailscale({ check, ROOT, handlers }) {
   const log = path.join(dir, 'calls.log');
   fs.writeFileSync(fakeJs, FAKE);
   fs.writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${fakeJs}" "$@"\n`, { mode: 0o755 });
-  const userData = path.join(dir, 'userData');
-  fs.mkdirSync(userData);
 
   const saved = { bin: process.env.TERMILAB_TAILSCALE_BIN, c: process.env.FAKE_TS_CASE, log: process.env.FAKE_TS_LOG };
   process.env.TERMILAB_TAILSCALE_BIN = bin;
@@ -110,7 +109,8 @@ async function seccionTailscale({ check, ROOT, handlers }) {
   const serveRuns = () => calls().filter(x => x.args[0] === 'serve' && x.args[1] !== 'status' && !x.args.includes('off'));
   const allCalls = [];
   const keep = () => { allCalls.push(...calls()); };
-  remote.configure({ userData, backoffMs: [150] });
+  /* tailscaled como root, sin depender de la maquina (TS20 prueba el otro caso) */
+  remote.configure({ backoffMs: [150], tailscaledUid: () => 0 });
 
   await check('TS1 ubicacion del binario: PATH en Linux, rutas de Mac/Windows, variable de entorno', () => {
     const none = () => false;
@@ -131,7 +131,7 @@ async function seccionTailscale({ check, ROOT, handlers }) {
       const s = await ts.status();
       assert.strictEqual(s.installed, false);
       assert.strictEqual(s.reason, 'not-installed');
-      await assert.rejects(ts.enable({ port: 7443, target: 'unix:/tmp/x.sock' }), e => e.code === 'not-installed');
+      await assert.rejects(ts.enable({ port: 7443, target: 'http://127.0.0.1:7444' }), e => e.code === 'not-installed');
     } finally { process.env.TERMILAB_TAILSCALE_BIN = bin; }
   });
 
@@ -156,7 +156,7 @@ async function seccionTailscale({ check, ROOT, handlers }) {
     useCase('tagged');
     const s = await ts.status();
     assert.deepStrictEqual([s.tagged, s.reason], [true, 'tagged']);
-    await assert.rejects(ts.enable({ port: 7443, target: 'unix:/tmp/x.sock' }), e => e.code === 'tagged');
+    await assert.rejects(ts.enable({ port: 7443, target: 'http://127.0.0.1:7444' }), e => e.code === 'tagged');
     assert.strictEqual(serveRuns().length, 0, 'lanzo serve con un equipo con tags');
     keep();
   });
@@ -180,7 +180,7 @@ async function seccionTailscale({ check, ROOT, handlers }) {
 
   await check('TS8 Funnel activo en el puerto → funnel-on, sin lanzar serve', async () => {
     useCase('funnel');
-    await assert.rejects(ts.enable({ port: 7443, target: 'unix:/tmp/x.sock' }), e => e.code === 'funnel-on');
+    await assert.rejects(ts.enable({ port: 7443, target: 'http://127.0.0.1:7444' }), e => e.code === 'funnel-on');
     assert.strictEqual(serveRuns().length, 0);
     const st = await remote.enable();
     assert.strictEqual(st.error && st.error.code, 'funnel-on');
@@ -190,10 +190,10 @@ async function seccionTailscale({ check, ROOT, handlers }) {
 
   await check('TS9 puerto ocupado por otro → port-busy, sin lanzar serve', async () => {
     useCase('busy');
-    await assert.rejects(ts.enable({ port: 7443, target: 'unix:/tmp/x.sock' }), e => e.code === 'port-busy');
+    await assert.rejects(ts.enable({ port: 7443, target: 'http://127.0.0.1:7444' }), e => e.code === 'port-busy');
     assert.strictEqual(serveRuns().length, 0);
     // y disable no apaga lo ajeno
-    const r = await ts.disable({ port: 7443, target: 'unix:/tmp/x.sock' });
+    const r = await ts.disable({ port: 7443, target: 'http://127.0.0.1:7444' });
     assert.strictEqual(r.removed, false);
     assert.ok(!calls().some(x => x.args.includes('off')), 'disable apago un puerto ajeno');
     keep();
@@ -201,7 +201,7 @@ async function seccionTailscale({ check, ROOT, handlers }) {
 
   await check('TS10 operator denegado → operator-required con el comando', async () => {
     useCase('operator');
-    await assert.rejects(ts.enable({ port: 7443, target: 'unix:/tmp/x.sock' }),
+    await assert.rejects(ts.enable({ port: 7443, target: 'http://127.0.0.1:7444' }),
       e => e.code === 'operator-required' && e.command === 'sudo tailscale set --operator=$USER' && e.message.includes(e.command));
     const st = await remote.enable();
     assert.strictEqual(st.error.code, 'operator-required');
@@ -217,8 +217,7 @@ async function seccionTailscale({ check, ROOT, handlers }) {
     assert.deepStrictEqual([st.remoteAccess.enabled, st.serving, st.url], [true, true, 'https://pc-derek.tail1234.ts.net:7443/']);
     const runs = serveRuns();
     assert.strictEqual(runs.length, 1);
-    const sock = path.join(userData, 'web', 'termilab.sock');
-    assert.deepStrictEqual(runs[0].args, ['serve', '--https=7443', `unix:${sock}`]);
+    assert.deepStrictEqual(runs[0].args, ['serve', '--https=7443', 'http://127.0.0.1:7444']);
     assert.ok(alive(runs[0].pid), 'serve no esta vivo');
     const off = await remote.disable();
     assert.deepStrictEqual([off.remoteAccess.enabled, off.serving, off.url], [false, false, null]);
@@ -230,7 +229,7 @@ async function seccionTailscale({ check, ROOT, handlers }) {
   await check('TS12 Termilab muere (kill -9) → serve-guard mata a serve', async () => {
     useCase('ready');
     const script = `require(${JSON.stringify(path.join(ROOT, 'electron', 'web', 'tailscale.js'))})
-      .enable({ port: 7443, target: 'unix:/tmp/x.sock' }).then(() => console.log('UP'), e => { console.log('ERR', e.code); process.exit(1); });`;
+      .enable({ port: 7443, target: 'http://127.0.0.1:7444' }).then(() => console.log('UP'), e => { console.log('ERR', e.code); process.exit(1); });`;
     const p = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'], env: process.env });
     let out = '';
     p.stdout.on('data', d => { out += d; });
@@ -281,7 +280,7 @@ async function seccionTailscale({ check, ROOT, handlers }) {
     keep();
   });
 
-  await check('TS15 saveSettings no toca remoteAccess; set-name valida; socket dir 0700', async () => {
+  await check('TS15 saveSettings no toca remoteAccess; set-name valida; destino TCP port+1, nunca unix', async () => {
     await storeService.saveRemoteAccess({ enabled: true, hostName: 'Oficina' });
     await storeService.saveSettings({ remoteAccess: { enabled: false, hostName: 'otro' }, ai: { key: 'x' } });
     let s = await storeService.getSettings();
@@ -295,9 +294,13 @@ async function seccionTailscale({ check, ROOT, handlers }) {
     await assert.rejects(remote.setName('x'.repeat(64)));
     s = await storeService.getSettings();
     assert.strictEqual(s.remoteAccess.hostName, 'PC del taller');
-    if (process.platform !== 'win32') {
-      assert.strictEqual(fs.statSync(path.join(userData, 'web')).mode & 0o777, 0o700);
+    assert.strictEqual(ts.serveTarget(7443), 'http://127.0.0.1:7444');
+    assert.strictEqual(ts.backendPort(8000), 8001);
+    assert.throws(() => ts.backendPort(65535), e => e.code === 'bad-port');
+    for (const bad of ['unix:/tmp/x.sock', 'http://localhost:7444', 'http://0.0.0.0:7444', '--bg', 'http://127.0.0.1:7444/x']) {
+      assert.throws(() => ts.checkTarget(bad), e => e.code === 'bad-target', bad);
     }
+    assert.ok(!('socketPath' in ts) && !('ensureSocketDir' in ts), 'quedo el camino del socket unix');
     keep();
   });
 
@@ -315,18 +318,18 @@ async function seccionTailscale({ check, ROOT, handlers }) {
   await check('TS17 el servidor web sigue al interruptor: enable/resume lo arrancan con login, dnsName y puerto; disable lo para', async () => {
     const llamadas = [];
     const antes = remote.syncServer;
-    remote.configure({ syncServer: async (id) => { llamadas.push(id ? { login: id.getAllowedLogin(), dns: id.getDnsName(), port: id.getPort() } : null); } });
+    remote.configure({ syncServer: async (id) => { llamadas.push(id ? { login: id.getAllowedLogin(), dns: id.getDnsName(), port: id.getPort(), listenPort: id.listenPort } : null); } });
     try {
       useCase('ready');
       let st = await remote.enable();
       assert.strictEqual(st.error, null, st.error && st.error.message);
-      assert.deepStrictEqual(llamadas, [{ login: 'derek@example.com', dns: 'pc-derek.tail1234.ts.net', port: 7443 }]);
+      assert.deepStrictEqual(llamadas, [{ login: 'derek@example.com', dns: 'pc-derek.tail1234.ts.net', port: 7443, listenPort: 7444 }]);
       await remote.disable();
       assert.deepStrictEqual(llamadas[1], null, 'disable no paro el servidor');
       await storeService.saveRemoteAccess({ enabled: true });
       st = await remote.resume();
       assert.strictEqual(st.serving, true);
-      assert.deepStrictEqual(llamadas[2], { login: 'derek@example.com', dns: 'pc-derek.tail1234.ts.net', port: 7443 }, 'resume no arranco el servidor');
+      assert.deepStrictEqual(llamadas[2], { login: 'derek@example.com', dns: 'pc-derek.tail1234.ts.net', port: 7443, listenPort: 7444 }, 'resume no arranco el servidor');
       await remote.disable();
       /* Un servidor que no arranca: error visible, no excepcion */
       remote.configure({ syncServer: async (id) => { if (id) throw new Error('socket ocupado'); } });
@@ -375,6 +378,46 @@ async function seccionTailscale({ check, ROOT, handlers }) {
       assert.ok(/disabled=\{!!reason \|\| !!busy\}/.test(ra), 'el interruptor no se deshabilita con un motivo');
     } finally {
       remote.syncServer = antes;
+    }
+    keep();
+  });
+
+  await check('TS20 tailscaled que no es root: tailscaled-not-root, sin serve ni servidor; /proc leido de verdad', async () => {
+    /* tailscaledUid() puro sobre un /proc falso */
+    const fakeProc = path.join(dir, 'proc');
+    const mk = (pid, name, uid) => { fs.mkdirSync(path.join(fakeProc, pid), { recursive: true }); fs.writeFileSync(path.join(fakeProc, pid, 'status'), `Name:\t${name}\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`); };
+    mk('10', 'bash', 1000);
+    assert.strictEqual(ts.tailscaledUid({ procDir: fakeProc }), null);
+    mk('20', 'tailscaled', 1000);
+    assert.strictEqual(ts.tailscaledUid({ procDir: fakeProc }), 1000);
+    mk('30', 'tailscaled', 0);
+    assert.strictEqual(ts.tailscaledUid({ procDir: fakeProc }), 0);
+    assert.strictEqual(ts.tailscaledUid({ procDir: path.join(dir, 'no-proc') }), null);
+    const realUid = ts.tailscaledUid();
+    assert.ok(realUid === null || Number.isInteger(realUid));
+
+    const llamadas = [];
+    const antes = remote.syncServer;
+    remote.configure({ tailscaledUid: () => 1000, syncServer: async (id) => { llamadas.push(id); } });
+    try {
+      useCase('ready');
+      const st = await remote.enable();
+      assert.strictEqual(st.error && st.error.code, 'tailscaled-not-root');
+      assert.ok(/root/.test(st.error.message), st.error.message);
+      assert.deepStrictEqual([st.remoteAccess.enabled, st.serving], [false, false]);
+      assert.strictEqual(serveRuns().length, 0, 'se lanzo tailscale serve');
+      await storeService.saveRemoteAccess({ enabled: true });
+      const r = await remote.resume();
+      assert.strictEqual(r.error && r.error.code, 'tailscaled-not-root');
+      assert.strictEqual((await storeService.getSettings()).remoteAccess.enabled, false);
+      assert.strictEqual(serveRuns().length, 0);
+      assert.ok(!llamadas.some(Boolean), 'se arranco el servidor web');
+      const ui = fs.readFileSync(path.join(ROOT, 'src', 'components', 'Settings', 'RemoteAccess.jsx'), 'utf-8');
+      assert.ok(/'tailscaled-not-root':/.test(ui), 'la UI no explica tailscaled-not-root');
+    } finally {
+      remote.syncServer = antes;
+      remote.configure({ tailscaledUid: () => 0 });
+      remote.error = null;
     }
     keep();
   });

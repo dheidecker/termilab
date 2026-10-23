@@ -202,10 +202,21 @@ windowRegistry.setWindowFactory((bounds) => createWindow(bounds));
 /* The server is required lazily: nothing of it loads unless remote access is
    on. Wiring (electron/web/remote-access.js) calls syncWebServer(identity) at
    boot and on every change, or startWebServer/stopWebServer directly.
-   identity = { getAllowedLogin(), getDnsName(), getPort()?, socketPath? }.
-   Linux only: server.js start() refuses elsewhere (no TCP listener at all). */
+   identity = { getAllowedLogin(), getDnsName(), getPort()?, listenPort }.
+   Linux only: server.js start() refuses elsewhere (no listener at all).
+
+   TERMILAB_TEST_WEB_PEER_ROOT=1 (scripts/e2e-web-*.mjs only, and only in an
+   unpackaged app) makes the server treat every loopback peer as uid 0, so the
+   e2e proxy can stand in for tailscaled. It is an environment variable on
+   purpose: no setting can turn it on, and a packaged build ignores it. */
 let webServer = null;
 let webStarting = null;
+
+function webTestPeerRoot() {
+  if (process.env.TERMILAB_TEST_WEB_PEER_ROOT !== '1' || app.isPackaged) return false;
+  console.warn('[web] TEST MODE (TERMILAB_TEST_WEB_PEER_ROOT=1): every loopback peer is taken for tailscaled');
+  return true;
+}
 
 function webServerActive() {
   return !!(webServer && webServer.isRunning());
@@ -218,7 +229,8 @@ async function startWebServer(identity) {
     const { createWebServer } = require('./web/server');
     const storeService = require('./services/store-service');
     const srv = createWebServer({
-      socketPath: identity.socketPath || path.join(app.getPath('userData'), 'web', 'termilab.sock'),
+      listenPort: identity.listenPort,
+      ...(webTestPeerRoot() ? { peerUid: () => 0 } : {}),
       getAllowedLogin: identity.getAllowedLogin,
       getDnsName: identity.getDnsName,
       getPort: identity.getPort,

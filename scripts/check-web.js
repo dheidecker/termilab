@@ -5,10 +5,14 @@
  *
  *   node scripts/check-web.js
  *
- * Levanta el servidor de verdad en un socket unix temporal y habla con el con
+ * Levanta el servidor de verdad en 127.0.0.1 (puerto libre) y habla con el con
  * un cliente WebSocket propio (este archivo), frame a frame: handshake, mascara,
  * fragmentacion, ping, tope de tamano. Los handlers IPC son falsos, registrados
  * a traves de ipc-tap como lo hace main.js. Nada de tailscale real.
+ *
+ * El control de uid del peer (solo tailscaled, uid 0) va inyectado como 0 en
+ * makeServer(); WS0b-WS0e lo prueban de verdad contra /proc/net/tcp y con
+ * uids inyectados distintos de 0.
  */
 const assert = require('assert');
 const crypto = require('crypto');
@@ -23,7 +27,8 @@ const Module = require('module');
 const ROOT = path.join(__dirname, '..');
 const WEB = path.join(ROOT, 'electron', 'web');
 const tap = require(path.join(WEB, 'ipc-tap'));
-const { createWebServer } = require(path.join(WEB, 'server'));
+const { createWebServer, LOOPBACK } = require(path.join(WEB, 'server'));
+const peerUidMod = require(path.join(WEB, 'peer-uid'));
 const { toWire, WEB_CHANNELS, SECRET_FIELDS } = require(path.join(WEB, 'gateway'));
 const stubMod = require(path.join(WEB, 'electron-stub'));
 const wsLite = require(path.join(WEB, 'ws-lite'));
@@ -84,12 +89,15 @@ fs.mkdirSync(path.join(distDir, 'assets'), { recursive: true });
 fs.writeFileSync(path.join(distDir, 'index.html'), '<!doctype html><script src="./termilab-preload.js"></script>');
 fs.writeFileSync(path.join(distDir, 'assets', 'app.js'), 'console.log(1)');
 fs.writeFileSync(path.join(tmp, 'outside.txt'), 'SECRET-OUTSIDE');
-const socketPath = path.join(tmp, 'userData', 'web', 'termilab.sock');
+/* The port of the main server, known after WS0; `target` defaults read it at call time */
+let srvPort = null;
+const here = () => ({ host: '127.0.0.1', port: srvPort });
 
 const events = { connected: [], disconnected: [] };
 function makeServer(extra = {}) {
   return createWebServer({
-    socketPath,
+    listenPort: 0,
+    peerUid: () => 0,     // the proxy in these tests stands in for tailscaled
     distDir,
     getAllowedLogin: () => LOGIN,
     getDnsName: () => DNS,
@@ -105,9 +113,9 @@ function makeServer(extra = {}) {
   });
 }
 
-// ─── HTTP and WebSocket clients (unix socket) ───────────────
+// ─── HTTP and WebSocket clients (loopback TCP) ──────────────
 
-function request(pathname, headers = {}, { method = 'GET', target = { socketPath } } = {}) {
+function request(pathname, headers = {}, { method = 'GET', target = here() } = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request({ ...target, path: pathname, method, headers }, (res) => {
       const chunks = [];
@@ -134,9 +142,9 @@ function frame(opcode, payload, { fin = true, mask = true, lenOverride = null } 
 }
 
 /** Raw WebSocket client. Resolves {status, ...client} after the HTTP response. */
-function wsConnect(headers = {}, { pathname = '/ws', target = { path: socketPath } } = {}) {
+function wsConnect(headers = {}, { pathname = '/ws', target = here() } = {}) {
   return new Promise((resolve, reject) => {
-    const sock = net.connect(target.path ? { path: target.path } : target);
+    const sock = net.connect(target);
     const key = crypto.randomBytes(16).toString('base64');
     let buf = Buffer.alloc(0);
     let handshaken = false;
@@ -274,17 +282,96 @@ async function main() {
   console.log('check-web: espejo web (electron/web/)');
   const server = makeServer();
 
-  // Un socket viejo (de un cierre brusco) en la ruta: start() lo borra
-  fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o755 });
-  require('child_process').spawnSync(process.execPath, ['-e', `require('net').createServer().listen(${JSON.stringify(socketPath)}, () => process.exit(0))`]);
-  assert.ok(fs.lstatSync(socketPath).isSocket(), 'no se pudo dejar un socket viejo');
-
-  await check('WS0 arranca en el socket unix; socket 0600, carpeta 0700, socket viejo borrado', async () => {
+  await check('WS0 arranca en 127.0.0.1 (TCP), en el puerto pedido', async () => {
     const a = await server.start();
-    assert.strictEqual(a.mode, 'unix');
-    assert.strictEqual(a.socketPath, socketPath);
-    assert.strictEqual(fs.statSync(socketPath).mode & 0o777, 0o600);
-    assert.strictEqual(fs.statSync(path.dirname(socketPath)).mode & 0o777, 0o700);
+    assert.strictEqual(a.mode, 'tcp');
+    assert.strictEqual(a.host, '127.0.0.1');
+    assert.ok(Number.isInteger(a.port) && a.port > 0);
+    srvPort = a.port;
+    assert.strictEqual((await request('/.well-known/termilab', GOOD)).status, 200);
+  });
+
+  await check('WS0a peer-uid puro: hex de /proc (IP little-endian, puerto big-endian), tcp6 ::ffff:, solo ESTABLISHED', () => {
+    assert.strictEqual(peerUidMod.procAddr('127.0.0.1', 7444, 4, { littleEndian: true }), '0100007F:1D14');
+    assert.strictEqual(peerUidMod.procAddr('::ffff:127.0.0.1', 41394, 4, { littleEndian: true }), '0100007F:A1B2');
+    assert.strictEqual(peerUidMod.procAddr('127.0.0.1', 7444, 4, { littleEndian: false }), '7F000001:1D14');
+    assert.strictEqual(peerUidMod.procAddr('::ffff:127.0.0.1', 7444, 6, { littleEndian: true }), '0000000000000000FFFF00000100007F:1D14');
+    assert.strictEqual(peerUidMod.procAddr('127.0.0.1', 7444, 6, { littleEndian: true }), '0000000000000000FFFF00000100007F:1D14');
+    assert.strictEqual(peerUidMod.procAddr('::1', 80, 6, { littleEndian: true }), '00000000000000000000000001000000:0050');
+    assert.strictEqual(peerUidMod.procAddr('::1', 80, 4), null);
+    const TABLE = [
+      '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
+      '   0: 0100007F:1D14 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 11 1 0',
+      '   1: 0100007F:A1B2 0100007F:1D14 01 00000000:00000000 00:00000000 00000000     0        0 12 1 0',
+      '   2: 0100007F:1D14 0100007F:A1B2 01 00000000:00000000 00:00000000 00000000  1000        0 13 1 0',
+      '   3: 0100007F:C000 0100007F:1D14 06 00000000:00000000 03:00000F9F 00000000     0        0 0 3 0',
+      '   4: 0100007F:C001 0100007F:1D14 01 00000000:00000000 00:00000000 00000000  1000        0 14 1 0',
+    ].join('\n');
+    // el peer de la conexion aceptada en :7444 desde :41394 es la linea 1 (uid 0)
+    assert.strictEqual(peerUidMod.findUid(TABLE, { local: '0100007F:A1B2', remote: '0100007F:1D14' }), 0);
+    // la linea 2 es nuestro propio lado: el sentido importa
+    assert.strictEqual(peerUidMod.findUid(TABLE, { local: '0100007F:1D14', remote: '0100007F:A1B2' }), 1000);
+    // TIME_WAIT (06) dice uid 0 sea de quien sea: no cuenta
+    assert.strictEqual(peerUidMod.findUid(TABLE, { local: '0100007F:C000', remote: '0100007F:1D14' }), null);
+    assert.strictEqual(peerUidMod.findUid(TABLE, { local: '0100007F:C001', remote: '0100007F:1D14' }), 1000);
+    assert.strictEqual(peerUidMod.findUid(TABLE, { local: '0100007F:FFFF', remote: '0100007F:1D14' }), null);
+    // dos lineas que no coinciden: null (fallo cerrado)
+    const dup = TABLE + '\n   5: 0100007F:C001 0100007F:1D14 01 00000000:00000000 00:00000000 00000000     0        0 15 1 0';
+    assert.strictEqual(peerUidMod.findUid(dup, { local: '0100007F:C001', remote: '0100007F:1D14' }), null);
+    // peerUid busca en tcp y luego en tcp6 (un cliente AF_INET6 hacia 127.0.0.1)
+    const tcp6 = '  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n'
+      + '   0: 0000000000000000FFFF00000100007F:A1B2 0000000000000000FFFF00000100007F:1D14 01 00000000:00000000 00:00000000 00000000     0        0 9 1 0\n';
+    const reads = [];
+    const read = (f) => { reads.push(f); return f.endsWith('tcp6') ? tcp6 : TABLE.split('\n').slice(0, 1).join('\n'); };
+    if (require('os').endianness() === 'LE') {
+      assert.strictEqual(peerUidMod.peerUid({ address: '127.0.0.1', port: 41394 }, { address: '127.0.0.1', port: 7444 }, { read }), 0);
+      assert.deepStrictEqual(reads, ['/proc/net/tcp', '/proc/net/tcp6']);
+    }
+  });
+
+  await check('WS0b /proc/net/tcp real: una conexion desde este proceso tiene mi uid (no 0)', async () => {
+    const uids = [];
+    const s = net.createServer((sock) => {
+      uids.push(peerUidMod.peerUid({ address: sock.remoteAddress, port: sock.remotePort }, { address: sock.localAddress, port: sock.localPort }));
+      sock.destroy();
+    });
+    await new Promise(r => s.listen(0, '127.0.0.1', r));
+    await new Promise((r) => { const c = net.connect(s.address().port, '127.0.0.1'); c.on('close', r); c.on('error', () => {}); });
+    await new Promise(r => s.close(r));
+    assert.strictEqual(uids.length, 1);
+    assert.strictEqual(uids[0], process.getuid(), `uid leido ${uids[0]}, esperado ${process.getuid()}`);
+    assert.notStrictEqual(uids[0], 0, 'corre como root: esta prueba no dice nada');
+  });
+
+  /** Does the server drop this connection before answering? (true = refused) */
+  const refusedAt = (port, headers = GOOD) => new Promise((resolve) => {
+    const req = http.request({ host: '127.0.0.1', port, path: '/.well-known/termilab', headers }, (res) => { res.resume(); resolve(false); });
+    req.on('error', () => resolve(true));
+    req.end();
+  });
+
+  await check('WS0c sin inyectar (lector real de /proc): mi conexion (uid != 0) se corta sin respuesta, con login correcto', async () => {
+    const real = createWebServer({ listenPort: 0, distDir, getAllowedLogin: () => LOGIN, getDnsName: () => DNS, getPort: () => PORT, gateway: { tap } });
+    const a = await real.start();
+    try {
+      assert.strictEqual(await refusedAt(a.port), true, 'un proceso local que no es tailscaled recibio respuesta');
+      const ws = await wsConnect(WS_OK, { target: { host: '127.0.0.1', port: a.port } }).catch(() => ({ status: 'cortada' }));
+      assert.notStrictEqual(ws.status, 101, 'un proceso local abrio el gateway');
+    } finally { await real.stop(); }
+  });
+
+  await check('WS0d uid inyectado: 0 entra; 1000, null o un lector que lanza se cortan (fallo cerrado)', async () => {
+    for (const [uid, refused] of [[0, false], [1000, true], [null, true], ['throw', true], ['0', true]]) {
+      const seenArgs = [];
+      const srv = makeServer({ peerUid: (remote, local) => { seenArgs.push([remote, local]); if (uid === 'throw') throw new Error('x'); return uid; } });
+      const a = await srv.start();
+      try {
+        assert.strictEqual(await refusedAt(a.port), refused, `uid ${uid}`);
+        assert.strictEqual(seenArgs[0][1].port, a.port, 'local no es el puerto del servidor');
+        assert.strictEqual(seenArgs[0][0].address, '127.0.0.1');
+        assert.ok(seenArgs[0][0].port > 0 && seenArgs[0][0].port !== a.port);
+      } finally { await srv.stop(); }
+    }
   });
 
   await check('WS1 HTTP con login correcto: 200 y cabeceras de seguridad', async () => {
@@ -445,10 +532,9 @@ async function main() {
     for (const ch of ['ssh:connect', 'ssh:disconnect', 'local:spawn', 'local:kill', 'ssh:keeper-end', 'local:keeper-end', 'ssh:keeper-kill', 'local:keeper-kill', 'mirror:report', 'web:clients', 'web:kick']) {
       assert.ok(!WEB_CHANNELS.has(ch), `${ch} no debe estar en la lista blanca`);
     }
-    const openSock = path.join(tmp, 'userData', 'web-open', 'termilab.sock');
-    const open = makeServer({ socketPath: openSock, gateway: { tap, getHost: async id => HOSTS.find(h => h.id === id) || null, channels: new Set([...WEB_CHANNELS, 'ssh:connect']) } });
-    await open.start();
-    const oc = await wsConnect(WS_OK, { target: { path: openSock } });
+    const open = makeServer({ gateway: { tap, getHost: async id => HOSTS.find(h => h.id === id) || null, channels: new Set([...WEB_CHANNELS, 'ssh:connect']) } });
+    const oa = await open.start();
+    const oc = await wsConnect(WS_OK, { target: { host: '127.0.0.1', port: oa.port } });
     const r = await oc.invoke('ssh:connect', [{ hostId: 'h1', host: '10.0.0.1', username: 'root', privateKeyPath: '/etc/shadow' }]);
     oc.end();
     await open.stop();
@@ -560,23 +646,22 @@ async function main() {
     wc.send('ssh:data', 's1', 'tarde');   // no lanza
   });
 
-  await check('WS19 stop(): cierra los sockets y borra el socket; otro start() reutiliza la ruta', async () => {
+  await check('WS19 stop(): cierra los sockets y suelta el puerto; otro start() lo reutiliza; ocupado = "already serving"', async () => {
     const live = await wsConnect(WS_OK);
     await server.stop();
-    assert.ok(!fs.existsSync(socketPath));
+    assert.strictEqual(await refusedAt(srvPort), true, 'el puerto sigue abierto');
     assert.strictEqual((await live.closed()).code, 1001);
-    const again = makeServer();
-    await again.start();
+    const again = makeServer({ listenPort: srvPort });
+    assert.strictEqual((await again.start()).port, srvPort);
     assert.strictEqual((await request('/.well-known/termilab', GOOD)).status, 200);
-    await assert.rejects(makeServer().start(), /already serving/);
+    await assert.rejects(makeServer({ listenPort: srvPort }).start(), /already serving/);
     await again.stop();
   });
 
-  await check('WS20 solo Linux: en darwin/win32 start() se niega y no escucha nada; nunca TCP ni opcion de bind', async () => {
+  await check('WS20 solo Linux: en darwin/win32 start() se niega y no escucha nada; siempre 127.0.0.1, sin opcion de bind', async () => {
     const real = Object.getOwnPropertyDescriptor(process, 'platform');
     for (const plat of ['darwin', 'win32']) {
-      const sock = path.join(tmp, 'userData', `web-${plat}`, 'termilab.sock');
-      const srv = makeServer({ socketPath: sock, mode: 'tcp', tcpPort: 0, host: '0.0.0.0', bind: '0.0.0.0' });
+      const srv = makeServer({ mode: 'tcp', host: '0.0.0.0', bind: '0.0.0.0' });
       Object.defineProperty(process, 'platform', { ...real, value: plat });
       try {
         await assert.rejects(srv.start(), /available on Linux/, `${plat}: start() no se nego`);
@@ -585,18 +670,22 @@ async function main() {
       }
       assert.strictEqual(srv.isRunning(), false);
       assert.strictEqual(srv.address(), null);
-      assert.ok(!fs.existsSync(sock), `${plat}: dejo un socket`);
     }
-    /* En Linux, aunque se pida TCP, escucha en el socket unix */
-    const sock = path.join(tmp, 'userData', 'web-linux', 'termilab.sock');
-    const lin = makeServer({ socketPath: sock, mode: 'tcp', tcpPort: 0 });
+    /* En Linux, aunque se pida otro host, escucha en 127.0.0.1 */
+    const lin = makeServer({ host: '0.0.0.0', bind: '0.0.0.0', mode: 'unix' });
     const a = await lin.start();
-    assert.deepStrictEqual(a, { mode: 'unix', socketPath: sock });
-    assert.strictEqual((await request('/.well-known/termilab', GOOD, { target: { socketPath: sock } })).status, 200);
+    assert.deepStrictEqual(a, { mode: 'tcp', host: '127.0.0.1', port: a.port });
+    assert.strictEqual((await request('/.well-known/termilab', GOOD, { target: { host: '127.0.0.1', port: a.port } })).status, 200);
     await lin.stop();
+    await assert.rejects(makeServer({ listenPort: undefined }).start(), /Invalid listen port/);
+    await assert.rejects(makeServer({ listenPort: 70000 }).start(), /Invalid listen port/);
+    assert.strictEqual(LOOPBACK, '127.0.0.1');
     const src = fs.readFileSync(path.join(WEB, 'server.js'), 'utf-8');
-    assert.ok(!/opts\.(host|bind|tcpPort|mode|secretPrefix)\b/.test(src), 'server.js lee una opcion de red');
-    assert.ok(!/\.listen\(\s*\{|127\.0\.0\.1|LOOPBACK/.test(src), 'server.js conserva un camino TCP');
+    assert.ok(!/opts\.(host|bind|tcpPort|mode|secretPrefix|socketPath)\b/.test(src), 'server.js lee una opcion de red');
+    const listens = src.match(/\.listen\(/g) || [];
+    assert.strictEqual(listens.length, 1, 'server.js tiene mas de un listen');
+    assert.ok(/\.listen\(\{ port: listenPort, host: LOOPBACK, exclusive: true \}/.test(src), 'el listen no usa la constante LOOPBACK');
+    assert.ok(/srv\.on\('connection', onConnection\)/.test(src), 'falta el control de uid en connection');
   });
 
   await check('WS21 gatewayUrl respeta el prefijo; el stub reemplaza binarios por {$b}', () => {

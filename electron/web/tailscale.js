@@ -3,7 +3,10 @@
  *
  * Termilab never listens on a network interface for this: `tailscale serve`
  * terminates HTTPS on this device's tailnet name and proxies to a local
- * target (a 0700 unix socket on Linux, loopback elsewhere). The project is
+ * target: http://127.0.0.1:<port + 1>, where server.js admits only
+ * connections from tailscaled (uid 0). Not a unix socket: serving one needs
+ * root even for the operator (401 "must be root ... to serve a path or Unix
+ * socket"), a loopback port does not. The project is
  * open source, so there must be NO path that exposes the mirror without
  * Tailscale: enable() refuses unless status() says ready, and refuses a port
  * where Funnel (public internet) is on.
@@ -11,7 +14,7 @@
  * The serve config is NOT persistent (`--bg` is never used): serve runs in the
  * foreground as a child of electron/web/serve-guard.js, which kills it when
  * Termilab's end of its stdin closes. Quit, crash or kill -9: the config dies
- * with the app, nothing is left pointing at a dead socket.
+ * with the app, nothing is left pointing at a dead port.
  *
  * Every invocation is execFile/spawn of the binary itself: no shell, ever.
  * Short commands carry a timeout. disable() never runs `tailscale serve
@@ -179,24 +182,50 @@ function portUsage(cfg, { port, target }) {
 function checkPort(port) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TailscaleError('bad-port', `Invalid port: ${port}`);
 }
-/* Only our own kinds of target, and never something that parses as a flag */
+/* Only our own kind of target, and never something that parses as a flag */
 function checkTarget(target) {
-  if (typeof target !== 'string' || !/^(unix:\/[^\s]+|http:\/\/(127\.0\.0\.1|localhost):\d{1,5})$/.test(target)) {
+  if (typeof target !== 'string' || !/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(target)) {
     throw new TailscaleError('bad-target', `Invalid serve target: ${target}`);
   }
 }
 
-/* ─── Socket (Linux) ─────────────────────────────────────── */
+/* ─── Backend (Linux) ────────────────────────────────────── */
 
-function socketPath(userData) {
-  return path.join(userData, 'web', 'termilab.sock');
+/** The loopback port server.js listens on for serve port `port`: the next one. */
+function backendPort(port) {
+  checkPort(port);
+  if (port + 1 > 65535) throw new TailscaleError('bad-port', `Port ${port} leaves no room for the local port (${port} + 1)`);
+  return port + 1;
 }
 
-function ensureSocketDir(userData) {
-  const dir = path.join(userData, 'web');
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  fs.chmodSync(dir, 0o700);   // mkdir's mode is masked by umask and ignored if it existed
-  return dir;
+/** What `tailscale serve --https=<port>` proxies to. */
+function serveTarget(port) {
+  return `http://127.0.0.1:${backendPort(port)}`;
+}
+
+/**
+ * The uid tailscaled runs as, read from /proc (Linux): 0 normally, another
+ * uid in userspace mode run as a user, null when no tailscaled process is
+ * visible (hidepid, another namespace, not running). server.js admits only
+ * uid-0 peers, so a non-root tailscaled could never get through.
+ */
+function tailscaledUid({ procDir = '/proc', fsImpl = fs } = {}) {
+  let entries;
+  try { entries = fsImpl.readdirSync(procDir); } catch (_) { return null; }
+  let found = null;
+  for (const pid of entries) {
+    if (!/^\d+$/.test(pid)) continue;
+    let st;
+    try { st = fsImpl.readFileSync(path.join(procDir, pid, 'status'), 'utf-8'); } catch (_) { continue; }
+    const name = /^Name:\s*(\S+)/m.exec(st);
+    if (!name || name[1] !== 'tailscaled') continue;
+    const uid = /^Uid:\s*(\d+)/m.exec(st);   // real uid
+    if (!uid) continue;
+    const u = Number(uid[1]);
+    if (u === 0) return 0;
+    found = u;
+  }
+  return found;
 }
 
 /* ─── Enable / disable ───────────────────────────────────── */
@@ -348,5 +377,5 @@ module.exports = {
   operatorArgv, grantOperator,
   DEFAULT_PORT, OPERATOR_COMMAND, REASONS, TailscaleError,
   resolveBinary, run, status, statusJson, interpretStatus, serveStatus, portUsage,
-  preflight, enable, disable, socketPath, ensureSocketDir, isAccessDenied,
+  preflight, enable, disable, backendPort, serveTarget, tailscaledUid, checkTarget, isAccessDenied,
 };

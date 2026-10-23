@@ -2,22 +2,29 @@
  * The web mirror's HTTP server: the app (dist-web/), the preload bundle and
  * the gateway WebSocket, behind auth.js.
  *
- * It listens ONLY on a unix socket at `socketPath` (its directory 0700, the
- * socket 0600), which is where `tailscale serve` proxies to. Never TCP, and
- * there is no host / port / bind option at all.
+ * It listens on loopback TCP, `127.0.0.1:<listenPort>` (the serve port + 1,
+ * 7444 by default), which is where `tailscale serve` proxies to. The host is
+ * a constant: there is no host / bind option, and start() refuses if the
+ * bound address is anything else.
+ *
+ * Why not a unix socket: it was, 0600, but `tailscale serve` to a path or
+ * unix socket needs root even for the operator ("401 Unauthorized: must be
+ * root, or be an operator and able to run 'sudo tailscale' to serve a path
+ * or Unix socket", Tailscale 1.104). A loopback port only needs the operator.
+ *
+ * What makes loopback TCP safe here, on Linux: every accepted connection is
+ * checked against /proc/net/tcp (peer-uid.js) and kept only if the socket on
+ * the other end belongs to uid 0, i.e. tailscaled. Any other local process
+ * could forge `Tailscale-User-Login`, `Host` and `Origin` (auth.js trusts
+ * them) and get the whole gateway; this check is what stops it. Not found,
+ * or not 0: the socket is destroyed before a byte is parsed (fail closed).
  *
  * Linux only. start() refuses anywhere else, so remote access is off on
- * macOS and Windows for now (remote-access.js says so in the UI). Why: there
- * `tailscale serve` can only proxy to a loopback HTTP port, and loopback
- * TCP is open to every local process, which could forge
- * `Tailscale-User-Login`, `Host` and `Origin` and get the whole gateway
- * (auth.js trusts those headers because only tailscaled can reach the
- * socket). Enabling it there needs one of:
- *  - a serve target that carries a secret the server checks (a random path
- *    prefix or header that tailscale serve adds and a local process cannot
- *    learn), or
- *  - tailscale serve proxying to a unix socket / named pipe on those systems,
- *    with permissions that admit only this user and tailscaled.
+ * macOS and Windows for now (remote-access.js says so in the UI). There is no
+ * /proc/net/tcp there: they would need their own way to tell tailscaled's
+ * connections from any local process's (the owner of the peer socket, or a
+ * secret in the serve target that a local process cannot learn) before the
+ * port could be opened.
  *
  * Routes:
  *   GET /                        dist-web/index.html
@@ -28,7 +35,6 @@
  * Every one of them, the WebSocket included, goes through auth first.
  */
 const http = require('http');
-const net = require('net');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -37,9 +43,14 @@ const os = require('os');
 const wsLite = require('./ws-lite');
 const { createAuth, refuseHttp, refuseUpgrade } = require('./auth');
 const { createGateway } = require('./gateway');
+const peerUidOf = require('./peer-uid');
 
 const ROOT = path.join(__dirname, '..', '..');
 const MAX_MESSAGE = 32 * 1024 * 1024;   // a Compose image, base64'd, fits
+/* The only address the server ever binds. Not an option, on purpose. */
+const LOOPBACK = '127.0.0.1';
+/* tailscaled runs as root: the only peer let through */
+const TAILSCALED_UID = 0;
 
 const CSP = [
   "default-src 'none'",
@@ -88,32 +99,9 @@ function buildPreloadBundle({ stubPath, preloadPath, platform }) {
   return `${stub}\n;(function (require, module, exports, process) {\n${preload}\n})(window.__termilabWebRequire, { exports: {} }, {}, { platform: ${JSON.stringify(platform)}, env: {} });\n`;
 }
 
-/** Is something already answering on this unix socket (another Termilab)? */
-function socketInUse(p) {
-  return new Promise((resolve) => {
-    const c = net.connect(p);
-    const done = (v) => { c.removeAllListeners(); c.destroy(); resolve(v); };
-    c.once('connect', () => done(true));
-    c.once('error', () => done(false));
-    setTimeout(() => done(false), 1000).unref();
-  });
-}
-
-async function prepareSocketPath(socketPath) {
-  const dir = path.dirname(socketPath);
-  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
-  await fsp.chmod(dir, 0o700);
-  let st = null;
-  try { st = await fsp.lstat(socketPath); } catch (err) { if (err.code !== 'ENOENT') throw err; }
-  if (!st) return;
-  if (!st.isSocket()) throw new Error(`${socketPath} exists and is not a socket`);
-  if (await socketInUse(socketPath)) throw new Error('Another Termilab is already serving the web mirror');
-  await fsp.unlink(socketPath);
-}
-
 /**
  * @param {object} opts
- * @param {string} opts.socketPath     the unix socket tailscale serve proxies to
+ * @param {number} opts.listenPort     the loopback port tailscale serve proxies to (0: any, tests)
  * @param {() => string|null} opts.getAllowedLogin
  * @param {() => string|null} opts.getDnsName
  * @param {() => number|null} [opts.getPort]
@@ -121,6 +109,8 @@ async function prepareSocketPath(socketPath) {
  * @param {object} [opts.gateway]      createGateway() deps (tap, getHost, onConnect, onDisconnect)
  * @param {string} [opts.distDir]      default <repo>/dist-web
  * @param {number} [opts.maxMessage]
+ * @param {(remote, local) => number|null} [opts.peerUid]  owner of the peer socket
+ *        ({address, port} each); default reads /proc/net/tcp. Tests inject it.
  */
 function createWebServer(opts) {
   const distDir = path.resolve(opts.distDir || path.join(ROOT, 'dist-web'));
@@ -131,6 +121,22 @@ function createWebServer(opts) {
   let preloadBundle = null;
   let server = null;
   let address = null;
+  const peerUid = typeof opts.peerUid === 'function' ? opts.peerUid : peerUidOf.peerUid;
+
+  /* Before the HTTP parser reads a byte: only tailscaled (uid 0) gets in */
+  function onConnection(socket) {
+    let uid = null;
+    try {
+      uid = peerUid(
+        { address: socket.remoteAddress, port: socket.remotePort },
+        { address: socket.localAddress, port: socket.localPort },
+      );
+    } catch (_) { uid = null; }
+    if (uid !== TAILSCALED_UID) {
+      console.warn(`[web] refused a loopback connection from ${socket.remoteAddress}:${socket.remotePort} (peer uid ${uid === null ? 'unknown' : uid}, not tailscaled)`);
+      socket.destroy();
+    }
+  }
 
   const preload = () => {
     if (!preloadBundle) {
@@ -208,11 +214,12 @@ function createWebServer(opts) {
 
   async function start() {
     if (server) return api.address();
-    /* See the header: off Linux the only target serve can use is loopback TCP */
+    /* See the header: off Linux there is no peer-uid check, so loopback TCP would be open to any local process */
     if (process.platform !== 'linux') {
       throw new Error(`Remote access is available on Linux for now (this is ${process.platform}): not listening`);
     }
-    if (!opts.socketPath) throw new Error('socketPath is required');
+    const listenPort = opts.listenPort;
+    if (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535) throw new Error(`Invalid listen port: ${listenPort}`);
     const srv = http.createServer((req, res) => {
       onRequest(req, res).catch((err) => {
         console.error('[web] request failed:', err.message);
@@ -220,17 +227,30 @@ function createWebServer(opts) {
         else res.destroy();
       });
     });
+    /* First listener after http's own, in the same emit: runs before any data */
+    srv.on('connection', onConnection);
     srv.on('upgrade', onUpgrade);
     srv.on('clientError', (err, socket) => { try { socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); } catch (_) { /* gone */ } });
     srv.headersTimeout = 20000;
     srv.requestTimeout = 60000;
-    await prepareSocketPath(opts.socketPath);
     await new Promise((resolve, reject) => {
-      srv.once('error', reject);
-      srv.listen(opts.socketPath, () => { srv.removeListener('error', reject); resolve(); });
+      srv.once('error', (err) => {
+        reject(err && err.code === 'EADDRINUSE'
+          ? new Error(`Another Termilab (or something else) is already serving on ${LOOPBACK}:${listenPort}`)
+          : err);
+      });
+      srv.listen({ port: listenPort, host: LOOPBACK, exclusive: true }, () => {
+        srv.removeAllListeners('error');
+        srv.on('error', (err) => console.error('[web] server error:', err.message));
+        resolve();
+      });
     });
-    await fsp.chmod(opts.socketPath, 0o600);
-    address = { mode: 'unix', socketPath: opts.socketPath };
+    const bound = srv.address();
+    if (!bound || typeof bound !== 'object' || bound.address !== LOOPBACK) {
+      await new Promise(r => srv.close(() => r()));
+      throw new Error(`The web server bound ${JSON.stringify(bound)}, not ${LOOPBACK}: not serving`);
+    }
+    address = { mode: 'tcp', host: LOOPBACK, port: bound.port };
     server = srv;
     return api.address();
   }
@@ -241,9 +261,6 @@ function createWebServer(opts) {
     server = null;
     gateway.closeAll();
     await new Promise(r => { srv.close(() => r()); if (srv.closeAllConnections) srv.closeAllConnections(); });
-    if (opts.socketPath) {
-      try { await fsp.unlink(opts.socketPath); } catch (_) { /* already gone */ }
-    }
     address = null;
   }
 
@@ -257,4 +274,4 @@ function createWebServer(opts) {
   return api;
 }
 
-module.exports = { createWebServer, buildPreloadBundle, SECURITY_HEADERS, CSP, MAX_MESSAGE };
+module.exports = { createWebServer, buildPreloadBundle, SECURITY_HEADERS, CSP, MAX_MESSAGE, LOOPBACK, TAILSCALED_UID };

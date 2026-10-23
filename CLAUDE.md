@@ -111,11 +111,23 @@ Three things about it shape the client:
 Settings → Remote access serves the app to a browser on the owner's tailnet, as a shared mirror of this
 PC's tabs and sessions. Code in `electron/web/`; browser bundle from `vite.web.config.js` into `dist-web/`.
 
-- **Tailscale is the only way in, and Linux only.** The server listens on a unix socket 0600
-  (`<userData>/web/termilab.sock`); `tailscale serve` (a child process run by `serve-guard.js`, dies with
-  the app) is the sole entry, and auth trusts its `Tailscale-User-Login` header. On Mac/Windows a loopback
-  TCP port would let any local process forge that header, so the feature is refused there in main, not
-  only in the UI. Don't add a bind option.
+- **Tailscale is the only way in, and Linux only.** The server listens on `127.0.0.1:<serve port + 1>`
+  (7444 by default, host hard-coded, `server.address()` checked); `tailscale serve --https=<port>
+  http://127.0.0.1:<port+1>` (a child process run by `serve-guard.js`, dies with the app) is the sole
+  entry, and auth trusts its `Tailscale-User-Login` header. Don't add a bind option.
+- **Why TCP and not a unix socket:** it used to be a 0600 socket, but `tailscale serve` to a socket or
+  path needs root even for the operator (`401 Unauthorized: must be root, or be an operator and able to
+  run 'sudo tailscale' to serve a path or Unix socket`, Tailscale 1.104). A loopback port only needs
+  the operator. Don't go back to the socket.
+- **The peer-uid check is what makes loopback TCP safe.** Any local process could connect and forge
+  that header, so `server.js` drops, on `connection` and before a byte is parsed, every socket whose
+  peer is not owned by uid 0 (tailscaled), looked up in `/proc/net/tcp` + `tcp6` (`peer-uid.js`; only
+  ESTABLISHED lines, TIME_WAIT reports uid 0 for anyone). Not found = refused. A tailscaled that is not
+  root (userspace mode as a user) gets `tailscaled-not-root` and nothing is served. Mac/Windows have no
+  equivalent check, so the feature is refused there in main, not only in the UI.
+- **Test mode:** `TERMILAB_TEST_WEB_PEER_ROOT=1` (env only, ignored when `app.isPackaged`) takes every
+  peer for uid 0, so the e2e proxy can stand in for tailscaled. Never wire it to a setting.
+  `check-web.js` injects `peerUid` instead, and also tests the real `/proc` path (own uid → refused).
 - **The browser runs the real `electron/preload.js`** over `electron/web/electron-stub.js` (WebSocket).
   `gateway.js` has a channel allow-list and redacts secrets; a new IPC channel is NOT exposed to the web
   until added there. Each browser is a virtual webContents (id ≥ 1000000) in `window-registry`.

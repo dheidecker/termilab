@@ -91,6 +91,7 @@ const ERRORS = {
   'operator-required': 'Tailscale needs your permission once before Termilab can share this computer.',
   'operator-cancelled': 'Permission was not granted. Try again when you are ready.',
   'serve-exited': 'Tailscale stopped sharing Termilab. Retrying…',
+  'tailscaled-not-root': 'Tailscale is running as a regular user (userspace mode), not as a system service. Termilab only accepts connections from a Tailscale running as root, so remote access cannot be turned on with this setup.',
 };
 
 export function RemoteAccessView({ state, busy, error, nameDraft, onNameChange, onNameSave, onToggle, onGrant, clients, onKick, kicking }) {

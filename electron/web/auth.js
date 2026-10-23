@@ -1,6 +1,6 @@
 /**
  * Who may talk to the web mirror. The only way in is `tailscale serve`
- * (HTTPS on the tailnet -> this process's unix socket), which stamps every
+ * (HTTPS on the tailnet -> 127.0.0.1:<serve port + 1>), which stamps every
  * request with the caller's Tailscale identity. A request is let through only
  * if ALL of these hold:
  *
@@ -13,8 +13,10 @@
  *    Plain HTTP requests may omit Origin; one that sends a foreign one is refused.
  *
  * Those headers are trusted only because nothing but tailscaled can reach
- * the server: it listens on a 0600 unix socket (Linux only, see server.js).
- * On a loopback TCP port any local process could forge all three.
+ * the server: it listens on loopback TCP and server.js drops, before any
+ * byte is parsed, every connection whose peer socket is not owned by uid 0
+ * (tailscaled), read from /proc/net/tcp (Linux only). Without that check any
+ * local process could forge all three.
  *
  * No cookies, no token, no CORS headers: nothing a browser could replay or
  * relax. Failure is a bare 403 with no reason (the reason goes to the log).

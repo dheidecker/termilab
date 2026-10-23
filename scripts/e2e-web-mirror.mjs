@@ -2,9 +2,11 @@
 // tailscale FALSO (TERMILAB_TAILSCALE_BIN) que dice "listo" y deja `serve`
 // en primer plano sin hacer nada; el acceso remoto viene encendido en los
 // settings, asi que el arranque (remoteAccess.resume) levanta el servidor web
-// en su socket unix. Delante, un proxy de prueba hace de `tailscale serve`:
-// TCP en 127.0.0.1 → el socket, inyectando Tailscale-User-Login y el Host /
-// Origin del tailnet. El navegador es un segundo Electron SIN preload (una
+// en 127.0.0.1:<PORT+1>. Delante, un proxy de prueba hace de `tailscale serve`:
+// TCP en 127.0.0.1 → ese puerto, inyectando Tailscale-User-Login y el Host /
+// Origin del tailnet. El proxy no es root, asi que el PC corre con
+// TERMILAB_TEST_WEB_PEER_ROOT=1 (ver main.js): el control de uid del peer lo
+// da por tailscaled. Solo esa variable lo activa, y solo sin empaquetar. El navegador es un segundo Electron SIN preload (una
 // pagina web cualquiera) contra ese proxy.
 //
 //   npm run build && node scripts/e2e-web-mirror.mjs
@@ -31,7 +33,9 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 const LOGIN = 'owner@example.com';
 const DNS = 'e2e-pc.tail1234.ts.net';
-const PORT = 7443;
+/* Not 7443: a real Termilab with remote access on would hold 7444 */
+const PORT = 17443 + 2 * Math.floor(Math.random() * 500);
+const BACKEND = PORT + 1;   // where the web server listens (tailscale.backendPort)
 
 const results = [];
 const ok = (name, cond, extra = '') => {
@@ -107,16 +111,16 @@ function launch(args, env) {
   };
 }
 
-/* What `tailscale serve` does for the mirror: HTTPS on the tailnet → the unix
-   socket, with the caller's identity. Here plain HTTP on loopback. */
-function startProxy(socketPath) {
+/* What `tailscale serve` does for the mirror: HTTPS on the tailnet →
+   127.0.0.1:<PORT+1>, with the caller's identity. Here plain HTTP on loopback. */
+function startProxy(backendPort) {
   const fix = (headers) => {
     const h = { ...headers, host: `${DNS}:${PORT}`, 'tailscale-user-login': LOGIN, 'tailscale-user-name': 'Owner' };
     if (h.origin) h.origin = `https://${DNS}:${PORT}`;
     return h;
   };
   const srv = http.createServer((req, res) => {
-    const up = http.request({ socketPath, path: req.url, method: req.method, headers: fix(req.headers) }, (r) => {
+    const up = http.request({ host: '127.0.0.1', port: backendPort, path: req.url, method: req.method, headers: fix(req.headers) }, (r) => {
       res.writeHead(r.statusCode, r.headers);
       r.pipe(res);
     });
@@ -124,7 +128,7 @@ function startProxy(socketPath) {
     req.pipe(up);
   });
   srv.on('upgrade', (req, sock, head) => {
-    const up = net.connect(socketPath, () => {
+    const up = net.connect(backendPort, '127.0.0.1', () => {
       const lines = [`${req.method} ${req.url} HTTP/1.1`];
       for (const [k, v] of Object.entries(fix(req.headers))) lines.push(`${k}: ${v}`);
       up.write(lines.join('\r\n') + '\r\n\r\n');
@@ -135,6 +139,16 @@ function startProxy(socketPath) {
     sock.on('error', () => up.destroy());
   });
   return new Promise(r => srv.listen(0, '127.0.0.1', () => r(srv)));
+}
+
+/** Does something accept TCP connections on 127.0.0.1:port? */
+function listening(port) {
+  return new Promise((resolve) => {
+    const c = net.connect(port, '127.0.0.1');
+    const done = (v) => { c.removeAllListeners(); c.on('error', () => {}); c.destroy(); resolve(v); };
+    c.once('connect', () => done(true));
+    c.once('error', () => done(false));
+  });
 }
 
 const FAKE_TS = String.raw`
@@ -168,7 +182,6 @@ async function main() {
   const userData = path.join(base, 'ud');
   fs.mkdirSync(path.join(userData, 'data'), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(userData, 'data', 'settings.json'), JSON.stringify({ remoteAccess: { enabled: true, port: PORT, hostName: 'e2e-pc' } }));
-  const socketPath = path.join(userData, 'web', 'termilab.sock');
   const browserMain = path.join(base, 'browser-main.cjs');
   fs.writeFileSync(browserMain, `const { app, BrowserWindow } = require('electron');
 app.whenReady().then(() => {
@@ -182,13 +195,13 @@ app.on('window-all-closed', () => app.quit());
   try {
     const CDP1 = 19000 + Math.floor(Math.random() * 500);
     const CDP2 = CDP1 + 500;
-    pc = launch([ROOT, `--user-data-dir=${userData}`, `--remote-debugging-port=${CDP1}`], { HOME: home, SHELL: '/bin/bash', LANG: 'C.UTF-8', TERMILAB_TAILSCALE_BIN: tsBin });
+    pc = launch([ROOT, `--user-data-dir=${userData}`, `--remote-debugging-port=${CDP1}`], { HOME: home, SHELL: '/bin/bash', LANG: 'C.UTF-8', TERMILAB_TAILSCALE_BIN: tsBin, TERMILAB_TEST_WEB_PEER_ROOT: '1' });
     P = await cdpTo(CDP1, u => u.endsWith('/dist/index.html'), pc.log);
     await P.waitFor(() => P.ev('!!document.querySelector(".app")'));
-    const served = await P.waitFor(() => fs.existsSync(socketPath), 15000);
-    ok('the stored "remote access on" started the web server on its unix socket (resume → syncWebServer)', !!served, served ? '' : pc.log().slice(-1500));
+    const served = await P.waitFor(() => listening(BACKEND), 15000);
+    ok('the stored "remote access on" started the web server on 127.0.0.1:<port+1> (resume → syncWebServer)', !!served, served ? '' : pc.log().slice(-1500));
     if (!served) return;
-    proxy = await startProxy(socketPath);
+    proxy = await startProxy(BACKEND);
     const url = `http://127.0.0.1:${proxy.address().port}/`;
 
     /* A local terminal on the PC, with some history */

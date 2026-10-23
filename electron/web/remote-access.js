@@ -10,7 +10,7 @@
  *     error: null | {code, message, command?} }   // last failure, kept visible
  *
  * Expected failures (Tailscale not ready, Funnel on, port busy,
- * operator-required) come back in `error`, not as a rejection: wrapHandler
+ * operator-required, tailscaled-not-root) come back in `error`, not as a rejection: wrapHandler
  * only carries a message across IPC and the UI needs the code.
  *
  * The serve child dying unexpectedly is retried with backoff while enabled;
@@ -18,12 +18,15 @@
  * enabled:true is revalidated: Tailscale no longer ready → enabled:false and
  * nothing is started.
  *
- * Linux only, for now. There the server listens on a unix socket 0600 in a
- * 0700 directory, so only this uid can reach it besides tailscaled. On macOS
- * and Windows `tailscale serve` can only proxy to loopback TCP, where any
- * local process could forge the Tailscale headers (see server.js): status()
- * reports tailscale.reason 'unsupported-platform', enable() refuses, resume()
- * switches a stored enabled:true off, and the server is never started.
+ * Linux only, for now. There serve proxies to http://127.0.0.1:<port + 1>
+ * and server.js keeps a connection only if its peer socket is owned by uid 0
+ * (tailscaled, read from /proc/net/tcp), so no other local process can forge
+ * the Tailscale headers. A tailscaled that is not root (userspace mode run
+ * as a user) could never pass that check: _start() refuses with
+ * 'tailscaled-not-root' and nothing is served. On macOS and Windows there is
+ * no such check (see server.js): status() reports tailscale.reason
+ * 'unsupported-platform', enable() refuses, resume() switches a stored
+ * enabled:true off, and the server is never started.
  *
  * The web server itself (electron/web/server.js, behind main.js
  * syncWebServer) follows the same switch: `configure({syncServer})` hands it
@@ -37,7 +40,7 @@ const tailscale = require('./tailscale');
 
 const NAME_MAX = 63;
 
-/** Remote access runs only where the server can sit behind a unix socket. */
+/** Remote access runs only where server.js can check the peer's uid (/proc/net/tcp). */
 const supported = () => process.platform === 'linux';
 const UNSUPPORTED = Object.freeze({
   code: 'unsupported-platform',
@@ -51,14 +54,15 @@ class RemoteAccess {
     this.retryTimer = null;
     this.attempt = 0;
     this.backoffMs = [1000, 2000, 5000, 10000, 30000, 60000];
-    this.userData = null;
+    /* () => uid of tailscaled | null; tests inject it */
+    this.tailscaledUid = () => tailscale.tailscaledUid();
     /* (identity | null) => Promise: main.js syncWebServer */
     this.syncServer = null;
     this.identity = { login: null, dnsName: null, port: null, name: null };
   }
 
-  configure({ userData, backoffMs, syncServer } = {}) {
-    if (userData) this.userData = userData;
+  configure({ backoffMs, syncServer, tailscaledUid } = {}) {
+    if (typeof tailscaledUid === 'function') this.tailscaledUid = tailscaledUid;
     if (Array.isArray(backoffMs) && backoffMs.length) this.backoffMs = backoffMs;
     if (typeof syncServer === 'function') this.syncServer = syncServer;
   }
@@ -71,6 +75,7 @@ class RemoteAccess {
       getAllowedLogin: () => id.login,
       getDnsName: () => id.dnsName,
       getPort: () => id.port,
+      listenPort: tailscale.backendPort(ra.port),
       name: ra.hostName,
     };
   }
@@ -91,16 +96,20 @@ class RemoteAccess {
     }
   }
 
-  _userData() {
-    if (this.userData) return this.userData;
-    return require('electron').app.getPath('userData');
+  /* Loopback TCP, port + 1 (server.js listens there). Linux only: see the header. */
+  _target(port) {
+    if (!supported()) throw new tailscale.TailscaleError(UNSUPPORTED.code, UNSUPPORTED.message);
+    return tailscale.serveTarget(port);
   }
 
-  /* A unix socket in a 0700 dir (server.js listens on it). Linux only: see the header. */
-  _target() {
-    if (!supported()) throw new tailscale.TailscaleError(UNSUPPORTED.code, UNSUPPORTED.message);
-    tailscale.ensureSocketDir(this._userData());
-    return `unix:${tailscale.socketPath(this._userData())}`;
+  /* server.js lets only uid-0 peers in: a tailscaled running as a user would be shut out */
+  _checkTailscaledRoot() {
+    let uid = null;
+    try { uid = this.tailscaledUid(); } catch (_) { uid = null; }
+    if (uid !== null && uid !== 0) {
+      throw new tailscale.TailscaleError('tailscaled-not-root',
+        `tailscaled runs as uid ${uid}, not root. Termilab only accepts connections from a tailscaled running as root, so remote access cannot work with this Tailscale setup (userspace mode as a user).`);
+    }
   }
 
   async _settings() {
@@ -145,7 +154,9 @@ class RemoteAccess {
 
   async _start(ra) {
     const port = ra.port;
-    const handle = await tailscale.enable({ port, target: this._target() });
+    const target = this._target(port);
+    this._checkTailscaledRoot();
+    const handle = await tailscale.enable({ port, target });
     this.handle = handle;
     this.error = null;
     this.attempt = 0;
@@ -222,7 +233,7 @@ class RemoteAccess {
     await this._syncServer(null);
     if (!supported()) return this.status();
     try {
-      await tailscale.disable({ port: ra.port, target: this._target() });
+      await tailscale.disable({ port: ra.port, target: this._target(ra.port) });
     } catch (err) {
       // Not fatal: the foreground config died with the child anyway
       if (err.code === 'operator-required') this.error = this._errorOf(err);
