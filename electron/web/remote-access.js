@@ -230,6 +230,19 @@ class RemoteAccess {
     return this.status();
   }
 
+  /** Linux: make this user Tailscale's operator (password dialog), then retry. */
+  async grantOperator() {
+    if (!supported()) return this.enable();
+    try {
+      await tailscale.grantOperator();
+    } catch (err) {
+      this.error = this._errorOf(err);
+      return this.status();
+    }
+    this.error = null;
+    return this.enable();
+  }
+
   async setName(name) {
     const clean = String(name == null ? '' : name).replace(/[\u0000-\u001f\u007f]/g, '').trim();
     if (!clean) throw new Error('The name cannot be empty');

@@ -88,11 +88,12 @@ const REASONS = {
 const ERRORS = {
   'funnel-on': 'Tailscale Funnel is on for this port, which would put Termilab on the public internet. Turn Funnel off for that port first.',
   'port-busy': 'Another service already uses this port in Tailscale. Remove it, or stop the other app, and try again.',
-  'operator-required': 'Tailscale does not let your user share apps yet. Run this once in a terminal, then try again:',
+  'operator-required': 'Tailscale needs your permission once before Termilab can share this computer.',
+  'operator-cancelled': 'Permission was not granted. Try again when you are ready.',
   'serve-exited': 'Tailscale stopped sharing Termilab. Retrying…',
 };
 
-export function RemoteAccessView({ state, busy, error, nameDraft, onNameChange, onNameSave, onToggle, clients, onKick, kicking }) {
+export function RemoteAccessView({ state, busy, error, nameDraft, onNameChange, onNameSave, onToggle, onGrant, clients, onKick, kicking }) {
   if (!state) return null;
   const ts = state.tailscale || {};
   const ra = state.remoteAccess || {};
@@ -175,7 +176,13 @@ export function RemoteAccessView({ state, busy, error, nameDraft, onNameChange, 
       {shownError && shownError.code !== ts.reason && (
         <div className="cli-error" role="alert">
           {ERRORS[shownError.code] || shownError.message}
-          {shownError.command && (
+          {(shownError.code === 'operator-required' || shownError.code === 'operator-cancelled') && onGrant ? (
+            <div className="ra-error-cmd">
+              <button className="settings-test-btn" onClick={onGrant} disabled={!!busy}>
+                {busy === 'grant' ? 'Waiting for your password…' : 'Allow'}
+              </button>
+            </div>
+          ) : shownError.command && (
             <div className="ra-error-cmd"><CopyBlock text={shownError.command} label="command" /></div>
           )}
         </div>
@@ -261,6 +268,7 @@ export default function RemoteAccess() {
       nameDraft={nameDraft}
       onNameChange={setNameDraft}
       onNameSave={() => run('name', api => api.setName(nameDraft))}
+      onGrant={() => run('grant', api => api.grantOperator())}
       onToggle={() => run('toggle', api => (state?.remoteAccess?.enabled ? api.disable() : api.enable()))}
       clients={clients}
       onKick={kick}

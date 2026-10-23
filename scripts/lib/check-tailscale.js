@@ -23,6 +23,7 @@
  *  TS15 saveSettings no toca remoteAccess; set-name valida; socket dir 0700.
  *  TS16 canales web:* registrados y por el sobre de wrapHandler.
  *  TS17 el servidor web (syncServer) sigue a enable / resume / disable.
+ *  TS19 argv del boton Allow (operator por pkexec).
  *  TS18 fuera de Linux (process.platform simulado): unsupported-platform,
  *       enable rechazado en main, resume apaga, nunca serve ni servidor.
  *
@@ -376,6 +377,14 @@ async function seccionTailscale({ check, ROOT, handlers }) {
       remote.syncServer = antes;
     }
     keep();
+  });
+
+  await check('TS19 operator con un clic: pkexec via systemd-run (escapa de no_new_privs), sin shell ni sudo', () => {
+    const a = ts.operatorArgv({ bin: '/usr/bin/tailscale', user: 'derek', pkexec: '/usr/bin/pkexec', systemdRun: '/usr/bin/systemd-run' });
+    assert.deepStrictEqual(a, ['/usr/bin/systemd-run', '--user', '--pipe', '--wait', '--quiet', '--collect', '/usr/bin/pkexec', '/usr/bin/tailscale', 'set', '--operator=derek']);
+    const b = ts.operatorArgv({ bin: '/usr/bin/tailscale', user: 'derek', pkexec: '/usr/bin/pkexec', systemdRun: null });
+    assert.deepStrictEqual(b, ['/usr/bin/pkexec', '/usr/bin/tailscale', 'set', '--operator=derek']);
+    assert.ok(!a.includes('sudo'));
   });
 
   await check('TS* ninguna invocacion uso --bg ni serve reset', () => {

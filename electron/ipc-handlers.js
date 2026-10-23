@@ -632,6 +632,7 @@ function registerIpcHandlers(mainWindow) {
   ipcMain.handle('web:status', wrapHandler(async () => remoteAccess.status()));
   ipcMain.handle('web:enable', wrapHandler(async () => remoteAccess.enable()));
   ipcMain.handle('web:disable', wrapHandler(async () => remoteAccess.disable()));
+  ipcMain.handle('web:grant-operator', wrapHandler(async () => remoteAccess.grantOperator()));
   ipcMain.handle('web:set-name', wrapHandler(async (event, name) => remoteAccess.setName(name)));
   // The other Termilabs of this tailnet (PC switcher, the one web:* the browser
   // may call: gateway.js). electron/web/discovery.js, cached ~60 s.
@@ -1283,7 +1284,7 @@ function removeIpcHandlers() {
     'logs:list', 'logs:clear',
     'agent:status', 'agent:logs', 'agent:clear-logs', 'agent:approval-response',
     'cli:status', 'cli:install', 'cli:uninstall',
-    'web:status', 'web:enable', 'web:disable', 'web:set-name', 'web:peers', 'app:quit',
+    'web:status', 'web:enable', 'web:disable', 'web:set-name', 'web:grant-operator', 'web:peers', 'app:quit',
     'sftp:list', 'sftp:realpath', 'sftp:stat', 'sftp:mkdir', 'sftp:create-file',
     'sftp:rename', 'sftp:delete', 'sftp:chmod',
     'sftp:transfer-start', 'sftp:transfer-cancel',

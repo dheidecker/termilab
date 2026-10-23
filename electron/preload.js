@@ -228,6 +228,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     enable: () => invoke('web:enable'),
     disable: () => invoke('web:disable'),
     setName: (name) => invoke('web:set-name', name),
+    grantOperator: () => invoke('web:grant-operator'),
     /* Browsers connected right now: [{id, login, userAgent, connectedAt}] */
     clients: () => invoke('web:clients'),
     kick: (clientId) => invoke('web:kick', clientId),

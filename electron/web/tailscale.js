@@ -309,7 +309,43 @@ async function disable({ port = DEFAULT_PORT, target } = {}, opts = {}) {
   return { removed: r.code === 0 };
 }
 
+/* ─── Operator ───────────────────────────────────────────── */
+
+/**
+ * argv that makes this user Tailscale's operator (needed once on Linux for
+ * `serve`): pkexec shows the desktop's password dialog. Through systemd-run
+ * when it exists, because a Termilab relaunched by the updater runs with
+ * no_new_privs and pkexec (setuid) fails there; see local-shell-escape.js.
+ */
+function operatorArgv({ bin, user, pkexec, systemdRun }) {
+  const argv = [pkexec, bin, 'set', `--operator=${user}`];
+  return systemdRun ? [systemdRun, '--user', '--pipe', '--wait', '--quiet', '--collect', ...argv] : argv;
+}
+
+/** Resolves when the operator is set; rejects 'operator-cancelled' / 'operator-failed'. */
+function grantOperator(opts = {}) {
+  const { findInPath } = require('../services/local-shell-escape');
+  const os = require('os');
+  const raw = opts.bin || resolveBinary();
+  const bin = path.isAbsolute(raw) ? raw : findInPath(raw);
+  const pkexec = opts.pkexec || findInPath('pkexec');
+  if (!bin) return Promise.reject(new TailscaleError('not-installed', 'Tailscale is not installed'));
+  if (!pkexec) return Promise.reject(new TailscaleError('operator-failed', 'pkexec is not available to ask for your password'));
+  const systemdRun = opts.systemdRun !== undefined ? opts.systemdRun : findInPath('systemd-run');
+  const argv = operatorArgv({ bin, user: opts.user || os.userInfo().username, pkexec, systemdRun });
+  return new Promise((resolve, reject) => {
+    execFile(argv[0], argv.slice(1), { timeout: 5 * 60 * 1000, windowsHide: true }, (err, stdout, stderr) => {
+      if (!err) { resolve(); return; }
+      const code = typeof err.code === 'number' ? err.code : null;
+      // pkexec: 126 = dialog dismissed / not authorized, 127 = auth failed
+      if (code === 126 || code === 127) reject(new TailscaleError('operator-cancelled', 'Permission was not granted'));
+      else reject(new TailscaleError('operator-failed', String(stderr || stdout || err.message).trim() || 'Could not change the Tailscale setting'));
+    });
+  });
+}
+
 module.exports = {
+  operatorArgv, grantOperator,
   DEFAULT_PORT, OPERATOR_COMMAND, REASONS, TailscaleError,
   resolveBinary, run, status, statusJson, interpretStatus, serveStatus, portUsage,
   preflight, enable, disable, socketPath, ensureSocketDir, isAccessDenied,
