@@ -110,7 +110,8 @@ async function seccionTailscale({ check, ROOT, handlers }) {
   const allCalls = [];
   const keep = () => { allCalls.push(...calls()); };
   /* tailscaled como root, sin depender de la maquina (TS20 prueba el otro caso) */
-  remote.configure({ backoffMs: [150], tailscaledUid: () => 0 });
+  // No real web server here: a running Termilab may already hold 127.0.0.1:7444
+  remote.configure({ backoffMs: [150], tailscaledUid: () => 0, syncServer: async () => {} });
 
   await check('TS1 ubicacion del binario: PATH en Linux, rutas de Mac/Windows, variable de entorno', () => {
     const none = () => false;
