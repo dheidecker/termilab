@@ -20,9 +20,9 @@ import { pasteInto, copySelection, writeText as writeClipboardText } from './cli
 import { sessionStatus } from '../Mobile/sessions';
 import { liveSessionId } from '../SplitPane/sessions';
 import { registerTerminal, adoptedReady } from '../SplitPane/windowMove';
-import { extractReply } from './agentTalkText';
+import { extractReply, talkPasteText } from './agentTalkText';
 import { playChime, playQuestionChime, TYPING_QUIET_MS } from './agentChime';
-import { detectAgent, screenTail, createAgentTracker, NEEDS_YOU_TEXT, parseChoices, cursorRowText, claudeSuggestion, screenCells } from './agentRules';
+import { detectAgent, screenTail, createAgentTracker, NEEDS_YOU_TEXT, parseChoices, cursorRowText, claudeSuggestion, screenCells, talkInputAt, screenRows } from './agentRules';
 import PromptActions from '../Agents/PromptActions';
 import './TerminalView.css';
 import '../Keeper/Keeper.css';
@@ -569,7 +569,13 @@ export default function TerminalView({ tab }) {
        of the turn (bell / OSC, or working → idle prompt) is reported with
        the new text under it. After a turn end the screen gets TALK_GRACE_MS:
        an agent that picks up a queued message is working again by then, and
-       that was not our turn yet. */
+       that was not our turn yet.
+       Main sends one message per terminal at a time (its queue); if a caller
+       gave up early there can be more than one here: each turn end goes to
+       the OLDEST armed watch only, in order, and none is ever dropped.
+       Typed only with the cursor IN the agent's input field (talkInputAt):
+       a screen that merely looks like an agent (an exited Claude's box, a
+       `cat` of its footer) is refused, nothing is typed. */
     const TALK_GRACE_MS = 1200;
     /* The buffer's logical lines from the marker (TALK_ABOVE rows over the
        cursor's line when the message was typed), and where that line is */
@@ -610,19 +616,24 @@ export default function TerminalView({ tab }) {
       w.emit(id, { event, reply: t.reply, truncated: t.truncated });
     };
     function talkTurn(kind) {
-      for (const [id, w] of talkWatches) {
-        if (!w.armed) continue;
-        if (kind === 'blocked') { talkEmit(id, 'blocked'); continue; }
-        if (w.check) continue;
-        w.check = setTimeout(() => {
-          w.check = null;
-          if (disposed || !talkWatches.has(id)) return;
-          runScan();
-          const a = tracker.get();
-          if (a && a.state === 'working') return;   // a queued message started: not ours yet
-          talkEmit(id, a && a.state === 'blocked' ? 'blocked' : 'done');
-        }, TALK_GRACE_MS);
-      }
+      let id = null;
+      let w = null;
+      for (const [k, v] of talkWatches) if (v.armed) { id = k; w = v; break; }
+      if (!w) return;
+      if (kind === 'blocked') { talkEmit(id, 'blocked'); return; }
+      if (w.check) return;
+      w.check = setTimeout(() => {
+        w.check = null;
+        if (disposed || !talkWatches.has(id)) return;
+        runScan();
+        const a = tracker.get();
+        /* Working again: a message queued in the agent started. With another
+           of ours behind this one that is ours, and this turn did end. */
+        let armed = 0;
+        for (const v of talkWatches.values()) if (v.armed) armed++;
+        if (a && a.state === 'working' && armed < 2) return;   // the user's queued message: not ours yet
+        talkEmit(id, a && a.state === 'blocked' ? 'blocked' : 'done');
+      }, TALK_GRACE_MS);
     }
     const talkType = (fn) => {
       noBroadcastRef.current = true;
@@ -641,14 +652,20 @@ export default function TerminalView({ tab }) {
         if (!a) return { ok: false, code: 'not-agent', error: 'No agent CLI is running in that terminal now (it looks like a plain shell). Nothing was sent.' };
         if (a.state === 'blocked') return { ok: false, code: 'busy', error: 'That session is waiting for the user (a permission prompt or a question). Nothing was sent.' };
         if (typeof text !== 'string' || !text || typeof id !== 'string') return { ok: false, error: 'Nothing to send.' };
+        /* The cursor must be in the agent's input field, not just its box on screen */
+        const scr = screenRows(term);
+        const at = talkInputAt(scr.rows, scr.cursorY, a.id, scr.cursorX);
+        if (!at.ok) return { ok: false, code: 'not-agent', error: `No agent CLI is waiting for input in that terminal now (${at.reason}). Nothing was sent.` };
+        /* Main sanitised it already; again here, and on one line without bracketed paste */
+        const typed = talkPasteText(text, !!(term.modes && term.modes.bracketedPasteMode));
+        if (!typed.trim()) return { ok: false, error: 'Nothing to send.' };
         let marker = null;
         const buf = term.buffer.active;
         const above = Math.min(TALK_ABOVE, buf.baseY + buf.cursorY);
         try { marker = term.registerMarker(-above); } catch (_) { marker = null; }
-        while (talkWatches.size >= 4) talkDrop(talkWatches.keys().next().value);
-        const w = { marker, above, text, emit, armed: false, check: null };
+        const w = { marker, above, text: typed, emit, armed: false, check: null };
         talkWatches.set(id, w);
-        talkType(() => term.paste(text));
+        talkType(() => term.paste(typed));
         setTimeout(() => {
           if (disposed || termRef.current !== term) return;
           talkType(() => term.input('\r', true));

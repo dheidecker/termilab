@@ -27,6 +27,30 @@ import { AGENT_RULES } from './agentRules';
 
 export const TALK_REPLY_MAX = 64000;
 
+/**
+ * What may be typed into a terminal (defence in depth: main already did it):
+ * no C0 control but \n (\t becomes spaces, \r\n and \r become \n), no ESC,
+ * no DEL, no C1. A COPY of sanitizeTalkText in electron/agent/agent-talk.js
+ * (main is CommonJS, this is ESM): change both together.
+ */
+export function sanitizeTalkText(text) {
+  return String(text)
+    .replace(/\r\n?/g, '\n')
+    .replace(/\t/g, '    ')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, '');
+}
+
+/**
+ * The exact text to type: sanitised, and on ONE line unless the program
+ * turned bracketed paste on (mode 2004): without it every \n would be an
+ * Enter, and the next line would be a command of its own.
+ */
+export function talkPasteText(text, bracketed) {
+  const t = sanitizeTalkText(text);
+  return bracketed ? t : t.replace(/\n+/g, ' ');
+}
+
 const RULE = /^\s*[─━]{20,}\s*$/;
 /* "✻ Baked for 8s", "✻ Worked for 1m 3s", and a spinner "✢ Thinking… (esc to interrupt)" */
 const STATUS = [
@@ -66,8 +90,11 @@ function lastMatch(patterns, lines) {
 export function echoEnd(lines, text, near = null) {
   const msg = String(text || '').replace(/\r\n?/g, '\n');
   const first = msg.split('\n')[0];
-  /* "[Message from Termilab session "x"] ping": its head, spaces ignored */
-  const head = compact(first).slice(0, 40);
+  /* "[Message from Termilab session "x" · ref 7f3a9c] ping": its head up to
+     the delivery's ref (unique), spaces ignored */
+  const c0 = compact(first);
+  const refAt = /·ref[0-9a-f]{4,}\]/.exec(c0);
+  const head = refAt ? c0.slice(0, refAt.index + refAt[0].length) : c0.slice(0, 40);
   const nonEmpty = msg.split('\n').filter(l => l.trim());
   const tail = compact(nonEmpty[nonEmpty.length - 1] || '').slice(-24);
   if (!head) return -1;

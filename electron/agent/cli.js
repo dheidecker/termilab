@@ -106,7 +106,8 @@ Type <message> into another Termilab terminal where an AI agent CLI runs
 end and print its reply. <session> is an alias from \`termilab-cli sessions\`
 (case-insensitive). The words after it are joined with spaces; "-" reads the
 message from stdin. It arrives prefixed with [Message from Termilab session
-"<this terminal's alias>"].
+"<this terminal's alias>" · ref <id>]; control characters are removed. One
+message at a time per session: it may wait its turn (counted in --timeout).
   --no-wait     Return as soon as it is typed
   --timeout S   Wait at most S seconds for the reply (default 600, max 3600);
                 then print what it has so far and exit 124

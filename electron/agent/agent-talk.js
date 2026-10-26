@@ -18,15 +18,30 @@
  *
  * Rules (the reasons are in docs/agents.md):
  *   - only a terminal where an agent CLI was recognised, never a plain shell
- *     (typing there would run commands past the destructive-command guard)
- *   - never the sender's own terminal
+ *     (typing there would run commands past the destructive-command guard).
+ *     Three layers: the row's agentId (the tab's tracker), the owner window's
+ *     cursor rule (the xterm cursor must be ON the agent's input row,
+ *     agentRules.talkInputAt) and, for local terminals, /proc: a live agent
+ *     process in the tty's foreground group (proc-agent.js).
+ *   - never the sender's own terminal (by TERMILAB_SESSION_ID, and by the
+ *     caller's parent pid inside the target's process tree)
  *   - not while it waits for the user (permission prompt, question)
  *   - not when the user turned it off for that terminal (talkBlocked)
- *   - 8000 characters, 30 messages per hour per destination
+ *   - 8000 characters, 30 messages per hour per destination (reserved
+ *     synchronously: parallel calls cannot overshoot)
+ *   - the text is sanitised first (sanitizeTalkText: no C0 but \n, no ESC,
+ *     DEL or C1), so it can never close a bracketed paste or press a key
+ *   - one delivery in flight per destination; the others wait their turn in
+ *     a queue, and the time queued counts against the caller's timeout
+ *
+ * Every delivery carries a short ref in its prefix ("· ref 7f3a9c"): the
+ * transcript lookup matches that ref exactly, never just the text.
  *
  * Sender: local terminals export TERMILAB_SESSION_ID (local-shell-service);
- * termilab-cli / termilab-mcp pass it as `from`. Unknown = "an agent outside
- * Termilab". Every attempt goes to agent-log (from, to, length, result).
+ * termilab-cli / termilab-mcp pass it as `from`. It is INFORMATIVE: every
+ * process belongs to the same user, any of them can set that variable.
+ * Unknown = "an agent outside Termilab (unverified)". Every attempt goes to
+ * agent-log (from, to, length, result).
  */
 const crypto = require('crypto');
 const fsp = require('fs/promises');
@@ -40,6 +55,8 @@ const LIMITS = {
   timeoutDefaultS: 600,
   timeoutMaxS: 3600,
   opMs: 10000,                // a window answering one op
+  queueNoWaitS: 45,           // wait: false still waits its turn, this long at most
+  deliveriesKept: 500,        // finished deliveries remembered (wait_reply)
   transcriptWaitMs: 2000,     // the transcript may land a moment after the bell
   transcriptFiles: 40,
   transcriptTail: 8 * 1024 * 1024,
@@ -58,13 +75,34 @@ const fail = (message, code = 'invalid') => { throw new TalkError(code, message)
 /** A stable short name for a terminal without an alias */
 const shortId = (key) => `s${crypto.createHash('sha256').update(String(key)).digest('hex').slice(0, 5)}`;
 
-const OUTSIDE = 'an agent outside Termilab';
+const OUTSIDE = 'an agent outside Termilab (unverified)';
 
-/** The text typed into the destination */
-function prefixed(senderName, message) {
-  return senderName
-    ? `[Message from Termilab session "${senderName}"] ${message}`
-    : `[Message from ${OUTSIDE}] ${message}`;
+/**
+ * What may be typed into another terminal: no C0 control but \n (\t becomes
+ * spaces, \r\n and \r become \n), no ESC, no DEL, no C1 (U+0080–U+009F).
+ * Without ESC nothing can close a bracketed paste (\e[201~) or send a key;
+ * without \r / \x03 nothing submits or interrupts. The SAME function is in
+ * src/components/Terminal/agentTalkText.js (the renderer repeats it): change
+ * both together.
+ */
+function sanitizeTalkText(text) {
+  return String(text)
+    .replace(/\r\n?/g, '\n')
+    .replace(/\t/g, '    ')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, '');
+}
+
+/** A short id for one delivery, written in its prefix ("· ref 7f3a9c") */
+const newRef = () => crypto.randomBytes(3).toString('hex');
+
+/** The text typed into the destination: always starts with "[" (never "!" or "/") */
+function prefixed(senderName, message, ref) {
+  const tail = ref ? ` · ref ${ref}` : '';
+  const name = senderName ? sanitizeTalkText(senderName).replace(/["\]\n]/g, '').slice(0, 80) : '';
+  return name
+    ? `[Message from Termilab session "${name}"${tail}] ${message}`
+    : `[Message from ${OUTSIDE}${tail}] ${message}`;
 }
 
 /** Last `max` characters (the answer is at the end) → {text, truncated} */
@@ -98,6 +136,7 @@ function replyFromTranscript(lines, needle) {
   }
   const norm = (s) => String(s).replace(/\r\n?/g, '\n');
   const want = norm(needle);
+  if (!want) return { found: false, reply: '' };
   let at = -1;
   for (let i = entries.length - 1; i >= 0; i--) {
     if (isPrompt(entries[i]) && norm(textOf(entries[i].message.content)).includes(want)) { at = i; break; }
@@ -115,7 +154,8 @@ function replyFromTranscript(lines, needle) {
   return { found: true, reply: parts.join('\n\n') };
 }
 
-/** Search ~/.claude/projects for the conversation that got `needle` after `since` */
+/** Search ~/.claude/projects for the conversation that got `needle` (a delivery's
+    exact "· ref <id>]") after `since` */
 async function transcriptReply({ home, needle, since }) {
   const root = path.join(home, '.claude', 'projects');
   let dirs;
@@ -167,10 +207,13 @@ class AgentTalk {
     this.ops = new Map();
     /** deliveryId -> delivery */
     this.deliveries = new Map();
-    /** tabId -> the last delivery to it (wait_reply) */
+    /** tabId -> the last delivery to it; tabId\0from -> the last one from that sender (wait_reply) */
     this.last = new Map();
-    /** tabId -> [sentAt…] in the last hour */
+    this.lastBy = new Map();
+    /** tabId -> [sentAt…] in the last hour (reserved before the write) */
     this.sent = new Map();
+    /** tabId -> {active: delivery|null, waiting: [{dlv, resolve, timer}]}: one in flight per destination */
+    this.queues = new Map();
   }
 
   configure(deps) { this.deps = deps; }
@@ -199,6 +242,7 @@ class AgentTalk {
         agent,
         state: agent ? (STATE[r.state] || 'unknown') : 'unknown',
         reachable: !!agent && !blocked && live,
+        queued: this._queued(r.tabId),
       };
       if (!s.reachable) {
         s.note = !live ? 'not connected'
@@ -218,6 +262,7 @@ class AgentTalk {
         agent: b.agent && b.agent.id ? b.agent.id : null,
         state: 'unknown',
         reachable: false,
+        queued: 0,
         note: 'in the background (no window shows it): the user must reopen it in Termilab first',
       };
       out.push(Object.defineProperties(s, { _key: { value: `bg:${b.keeperId}` }, _background: { value: true } }));
@@ -278,11 +323,13 @@ class AgentTalk {
       clearTimeout(op.timer);
       const p = payload && typeof payload === 'object' ? payload : {};
       if (p.ok === false) op.reject(new TalkError(typeof p.code === 'string' ? p.code : 'refused', String(p.error || 'The session refused the message.').slice(0, 300)));
-      else op.resolve(p);
+      else op.resolve(Object.defineProperty({ ...p }, '__wc', { value: op.wc }));
       return true;
     }
     const dlv = this.deliveries.get(id);
     if (!dlv || dlv.result) return false;
+    /* Only the window that typed it (or watches it since the tab moved) ends its turn */
+    if (!dlv.wc || dlv.wc !== wc) return false;
     this._finish(dlv, payload && typeof payload === 'object' ? payload : {}).catch(() => {});
     return true;
   }
@@ -307,6 +354,7 @@ class AgentTalk {
       source,
     };
     if (blocked) dlv.result.note = 'The session stopped to ask the user something (a permission prompt or a question). This is what it showed; the user has to answer it in Termilab.';
+    this._release(dlv);
     for (const w of dlv.waiters) w();
     dlv.waiters = [];
   }
@@ -314,7 +362,9 @@ class AgentTalk {
   async _transcript(dlv) {
     const d = this.deps;
     const home = d && d.home ? d.home() : os.homedir();
-    const needle = dlv.text.split('\n')[0].slice(0, 200);
+    /* The ref is unique per delivery: the same text sent to two sessions (or
+       twice) never picks up another conversation's answer */
+    const needle = `· ref ${dlv.ref}]`;
     const until = Date.now() + this.limits.transcriptWaitMs;
     for (;;) {
       let r = null;
@@ -323,6 +373,48 @@ class AgentTalk {
       /* No ~/.claude/projects here at all: nothing will appear */
       if ((r && r.missing) || Date.now() >= until) return r;
       await new Promise(res => setTimeout(res, 250));
+    }
+  }
+
+  /* ── Queue: one delivery in flight per destination ── */
+
+  _queued(key) {
+    const q = this.queues.get(key);
+    return q ? q.waiting.length : 0;
+  }
+
+  /** Resolves when `dlv` may be typed; rejects (nothing typed) at `deadline` */
+  _enqueue(dlv, deadline) {
+    let q = this.queues.get(dlv.key);
+    if (!q) { q = { active: null, waiting: [] }; this.queues.set(dlv.key, q); }
+    if (!q.active) { q.active = dlv; return Promise.resolve(); }
+    return new Promise((resolve, reject) => {
+      const entry = { dlv, resolve, timer: null };
+      entry.timer = setTimeout(() => {
+        const i = q.waiting.indexOf(entry);
+        if (i >= 0) q.waiting.splice(i, 1);
+        reject(new TalkError('timeout', `Session "${dlv.session}" was still busy with ${i >= 0 ? i + 1 : 'an'} earlier message(s) from agents when the time ran out. Nothing was sent; try again later.`));
+      }, Math.max(0, deadline - Date.now()));
+      if (entry.timer.unref) entry.timer.unref();
+      q.waiting.push(entry);
+    });
+  }
+
+  /** `dlv` is no longer in flight (its turn ended, it failed, or it ran out of time): the next one goes */
+  _release(dlv) {
+    if (dlv.released) return;
+    dlv.released = true;
+    clearTimeout(dlv.holdTimer);
+    const q = this.queues.get(dlv.key);
+    if (!q || q.active !== dlv) return;
+    q.active = null;
+    const next = q.waiting.shift();
+    if (next) {
+      clearTimeout(next.timer);
+      q.active = next.dlv;
+      next.resolve();
+    } else {
+      this.queues.delete(dlv.key);
     }
   }
 
@@ -339,11 +431,11 @@ class AgentTalk {
       const d = this.deps;
       if (!d || !d.log) return null;
       const len = typeof message === 'string' ? message.length : 0;
-      const preview = typeof message === 'string'
-        ? (len > this.limits.logPreview ? `${message.slice(0, this.limits.logPreview)}…` : message) : '';
+      const clean = typeof message === 'string' ? sanitizeTalkText(message) : '';
+      const preview = clean.length > this.limits.logPreview ? `${clean.slice(0, this.limits.logPreview)}…` : clean;
       return d.log.add({
         tool: 'send_to_session',
-        host: target ? `session "${target.session}"` : String(p.session || '').slice(0, 80),
+        host: target ? `session "${target.session}"` : sanitizeTalkText(String(p.session || '')).slice(0, 80),
         command: `from ${senderName ? `session "${senderName}"` : OUTSIDE} (${len} chars): ${preview}`,
         ok,
         ...extra,
@@ -351,9 +443,25 @@ class AgentTalk {
         startedAt,
       });
     };
+    let dlv = null;
+    let reserved = null;
+    const unreserve = () => {
+      if (!reserved) return;
+      const i = reserved.times.indexOf(reserved.at);
+      if (i >= 0) reserved.times.splice(i, 1);
+      reserved = null;
+    };
     try {
       if (typeof message !== 'string' || !message.trim()) fail('Missing "message": the text to send.');
       if (message.length > this.limits.message) fail(`"message" is ${message.length} characters; the limit is ${this.limits.message}. Send a shorter message (put long content in a file and point to it).`);
+      /* Before anything else: nothing that could act as a key reaches a terminal */
+      const clean = sanitizeTalkText(message);
+      if (!clean.trim()) fail('"message" has no text left once control characters are removed.');
+      let secs = p.timeoutSec === undefined || p.timeoutSec === null ? this.limits.timeoutDefaultS : Number(p.timeoutSec);
+      if (!Number.isFinite(secs) || secs < 0) fail('"timeoutSec" must be a number of seconds.');
+      secs = Math.min(secs, this.limits.timeoutMaxS);
+      /* wait: false only waits for its turn, and not long (the caller gives up at 60 s) */
+      const deadline = t0 + 1000 * (wait ? secs : Math.min(secs, this.limits.queueNoWaitS));
       const list = this._list(p.from);
       const sender = this._sender(p.from, list);
       senderName = sender ? sender.session : null;
@@ -361,67 +469,141 @@ class AgentTalk {
       const name = target.session;
       if (sender && sender._key === target._key) fail(`"${name}" is your own session: an agent cannot message itself.`, 'self');
       if (target._background) fail(`Session "${name}" is in the background (no window shows it). Ask the user to reopen it in Termilab (Sessions → Background) first.`, 'unreachable');
-      if (!target.agent) fail(`Session "${name}" runs no agent CLI that Termilab recognises (it looks like a plain shell). Messages only go to an agent such as Claude Code or Codex: typed into a shell they would run as commands.`, 'not-agent');
-      if (target._blocked) fail(`The user does not let agents message session "${name}" (Sessions → right-click → Let agents message this session).`, 'blocked');
-      if (target._row.sessionId == null || target._row.connected === false) fail(`Session "${name}" is not connected.`, 'unreachable');
-      if (target.state === 'waiting-permission') fail(`Session "${name}" is waiting for the user (a permission prompt or a question). Nothing was sent. Try again after the user answers it.`, 'busy');
+      /* Without (or with a false) TERMILAB_SESSION_ID: the caller's parent inside the target's process tree is itself */
+      const callerPid = Number.isInteger(ctx.ppid) ? ctx.ppid : null;
+      if (callerPid && target._row.kind === 'local' && target._row.sessionId != null && this.deps.pidInSession) {
+        let inside = null;
+        try { inside = await this.deps.pidInSession(target._row.sessionId, callerPid); } catch (_) { inside = null; }
+        if (inside === true) fail(`"${name}" is your own session: an agent cannot message itself.`, 'self');
+      }
+      this._check(target);
+      /* Reserve the slot now, synchronously with the check: parallel calls cannot overshoot */
       const now = Date.now();
       const times = (this.sent.get(target._key) || []).filter(x => now - x < HOUR_MS);
+      this.sent.set(target._key, times);
       if (times.length >= this.limits.perHour) {
         fail(`Session "${name}" already got ${times.length} messages from agents in the last hour (the limit is ${this.limits.perHour}, against agents looping on each other). Nothing was sent; wait or ask the user.`, 'rate');
       }
-      const text = prefixed(senderName, message);
+      times.push(now);
+      reserved = { times, at: now };
+      const ref = this._newRef();
+      const text = prefixed(senderName, clean, ref);
       const deliveryId = crypto.randomBytes(12).toString('hex');
-      const r = await this._op(target._row, { kind: 'send', deliveryId, text });
-      times.push(Date.now());
-      this.sent.set(target._key, times);
-      const dlv = {
-        id: deliveryId, session: name, key: target._key, row: target._row, agent: target.agent,
-        kind: target._row.kind, text, sentAt: now, waiters: [], result: null,
+      dlv = {
+        id: deliveryId, ref, session: name, key: target._key, row: target._row, agent: target.agent,
+        kind: target._row.kind, text, sentAt: now, waiters: [], result: null, status: 'queued', wc: null,
+        released: false, holdTimer: null,
       };
       this.deliveries.set(deliveryId, dlv);
-      const prev = this.last.get(target._key);
-      if (prev && prev !== dlv) this.deliveries.delete(prev.id);
       this.last.set(target._key, dlv);
+      this.lastBy.set(`${target._key}\0${p.from || ''}`, dlv);
       this._trim();
+      const ahead = this._queued(target._key) + (this.queues.get(target._key)?.active ? 1 : 0);
+      await this._enqueue(dlv, deadline);
+      /* Its turn: the session may have changed while it waited */
+      if (ahead) {
+        const again = this._list(p.from).find(s => s._key === target._key);
+        if (!again) fail(`Session "${name}" was closed while the message waited its turn. Nothing was sent.`, 'unreachable');
+        target = again;
+        dlv.row = target._row;
+        this._check(target);
+      }
+      /* Local terminal: a live agent process in the foreground of its tty */
+      if (target._row.kind === 'local' && this.deps.localAgent) {
+        let fg = null;
+        try { fg = await this.deps.localAgent(target._row.sessionId); } catch (_) { fg = null; }
+        if (fg && fg.known && !fg.ok) {
+          fail(`Session "${name}" runs no agent CLI now (its terminal's foreground program is ${fg.fg ? `"${fg.fg}"` : 'not an agent'}; an agent that exited can leave its box on screen). Nothing was sent.`, 'not-agent');
+        }
+      }
+      const r = await this._op(target._row, { kind: 'send', deliveryId, text });
+      dlv.status = 'sent';
+      dlv.sentAt = Date.now();
+      dlv.wc = r && r.__wc ? r.__wc : null;
+      reserved = null;
+      /* In flight until its turn ends, or until the caller's time is up */
+      const holdMs = wait ? Math.max(0, deadline - Date.now()) : this.limits.timeoutDefaultS * 1000;
+      dlv.holdTimer = setTimeout(() => this._release(dlv), holdMs);
+      if (dlv.holdTimer.unref) dlv.holdTimer.unref();
       const queued = r && r.state === 'working';
       await log(true);
-      const sent = { session: name, sent: true, queued: !!queued };
+      const sent = { session: name, sent: true, queued: !!queued, ref };
       if (queued) sent.note = 'The session was busy with another turn: the agent queues the message and answers after that.';
+      if (ahead) sent.waitedMs = dlv.sentAt - t0;
       if (!wait) return { ...sent, state: queued ? 'working' : 'sent' };
-      const res = await this._wait(dlv, p.timeoutSec);
+      const res = await this._wait(dlv, Math.max(0, deadline - Date.now()));
       return { ...sent, ...res };
     } catch (err) {
+      unreserve();
+      if (dlv && dlv.status !== 'sent') {
+        this._release(dlv);
+        this.deliveries.delete(dlv.id);
+        if (this.last.get(dlv.key) === dlv) this.last.delete(dlv.key);
+        for (const [k, v] of this.lastBy) if (v === dlv) this.lastBy.delete(k);
+      }
       await log(false, { error: err.message });
       throw err;
     }
   }
 
-  async waitReply(p = {}) {
-    const list = this._list(p.from);
-    const target = this._resolve(p.session, list);
-    const dlv = this.last.get(target._key);
-    if (!dlv) fail(`Nothing was sent to session "${target.session}" since Termilab started: use send_to_session.`, 'not-found');
-    if (!dlv.result && target._row && dlv.row !== target._row) {
-      /* The tab moved to another window since: that one watches it now */
-      dlv.row = target._row;
-      await this._op(target._row, { kind: 'watch', deliveryId: dlv.id, text: dlv.text }).catch(() => {});
-    }
-    return this._wait(dlv, p.timeoutSec);
+  /** The rules that depend on the target's current row (also re-checked after waiting in the queue) */
+  _check(target) {
+    const name = target.session;
+    if (!target.agent) fail(`Session "${name}" runs no agent CLI that Termilab recognises (it looks like a plain shell). Messages only go to an agent such as Claude Code or Codex: typed into a shell they would run as commands.`, 'not-agent');
+    if (target._blocked) fail(`The user does not let agents message session "${name}" (Sessions → right-click → Let agents message this session).`, 'blocked');
+    if (target._row.sessionId == null || target._row.connected === false) fail(`Session "${name}" is not connected.`, 'unreachable');
+    if (target.state === 'waiting-permission') fail(`Session "${name}" is waiting for the user (a permission prompt or a question). Nothing was sent. Try again after the user answers it.`, 'busy');
   }
 
-  async _wait(dlv, timeoutSec) {
-    let secs = timeoutSec === undefined || timeoutSec === null ? this.limits.timeoutDefaultS : Number(timeoutSec);
+  _newRef() {
+    for (;;) {
+      const ref = newRef();
+      let used = false;
+      for (const d of this.deliveries.values()) if (d.ref === ref) { used = true; break; }
+      if (!used) return ref;
+    }
+  }
+
+  async waitReply(p = {}) {
+    let secs = p.timeoutSec === undefined || p.timeoutSec === null ? this.limits.timeoutDefaultS : Number(p.timeoutSec);
     if (!Number.isFinite(secs) || secs < 0) fail('"timeoutSec" must be a number of seconds.');
     secs = Math.min(secs, this.limits.timeoutMaxS);
+    const list = this._list(p.from);
+    const target = this._resolve(p.session, list);
+    const dlv = this.lastBy.get(`${target._key}\0${p.from || ''}`) || this.last.get(target._key);
+    if (!dlv) fail(`Nothing was sent to session "${target.session}" since Termilab started: use send_to_session.`, 'not-found');
+    if (!dlv.result && dlv.status === 'sent' && target._row && dlv.row !== target._row) {
+      /* The tab moved to another window since: that one watches it now */
+      dlv.row = target._row;
+      try {
+        const r = await this._op(target._row, { kind: 'watch', deliveryId: dlv.id, text: dlv.text });
+        dlv.wc = r && r.__wc ? r.__wc : dlv.wc;
+      } catch (_) { /* the old window may still answer */ }
+    }
+    return this._wait(dlv, secs * 1000);
+  }
+
+  async _wait(dlv, ms) {
     if (!dlv.result) {
       await new Promise((resolve) => {
-        const timer = setTimeout(done, secs * 1000);
-        function done() { clearTimeout(timer); resolve(); }
-        dlv.waiters.push(done);
+        let timer = null;
+        const waiter = () => { clearTimeout(timer); resolve(); };
+        /* At its deadline a waiter leaves the list: nothing piles up per timed-out wait */
+        timer = setTimeout(() => {
+          const i = dlv.waiters.indexOf(waiter);
+          if (i >= 0) dlv.waiters.splice(i, 1);
+          resolve();
+        }, ms);
+        dlv.waiters.push(waiter);
       });
     }
     if (dlv.result) return { ...dlv.result, timedOut: false };
+    if (dlv.status !== 'sent') {
+      return {
+        session: dlv.session, reply: '', state: 'queued', truncated: false, source: 'screen', timedOut: true,
+        note: 'The message is still waiting for its turn behind other agents\' messages to that session. Call wait_reply with this session to keep waiting.',
+      };
+    }
     /* Not finished: what the screen shows so far, and the agent can wait_reply */
     let partial = {};
     const row = this._currentRow(dlv) || dlv.row;
@@ -445,12 +627,15 @@ class AgentTalk {
     } catch (_) { return null; }
   }
 
-  /* Keep the last delivery per destination only, and at most 200 destinations */
+  /* At most `deliveriesKept` deliveries; the oldest FINISHED ones go first
+     (one still queued or in flight is never dropped) */
   _trim() {
-    while (this.last.size > 200) {
-      const [k, d] = this.last.entries().next().value;
-      this.last.delete(k);
-      this.deliveries.delete(d.id);
+    for (const [id, d] of this.deliveries) {
+      if (this.deliveries.size <= this.limits.deliveriesKept) break;
+      if (!d.result && !d.released) continue;
+      this.deliveries.delete(id);
+      if (this.last.get(d.key) === d) this.last.delete(d.key);
+      for (const [k, v] of this.lastBy) if (v === d) this.lastBy.delete(k);
     }
   }
 
@@ -471,6 +656,7 @@ module.exports.AgentTalk = AgentTalk;
 module.exports.TalkError = TalkError;
 module.exports.LIMITS = LIMITS;
 module.exports.prefixed = prefixed;
+module.exports.sanitizeTalkText = sanitizeTalkText;
 module.exports.shortId = shortId;
 module.exports.replyFromTranscript = replyFromTranscript;
 module.exports.transcriptReply = transcriptReply;

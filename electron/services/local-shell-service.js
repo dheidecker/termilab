@@ -1,5 +1,6 @@
 const os = require('os');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
 const connectionLogService = require('./connection-log-service');
 const windowRegistry = require('../window-registry');
 const ptyEscape = require('./local-shell-escape');
@@ -184,6 +185,36 @@ class LocalShellService {
   /** The TERMILAB_SESSION_ID its shell got (agent-talk.js), or null */
   talkIdOf(sessionId) {
     return this.talkIds.get(sessionId) || null;
+  }
+
+  /**
+   * The pid of the shell behind this tab (agent-talk: proc-agent.js reads its
+   * tty's foreground group and process tree), or null when it cannot be known.
+   *   direct pty     the pty's own pid
+   *   kept session   the keeper's `list` (shellPid of that session)
+   *   systemd-run    the unit's MainPID (the pty runs systemd-run, not the shell)
+   */
+  async shellPidOf(sessionId) {
+    if (process.platform !== 'linux') return null;
+    const ent = this.ents.get(sessionId);
+    if (!ent || !this.shells.has(sessionId)) return null;
+    if (ent.kept) {
+      try {
+        const fg = await localKeeper.foreground(ent.kept.bin, ent.kept.id);
+        return fg && fg.shellPid ? fg.shellPid : null;
+      } catch (_) { return null; }
+    }
+    const unit = this.units.get(sessionId);
+    if (unit) {
+      return new Promise((resolve) => {
+        execFile('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', `${unit}.service`], { timeout: 2000 }, (err, stdout) => {
+          const n = Number(String(stdout || '').trim());
+          resolve(!err && Number.isInteger(n) && n > 1 ? n : null);
+        });
+      });
+    }
+    const pid = ent.pty && ent.pty.pid;
+    return Number.isInteger(pid) && pid > 1 ? pid : null;
   }
 
   /** {kept, notice} of a spawn (local:spawn returns it with the id) */

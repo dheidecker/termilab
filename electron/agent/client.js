@@ -46,7 +46,10 @@ function callTermilab(method, params, { timeoutMs = 120000, client = null } = {}
     /* client: who is asking (MCP clientInfo name, "termilab-cli"), shown when the user must approve */
     /* from: the Termilab terminal this runs in (local shells export it), the sender of send_to_session */
     const from = typeof process.env.TERMILAB_SESSION_ID === 'string' && process.env.TERMILAB_SESSION_ID ? process.env.TERMILAB_SESSION_ID : null;
-    sock.on('connect', () => sock.write(`${JSON.stringify({ id, token, method, params, ...(client ? { client } : {}), ...(from ? { from } : {}) })}\n`));
+    /* ppid: the process that ran this one (an agent CLI, or its shell): main checks it
+       against a send_to_session target's process tree (never to itself) */
+    const ppid = process.ppid;
+    sock.on('connect', () => sock.write(`${JSON.stringify({ id, token, method, params, ppid, ...(client ? { client } : {}), ...(from ? { from } : {}) })}\n`));
     sock.on('data', (d) => {
       buf += d;
       const nl = buf.indexOf('\n');

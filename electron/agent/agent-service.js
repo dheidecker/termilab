@@ -297,6 +297,10 @@ class AgentService {
         /* TERMILAB_SESSION_ID of the terminal the caller runs in (agent-talk.js):
            only names the sender of a message; it grants nothing */
         from: typeof req.from === 'string' ? req.from.slice(0, 120) : null,
+        /* The caller's parent pid (termilab-cli / termilab-mcp send process.ppid):
+           agent-talk refuses a target whose process tree holds it ("never to
+           itself" without TERMILAB_SESSION_ID). Same user: informative too. */
+        ppid: Number.isInteger(req.ppid) && req.ppid > 1 ? req.ppid : null,
       };
       const result = await this.call(req.method, req.params || {}, ctx);
       reply({ result });

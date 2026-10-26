@@ -313,6 +313,97 @@ export function createAgentTracker(initial = null) {
   };
 }
 
+/* ─── Agent to agent: may a message be typed here? ───
+   detectAgent() answers "which agent is on screen", and a screen can lie: a
+   Claude that exited leaves its ─❯─ box behind, `cat` of a text quoting its
+   footer, an old Aider banner over a bash prompt. Typing into that bash
+   would run the message as commands. So, to SEND (electron/agent/agent-talk.js
+   via TerminalView), the xterm cursor itself must be in the agent's input
+   field, on its prompt row:
+     Claude Code  the "❯ " / "> " row, with a full-width rule right above it
+                  and another a few rows below; under that rule only its
+                  footer (indented rows: mode line, status line, hints)
+     Codex        the "› " row (not a "› 1." menu row); under it only its
+                  footer (indented rows), one of them Codex's own
+   A cursor on a row that looks like a shell prompt, or below the box, is
+   "no agent". Other agents (Aider, Gemini, opencode) have no verified input
+   field yet: no messages to them. Works the same on the alternate screen
+   (Codex and Claude Code ≥ 2.1.310 draw there). Seen live: Claude Code
+   2.1.300 / 2.1.310 keep the cursor on the "❯" row while idle. */
+
+const TALK_FOOTER_MAX = 12;
+/* A shell prompt: "user@host:~/dir$ ", "[x@y d]# ", "% ", "PS C:\> "… */
+const SHELL_PROMPT = /(^|\s)\S*[$#%]\s?$|^\S+@\S+.*[$#%>]\s?$|^PS [^>]*>\s?$/;
+const MENU_ROW = /^\s*[❯›>]\s*\d{1,2}\.\s/u;
+const CODEX_FOOTER = [
+  ...AGENT_RULES.find(r => r.id === 'codex').signature,
+  /\? for shortcuts/, /context left/, /⏎ send/,
+];
+
+function footerOk(rows, from, extra) {
+  let n = 0;
+  let mine = !extra;
+  for (let y = from; y < rows.length; y++) {
+    const l = rows[y];
+    if (!/\S/.test(l)) continue;
+    /* The agent's footer is indented; a row at column 0 is someone else's (a shell prompt) */
+    if (/^\S/.test(l)) return false;
+    if (++n > TALK_FOOTER_MAX) return false;
+    if (extra && extra.some(p => p.test(l))) mine = true;
+  }
+  return mine;
+}
+
+/**
+ * @param {string[]} rows  EVERY row of the screen (the active buffer's
+ *   viewport), top to bottom: not trimmed, so row indexes match the cursor
+ * @param {number} cursorY  the cursor's row in `rows` (buffer.cursorY)
+ * @param {string|null} agentId  the agent detected here
+ * @param {number} [cursorX]
+ * @returns {{ok: true} | {ok: false, reason: string}}
+ */
+export function talkInputAt(rows, cursorY, agentId, cursorX = null) {
+  if (!Array.isArray(rows) || !Number.isInteger(cursorY) || cursorY < 0 || cursorY >= rows.length) {
+    return { ok: false, reason: 'the cursor is not on the screen' };
+  }
+  const clean = rows.map(l => (typeof l === 'string' ? l.replace(/\s+$/, '') : ''));
+  const row = clean[cursorY];
+  if (MENU_ROW.test(row)) return { ok: false, reason: 'a menu is open' };
+  if (agentId === 'claude') {
+    const m = /^(\s*)[❯>](\s|$)/u.exec(row);
+    if (!m) return { ok: false, reason: SHELL_PROMPT.test(row) ? 'the cursor is on a shell prompt' : 'the cursor is not in the input box' };
+    if (Number.isInteger(cursorX) && cursorX <= m[1].length) return { ok: false, reason: 'the cursor is not in the input box' };
+    if (cursorY < 1 || !RULE.test(clean[cursorY - 1])) return { ok: false, reason: 'the cursor is not in the input box' };
+    let bottom = -1;
+    for (let y = cursorY + 1; y < Math.min(clean.length, cursorY + 12); y++) {
+      if (RULE.test(clean[y])) { bottom = y; break; }
+      if (/^\s*[❯>›](\s|$)/u.test(clean[y])) break;
+    }
+    if (bottom < 0) return { ok: false, reason: 'the cursor is not in the input box' };
+    if (!footerOk(clean, bottom + 1, null)) return { ok: false, reason: 'something other than the agent is below its input box' };
+    return { ok: true };
+  }
+  if (agentId === 'codex') {
+    if (!/^›(\s|$)/u.test(row)) return { ok: false, reason: SHELL_PROMPT.test(row) ? 'the cursor is on a shell prompt' : 'the cursor is not in the input field' };
+    if (Number.isInteger(cursorX) && cursorX < 1) return { ok: false, reason: 'the cursor is not in the input field' };
+    if (!footerOk(clean, cursorY + 1, CODEX_FOOTER)) return { ok: false, reason: 'something other than the agent is below its input field' };
+    return { ok: true };
+  }
+  return { ok: false, reason: agentId ? 'messages only go to Claude Code or Codex (their input field is known)' : 'no agent CLI here' };
+}
+
+/** Every row of an xterm's screen (talkInputAt), with the cursor */
+export function screenRows(term) {
+  const b = term && term.buffer && term.buffer.active;
+  if (!b) return { rows: [], cursorY: -1, cursorX: -1, alt: false };
+  const rows = [];
+  for (let y = b.baseY; y < b.baseY + term.rows; y++) {
+    const line = b.getLine(y);
+    rows.push(line ? line.translateToString(true) : '');
+  }
+  return { rows, cursorY: b.cursorY, cursorX: b.cursorX, alt: b.type === 'alternate' };
+}
+
 /* ─── Shared by the tab, pane header and Sessions dock ─── */
 
 export const AGENT_STATE_LABEL = { working: 'working', blocked: 'needs input', done: 'done', idle: 'idle' };

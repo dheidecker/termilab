@@ -193,14 +193,14 @@ const TOOLS = [
   {
     name: 'list_sessions',
     title: 'List Termilab sessions',
-    description: 'The terminals open in Termilab (tabs and Background), to talk to another AI agent running in one of them. Each: session (its alias, or a short id), alias, host ("local" or the host label), agent ("claude", "codex"... or null), state (working, idle, waiting-permission, unknown), reachable (true = send_to_session can message it; note says why not), self (true = the terminal you run in). Takes no arguments: {}.',
+    description: 'The terminals open in Termilab (tabs and Background), to talk to another AI agent running in one of them. Each: session (its alias, or a short id), alias, host ("local" or the host label), agent ("claude", "codex"... or null), state (working, idle, waiting-permission, unknown), reachable (true = send_to_session can message it; note says why not), queued (messages from agents waiting their turn there), self (true = the terminal you run in). Takes no arguments: {}.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
     name: 'send_to_session',
     title: 'Message another agent',
-    description: 'Type a message into another Termilab terminal where an AI agent CLI runs (Claude Code, Codex...), as if the user typed it in its input box, and wait for that agent to finish its turn. Returns reply (its answer), state, truncated, timedOut. The message arrives prefixed with [Message from Termilab session "<your alias>"]. Only to sessions with reachable: true in list_sessions: never a plain shell, never your own session, not while it waits for a permission or a question (error, nothing typed). A busy agent queues it (queued: true). Up to 8000 characters; 30 messages per hour per session. On timedOut: true, call wait_reply. Example: {"session":"sempat","message":"Which branch are you on?"}.',
+    description: 'Type a message into another Termilab terminal where an AI agent CLI runs (Claude Code, Codex...), as if the user typed it in its input box, and wait for that agent to finish its turn. Returns reply (its answer), state, truncated, timedOut. The message arrives prefixed with [Message from Termilab session "<your alias>" · ref <id>]; control characters are removed. Only to sessions with reachable: true in list_sessions: never a plain shell, never your own session, not while it waits for a permission or a question (error, nothing typed). A busy agent queues it (queued: true). One message in flight per session: yours may wait its turn, and that counts against timeoutSec. Up to 8000 characters; 30 messages per hour per session. On timedOut: true, call wait_reply. Example: {"session":"sempat","message":"Which branch are you on?"}.',
     inputSchema: {
       type: 'object',
       properties: {

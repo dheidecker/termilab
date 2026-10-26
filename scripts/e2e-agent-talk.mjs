@@ -16,6 +16,14 @@
 //  T6 un segundo mensaje enseguida tambien vuelve (el fin de turno no se pierde)
 //  T7 a si misma / a un alias que no existe: rechazado, nada escrito
 //  T8 "Don't let agents message this session" (accion del menu): rechazado
+//  T10 dos send seguidos al mismo destino: cada uno SU respuesta (cola por destino)
+//  T11 un mensaje con \e[201~\r!touch …/PWNED\r (y sin "!") no ejecuta nada:
+//      el agente recibe UN mensaje, sin ESC ni CR, y el archivo no aparece
+//  T12 una tercera pestana donde el agente falso YA TERMINO (Ctrl-C) y la shell
+//      quedo debajo de su caja: send se rechaza y bash no recibe nada (un
+//      archivo centinela que no se crea)
+//  T13 el agente falso VIVO pero con el cursor fuera de su caja (Ctrl-O): la
+//      ventana rechaza por la regla del cursor, aunque /proc diga que si
 //  T9 agent-logs.json tiene los envios
 // HOME y userData temporales: no toca tu ~/.config/termilab ni tu ~/.claude.
 import { spawn, spawnSync } from 'node:child_process';
@@ -127,6 +135,10 @@ async function main() {
     const read = (f) => { try { return fs.readFileSync(f, 'utf-8'); } catch (_) { return ''; } };
     return { code: m ? Number(m[1]) : null, stdout: read(so), stderr: read(se) };
   };
+  /* The fake agent through a link named "claude": /proc must see an agent CLI */
+  fs.mkdirSync(path.join(base, 'bin'));
+  const AGENT = path.join(base, 'bin', 'claude');
+  fs.symlinkSync(FAKE, AGENT);
   const received = () => { try { return fs.readFileSync(fakeLog, 'utf-8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch (_) { return []; } };
 
   try {
@@ -153,7 +165,7 @@ async function main() {
     await P.typeLine('echo "SID=[$TERMILAB_SESSION_ID]"');
     const sid = await P.waitFor(async () => (await P.visibleText()).match(/^SID=\[([^\]\n]+)\]/m), 5000);
     ok('T1 a local Termilab shell exports TERMILAB_SESSION_ID', !!sid, (await P.visibleText()).slice(-300));
-    await P.typeLine(`FAKE_AGENT_LOG=${fakeLog} exec ${NODE} ${FAKE}`);
+    await P.typeLine(`FAKE_AGENT_LOG=${fakeLog} exec ${NODE} ${AGENT}`);
     const seen = await P.waitFor(async () => { const r = await rowOf('sempat'); return r && r.agentId === 'claude' && r.state === 'idle' ? r : null; }, 15000);
     ok('T2 the fake agent is recognised in "sempat" (Sessions: claude, idle)', !!seen, JSON.stringify(await rowOf('sempat')));
 
@@ -170,17 +182,18 @@ async function main() {
 
     const t0 = Date.now();
     const r1 = await cliHere('send sempat "ping"');
-    const want = 'pong: [Message from Termilab session "backend"] ping';
-    ok('T4 send sempat "ping" from backend returns "pong: …" with the sender prefix', r1.code === 0 && r1.stdout.includes(want),
+    const want = /pong: \[Message from Termilab session "backend" · ref [0-9a-f]{6}\] ping/;
+    ok('T4 send sempat "ping" from backend returns "pong: …" with the sender prefix', r1.code === 0 && want.test(r1.stdout),
       `exit ${r1.code}, stdout ${JSON.stringify(r1.stdout)}, stderr ${JSON.stringify(r1.stderr)}`);
     console.log(`     reply in ${Date.now() - t0} ms: ${JSON.stringify(r1.stdout.trim())}`);
-    ok('T5 the agent got exactly one pasted message with that prefix', JSON.stringify(received()) === JSON.stringify(['[Message from Termilab session "backend"] ping']), JSON.stringify(received()));
+    const got = received();
+    ok('T5 the agent got exactly one pasted message with that prefix', got.length === 1 && /^\[Message from Termilab session "backend" · ref [0-9a-f]{6}\] ping$/.test(got[0]), JSON.stringify(got));
 
     const r2 = await cliHere('send --json sempat "second one"');
     let j2 = null;
     try { j2 = JSON.parse(r2.stdout); } catch (_) { j2 = null; }
     ok('T6 a second message right away also comes back (end of turn not lost)',
-      r2.code === 0 && !!j2 && j2.reply.includes('pong: [Message from Termilab session "backend"] second one') && j2.timedOut === false && j2.state === 'idle',
+      r2.code === 0 && !!j2 && /pong: \[Message from Termilab session "backend" · ref [0-9a-f]{6}\] second one/.test(j2.reply) && j2.timedOut === false && j2.state === 'idle',
       `${r2.code} ${r2.stdout} ${r2.stderr}`);
 
     const self = await cliHere('send backend "hola"');
@@ -189,19 +202,92 @@ async function main() {
       self.code === 1 && /your own session/.test(self.stderr) && shell.code === 1 && /No session named "nadie"/.test(shell.stderr) && received().length === 2,
       `${self.code} ${self.stderr} | ${shell.code} ${shell.stderr}`);
 
+    /* T10: two at once to the same session, from the same shell */
+    {
+      const o1 = path.join(base, 'q1.txt'); const o2 = path.join(base, 'q2.txt');
+      const cli = `TERMILAB_USER_DATA=${userData} ${NODE} ${CLI}`;
+      await P.typeLine(`(${cli} send sempat "first in line" > ${o1} 2>&1 & ${cli} send sempat "second in line" > ${o2} 2>&1; wait); echo QUEUE-DONE`);
+      await P.waitFor(async () => /^QUEUE-DONE/m.test(await P.visibleText()), 60000);
+      const a = fs.readFileSync(o1, 'utf-8'); const b = fs.readFileSync(o2, 'utf-8');
+      const rx = (w) => new RegExp(`pong: \\[Message from Termilab session "backend" · ref [0-9a-f]{6}\\] ${w}`);
+      ok('T10 two sends at once to the same session: each gets ITS reply',
+        rx('first in line').test(a) && !/second/.test(a) && rx('second in line').test(b) && !/first/.test(b) && received().length === 4,
+        `${JSON.stringify(a)} | ${JSON.stringify(b)} | ${JSON.stringify(received())}`);
+    }
+
+    /* T11: control sequences in the message never act as keys */
+    {
+      const pw1 = path.join(base, 'PWNED1'); const pw2 = path.join(base, 'PWNED2');
+      const m1 = path.join(base, 'evil1.txt'); const m2 = path.join(base, 'evil2.txt');
+      fs.writeFileSync(m1, `\x1b[201~\r!touch ${pw1}\r`);
+      fs.writeFileSync(m2, `\x1b[201~\rtouch ${pw2}\r\x03`);
+      const e1 = await cliHere(`send sempat - < ${m1}`);
+      const e2 = await cliHere(`send sempat - < ${m2}`);
+      await sleep(1500);
+      const got = received().slice(4);
+      ok('T11 a message with \\e[201~\\r!touch …/PWNED\\r runs nothing: one message each, no ESC/CR in it, no file',
+        e1.code === 0 && e2.code === 0 && got.length === 2 && got.every(t => !/[\x00-\x09\x0b-\x1f\x7f-\x9f]/.test(t) && t.startsWith('[Message from'))
+          && !fs.existsSync(pw1) && !fs.existsSync(pw2),
+        `${e1.code} ${e1.stderr} | ${e2.code} ${e2.stderr} | ${JSON.stringify(got)} | ${fs.existsSync(pw1)} ${fs.existsSync(pw2)}`);
+    }
+
+    /* T12: a third tab where the agent already exited and left its box above the shell */
+    {
+      await P.ctrlT();
+      await P.waitFor(async () => (await P.ev(`${tabs}.length`)) === 3 && /e2e\$\s*$/m.test(await P.visibleText()), 20000);
+      const r3 = await P.waitFor(async () => { const r = await rowsNow(); return r.length === 3 && r.every(x => x.sessionId) ? r : null; }, 10000);
+      const fresh = r3 && r3.find(x => x.alias !== 'backend' && x.alias !== 'sempat');
+      if (fresh) await P.ev(`window.electronAPI.window.sessionAction(${JSON.stringify({ windowId: fresh.windowId, tabId: fresh.tabId, action: 'rename', value: 'gone' })})`);
+      await P.typeLine(`${NODE} ${AGENT}`);
+      const live = await P.waitFor(async () => { const r = await rowOf('gone'); return r && r.agentId === 'claude' ? r : null; }, 15000);
+      /* Ctrl-C: the fake exits, its box stays, the bash prompt comes under it */
+      await P.ev(`(() => { const t = ${VISIBLE}; t.focus(); return true; })()`);
+      await P.ev(`(() => { const t = ${VISIBLE}; t.input('\x03', true); return true; })()`);
+      const boxLeft = await P.waitFor(async () => { const t = await P.visibleText(); return /❯[^\n]*\n─+\n  \? for shortcuts\n+e2e\$\s*$/.test(t.replace(/\s+$/, '')) ? t : null; }, 8000);
+      await sleep(1200);
+      const sentinel = path.join(base, 'SENTINEL');
+      const msg = path.join(base, 'gone.txt');
+      fs.writeFileSync(msg, `hola; touch ${sentinel}\ntouch ${sentinel}`);
+      await showTab(0);
+      const gone = await cliHere(`send gone - < ${msg}`);
+      await sleep(1500);
+      const row = await rowOf('gone');
+      ok('T12 agent exited, its box still on screen above bash: send refused, bash got nothing (no sentinel file)',
+        !!live && !!boxLeft && gone.code === 1 && /runs no agent CLI|No agent CLI is waiting for input|plain shell/.test(gone.stderr) && !fs.existsSync(sentinel),
+        `live ${!!live} box ${!!boxLeft} exit ${gone.code} stderr ${JSON.stringify(gone.stderr)} sentinel ${fs.existsSync(sentinel)} row ${JSON.stringify(row)}`);
+      console.log(`     refused with: ${gone.stderr.trim()}`);
+
+      /* T13: the agent IS alive in the foreground (/proc says yes), but the cursor is out of its box */
+      const log2 = path.join(base, 'fake2.log');
+      await showTab(2);
+      await P.typeLine(`FAKE_AGENT_LOG=${log2} ${NODE} ${AGENT}`);
+      const back = await P.waitFor(async () => { const r = await rowOf('gone'); return r && r.agentId === 'claude' && /\? for shortcuts\s*$/.test(await P.visibleText()) ? r : null; }, 15000);
+      await P.ev(`(() => { const t = ${VISIBLE}; t.input('\x0f', true); return true; })()`);
+      await P.waitFor(async () => /\n\$\s*$/.test(await P.visibleText()), 5000);
+      await sleep(800);
+      await showTab(0);
+      const out = await cliHere('send gone "hola"');
+      let got2 = '';
+      try { got2 = fs.readFileSync(log2, 'utf-8'); } catch (_) { got2 = ''; }
+      ok('T13 agent alive in the foreground but the cursor out of its input box: the window refuses, nothing typed',
+        !!back && out.code === 1 && /No agent CLI is waiting for input/.test(out.stderr) && got2 === '',
+        `back ${!!back} exit ${out.code} ${JSON.stringify(out.stderr)} log ${JSON.stringify(got2)}`);
+      console.log(`     refused with: ${out.stderr.trim()}`);
+    }
+
     const row = await rowOf('sempat');
     await P.ev(`window.electronAPI.window.sessionAction(${JSON.stringify({ windowId: row.windowId, tabId: row.tabId, action: 'talk', value: true })})`);
     await P.waitFor(async () => (await rowOf('sempat')).talkBlocked === true, 5000);
     const blocked = await cliHere('send sempat "hola"');
     ok('T8 "Don\'t let agents message this session": refused, nothing typed',
-      blocked.code === 1 && /does not let agents message/.test(blocked.stderr) && received().length === 2, `${blocked.code} ${blocked.stderr}`);
+      blocked.code === 1 && /does not let agents message/.test(blocked.stderr) && received().length === 6, `${blocked.code} ${blocked.stderr}`);
 
     await sleep(300);
     let logs = [];
     try { logs = JSON.parse(fs.readFileSync(path.join(userData, 'data', 'agent-logs.json'), 'utf-8')); } catch (_) { logs = []; }
     const sends = logs.filter(e => e.tool === 'send_to_session');
-    ok('T9 agent-logs.json records every attempt (2 delivered, 3 refused)',
-      sends.filter(e => e.ok).length === 2 && sends.filter(e => !e.ok).length === 3 && sends.every(e => /^from session "backend" \(\d+ chars\)/.test(e.command)),
+    ok('T9 agent-logs.json records every attempt (6 delivered, 5 refused)',
+      sends.filter(e => e.ok).length === 6 && sends.filter(e => !e.ok).length === 5 && sends.every(e => /^from session "backend" \(\d+ chars\)/.test(e.command)),
       JSON.stringify(sends.map(e => [e.ok, e.host, e.command, e.error])));
   } catch (err) {
     ok('e2e ran without throwing', false, err && err.stack);

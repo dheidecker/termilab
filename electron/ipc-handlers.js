@@ -24,6 +24,7 @@ const openPathService = require('./services/open-path-service');
 const cliInstallService = require('./services/cli-install-service');
 const agentService = require('./agent/agent-service');
 const agentApprovals = require('./agent/approval');
+const procAgent = require('./agent/proc-agent');
 const remoteAccess = require('./web/remote-access');
 const mirror = require('./web/mirror');
 
@@ -498,6 +499,16 @@ function registerIpcHandlers(mainWindow) {
     rows: () => windowRegistry.agentRows(null).rows,
     background: () => backgroundSessions.list(),
     talkIdOf: (sessionId) => localShellService.talkIdOf(sessionId),
+    /* Local terminals only (proc-agent.js): an agent process in the foreground
+       of the tty, and whether a caller's pid is inside that terminal's tree */
+    localAgent: async (sessionId) => {
+      const pid = await localShellService.shellPidOf(sessionId);
+      return pid ? procAgent.foregroundAgent(pid) : { known: false, why: 'shell pid unknown' };
+    },
+    pidInSession: async (sessionId, pid) => {
+      const shellPid = await localShellService.shellPidOf(sessionId);
+      return shellPid ? procAgent.pidUnder(pid, shellPid) : null;
+    },
     push: (row, op) => {
       let wc = row.sessionId ? windowRegistry.ownerOf(row.sessionId) : null;
       if (!wc && row.windowId != null) { const e = windowRegistry.byId(row.windowId); wc = e ? e.wc : null; }

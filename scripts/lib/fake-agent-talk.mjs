@@ -7,7 +7,14 @@
 // eco "> <texto>", trabaja 1,5 s con el spinner, responde "● pong: <texto>",
 // vuelve a dibujar la caja y suena el BEL. Cada mensaje recibido se agrega a
 // FAKE_AGENT_LOG (si existe) para que la prueba vea los bytes exactos.
+// Como Claude Code, un mensaje que EMPIEZA con "!" se ejecuta en sh (su modo
+// bash): asi la prueba ve si un mensaje inyectado llega a ejecutar algo.
+// Ctrl-C sale dejando la caja en pantalla (como un Claude que se cerro) y la
+// shell sigue debajo. Ctrl-O deja el agente vivo pero con el cursor fuera de
+// su caja, en una fila "$ " (para probar la regla del cursor por si sola). La prueba lo lanza por un enlace llamado "claude" para
+// que /proc lo vea como agente.
 import fs from 'node:fs';
+import { execSync } from 'node:child_process';
 
 const out = (s) => process.stdout.write(s);
 const cols = () => Math.max(40, (process.stdout.columns || 100) - 1);
@@ -36,6 +43,7 @@ function submit() {
   input = '';
   if (!text.trim()) return;
   if (LOG) fs.appendFileSync(LOG, `${JSON.stringify(text)}\n`);
+  if (text.startsWith('!')) { try { execSync(text.slice(1), { stdio: 'ignore', shell: '/bin/sh' }); } catch (_) { /* failed */ } }
   busy = true;
   /* From the rule above the prompt down: the echo replaces the box */
   out('\x1b[1A\r\x1b[J');
@@ -61,7 +69,9 @@ process.stdin.on('data', (d) => {
     const c = pending[0];
     pending = pending.slice(1);
     if (pasting) { input += c === '\r' ? '\n' : c; continue; }
-    if (c === '\x03') { out('\x1b[?2004l\r\n'); process.exit(0); }
+    if (c === '\x03') { out('\x1b[?2004l\x1b[2B\r\n'); process.exit(0); }
+    /* Ctrl-O: still running, but the cursor leaves the box for a "$ " row under it */
+    if (c === '\x0f') { out('\x1b[2B\r\n$ '); continue; }
     if (c === '\r') { if (!busy) submit(); continue; }
     if (c === '\x7f') { input = input.slice(0, -1); continue; }
     if (c >= ' ') { input += c; out(c); }
