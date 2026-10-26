@@ -58,10 +58,14 @@ class RemoteAccess {
     this.tailscaledUid = () => tailscale.tailscaledUid();
     /* (identity | null) => Promise: main.js syncWebServer */
     this.syncServer = null;
+    this.blocked = null;       // a reason string: never serve (dev run)
     this.identity = { login: null, dnsName: null, port: null, name: null };
   }
 
-  configure({ backoffMs, syncServer, tailscaledUid } = {}) {
+  configure({ backoffMs, syncServer, tailscaledUid, blocked } = {}) {
+    /* A dev run next to the installed app (main.js, dev-data.js): never
+       touches Tailscale serve nor the web server, whatever settings say */
+    if (typeof blocked === 'string' && blocked) this.blocked = blocked;
     if (typeof tailscaledUid === 'function') this.tailscaledUid = tailscaledUid;
     if (Array.isArray(backoffMs) && backoffMs.length) this.backoffMs = backoffMs;
     if (typeof syncServer === 'function') this.syncServer = syncServer;
@@ -193,6 +197,7 @@ class RemoteAccess {
   }
 
   async enable() {
+    if (this.blocked) return this._refuseBlocked();
     /* Not just the UI: main refuses too, and nothing is stored */
     if (!supported()) {
       this.error = { ...UNSUPPORTED };
@@ -225,7 +230,16 @@ class RemoteAccess {
     return handle;
   }
 
+  /* Blocked (dev run): nothing started, nothing to stop; only the stored flag goes off */
+  async _refuseBlocked() {
+    this.error = { code: 'blocked', message: this.blocked };
+    try { await storeService.saveRemoteAccess({ enabled: false }); } catch (_) { /* not stored */ }
+    const st = await this.status();
+    return { ...st, error: this.error };
+  }
+
   async disable() {
+    if (this.blocked) return this._refuseBlocked();
     const ra = await this._settings();
     await this.stop();
     this.error = null;
@@ -243,6 +257,7 @@ class RemoteAccess {
 
   /** Linux: make this user Tailscale's operator (password dialog), then retry. */
   async grantOperator() {
+    if (this.blocked) return this._refuseBlocked();
     if (!supported()) return this.enable();
     try {
       await tailscale.grantOperator();
@@ -264,6 +279,7 @@ class RemoteAccess {
 
   /** Boot: revalidate a stored enabled:true and serve again, or switch it off. */
   async resume() {
+    if (this.blocked) return null;
     const ra = await this._settings();
     if (!ra.enabled) return null;
     if (!supported()) {

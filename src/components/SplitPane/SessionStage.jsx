@@ -14,6 +14,7 @@ import InlineRename from './InlineRename';
 import { ColorPopover, anchorOf } from '../ColorPicker/ColorPicker';
 import { PaletteIcon } from '../Icons/icons';
 import AgentDot from '../Agents/AgentDot';
+import AgentActivityLine from './AgentActivityLine';
 import './SplitPane.css';
 
 /*
@@ -183,6 +184,7 @@ export default function SessionStage() {
   const { tabs, layouts, activeTabId } = state;
   const { splitPane, dropOnPane, detachPane, focusPane, seePane, setPaneRatio, removeTab, disconnectSession, setTabColor, setTabAlias } = actions;
   const visualAlerts = state.settings?.terminal?.visualAlerts !== false;
+  const agentActivity = state.settings?.terminal?.agentActivity !== false;
   const drag = useDrag();
 
   const stageRef = useRef(null);
@@ -352,6 +354,8 @@ export default function SessionStage() {
             {shown && visualAlerts && tab.doneAt && (
               <div key={tab.doneAt} className={`pane-done-glow${tab.doneKind === 'blocked' ? ' blocked' : ''}`} aria-hidden="true" />
             )}
+            {/* The agent's state on the pane's top edge (AgentActivityLine) */}
+            {shown && agentActivity && <AgentActivityLine agent={tab.agent} />}
             {FEATURES.splitPanes && shown && (multi ? (
               <PaneHeader
                 tab={tab}

@@ -59,7 +59,7 @@ function ventana(nombre, { minimizada = false, focused = false } = {}) {
 }
 
 /** Carga electron/main.js con un electron falso. Devuelve el falso y los _test. */
-function cargaMain(ROOT, { lock = true, dev = false, ready = false, respuesta = null } = {}) {
+function cargaMain(ROOT, { lock = true, dev = false, ready = false, respuesta = null, appExtra = null } = {}) {
   const mainPath = path.join(ROOT, 'electron', 'main.js');
   const app = new EventEmitter();
   Object.assign(app, {
@@ -71,6 +71,7 @@ function cargaMain(ROOT, { lock = true, dev = false, ready = false, respuesta = 
     getVersion: () => '0.0.0-ml',
     getPath: () => os.tmpdir(),
   });
+  if (appExtra) Object.assign(app, appExtra(app));
   const nativeUpdater = new EventEmitter();
   const updater = new EventEmitter();
   updater.checkForUpdates = () => Promise.resolve(null);
@@ -232,6 +233,38 @@ async function seccionCicloVida({ check, ROOT }) {
     assert.strictEqual(D.app.lockAsked, 0, 'en dev se pidio el candado');
     assert.strictEqual(D.app.quitCalls, 0, 'en dev la app salio');
     assert.strictEqual(D.T.state().primaryInstance, true);
+
+    /* Dev sin empaquetar (npm run dev): userData propio <userData>-dev con su
+       candado, hosts sembrados desde el real sin escribir en el real, y sin
+       acceso remoto (electron/dev-data.js) */
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ml-dev-'));
+    const real = path.join(base, 'termilab');
+    fs.mkdirSync(path.join(real, 'data'), { recursive: true });
+    fs.writeFileSync(path.join(real, 'data', 'hosts.json'), '[{"id":"h1"}]');
+    fs.writeFileSync(path.join(real, 'data', 'settings.json'), '{"remoteAccess":{"enabled":true}}');
+    fs.writeFileSync(path.join(real, 'data', 'sync-secrets.json'), '{}');
+    const antesReal = fs.readdirSync(path.join(real, 'data')).sort().join(',');
+    const userDataEnvAntes = process.env.TERMILAB_USER_DATA;
+    const remoteAccess = require(path.join(ROOT, 'electron', 'web', 'remote-access.js'));
+    const bloqueoAntes = remoteAccess.blocked;
+    try {
+      const X = cargaMain(ROOT, { lock: true, dev: true, appExtra: (a) => {
+        const paths = { userData: real };
+        return { isPackaged: false, getPath: (k) => paths[k] || base, setPath: (k, v) => { paths[k] = v; } };
+      } });
+      assert.strictEqual(X.app.getPath('userData'), `${real}-dev`, 'dev no movio userData a <userData>-dev');
+      assert.strictEqual(X.app.lockAsked, 1, 'dev con userData propio no pidio su candado');
+      assert.ok(fs.existsSync(path.join(`${real}-dev`, 'data', 'hosts.json')), 'no se copiaron los hosts');
+      assert.ok(!fs.existsSync(path.join(`${real}-dev`, 'data', 'settings.json')), 'se copiaron los settings (acceso remoto)');
+      assert.ok(!fs.existsSync(path.join(`${real}-dev`, 'data', 'sync-secrets.json')), 'se copiaron los secretos de sync');
+      assert.strictEqual(fs.readdirSync(path.join(real, 'data')).sort().join(','), antesReal, 'dev escribio en el userData real');
+      assert.ok(remoteAccess.blocked, 'dev no bloqueo el acceso remoto');
+      assert.strictEqual(await remoteAccess.resume(), null, 'dev reanudo el acceso remoto');
+    } finally {
+      remoteAccess.blocked = bloqueoAntes;
+      if (userDataEnvAntes === undefined) delete process.env.TERMILAB_USER_DATA; else process.env.TERMILAB_USER_DATA = userDataEnvAntes;
+      fs.rmSync(base, { recursive: true, force: true });
+    }
   });
 
   // ── ML3 cerrar una ventana con sesiones del keeper ──

@@ -483,3 +483,76 @@
 @media (prefers-reduced-motion: reduce) {
   .pane-done-glow { animation: none; }
 }
+
+/* ─── Agent activity on the pane's top edge (AgentActivityLine.jsx) ───
+   A 2px line over the top edge, absolutely placed: covers no text, moves
+   nothing, takes no clicks. Only transform and opacity animate (compositor
+   work, no layout or paint per frame), and a hidden pane is display:none,
+   so nothing runs for it. Colours are theme tokens only. */
+.pane-agent-line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 17;
+}
+
+/* Working: a segment running edge to edge over a faint track */
+.pane-agent-line.working {
+  background: var(--accent-muted);
+}
+.pane-agent-line-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 35%;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 1px;
+  transform: translateX(-100%);
+  will-change: transform;
+  animation: pane-agent-run 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+@keyframes pane-agent-run {
+  from { transform: translateX(-100%); }
+  /* 100% / 35% of the line: the segment's own width is the unit */
+  to { transform: translateX(286%); }
+}
+
+/* Waiting for the user: the whole edge amber, a slow pulse */
+.pane-agent-line.waiting {
+  background: var(--color-warning);
+  will-change: opacity;
+  animation: pane-agent-wait 2.2s ease-in-out infinite;
+}
+@keyframes pane-agent-wait {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* Finished: a green flash that fades out (the component then drops it) */
+.pane-agent-line.done {
+  background: var(--color-success);
+  animation: pane-agent-done 1.2s ease-out forwards;
+}
+@keyframes pane-agent-done {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* No motion: static lines in the state's colour; the flash becomes a
+   plain green line for the same 1.2 s, then gone */
+@media (prefers-reduced-motion: reduce) {
+  .pane-agent-line.working { background: var(--accent); }
+  .pane-agent-line-bar { display: none; }
+  .pane-agent-line.waiting { animation: none; opacity: 1; }
+  .pane-agent-line.done { animation: pane-agent-done-static 1.2s step-end forwards; }
+}
+@keyframes pane-agent-done-static {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}

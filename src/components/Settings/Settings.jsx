@@ -433,6 +433,17 @@ export default function Settings({ fullPage = false, onBack }) {
 
             <div className="settings-field">
               <div className="settings-field-label">
+                <span>Show agent activity on panes</span>
+                <small>A thin line on the top edge of each terminal: running while Claude Code, Codex or another agent works, amber while it waits for your answer, a short green flash when it finishes</small>
+              </div>
+              <button
+                className={`settings-toggle ${settings.terminal?.agentActivity !== false ? 'active' : ''}`}
+                onClick={() => update('terminal.agentActivity', !(settings.terminal?.agentActivity !== false))}
+              />
+            </div>
+
+            <div className="settings-field">
+              <div className="settings-field-label">
                 <span>Keep sessions alive</span>
                 <small>Termilab installs a small helper in ~/.termilab on Linux servers (and on this computer, for local terminals on Linux) that keeps each terminal's shell running through disconnects and app restarts, and reattaches with the screen as it was. Each host can override this in its settings</small>
               </div>

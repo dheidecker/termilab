@@ -21,6 +21,12 @@ itself once the dev server listens, so `vite` alone gives you the full app with 
 `npm run electron:dev` spawns a *second* Electron without that env var — that one falls through to
 `loadFile('../dist/index.html')` and shows a stale build.
 
+A dev run lives in its own `<userData>-dev` (`electron/dev-data.js`), so it runs next to the installed
+app: its own single-instance lock and `agent.sock`, remote access blocked, and on first launch a copy of
+hosts, groups, keys, snippets and known host keys from the real userData (never written; no settings,
+sync secrets or workspace). Delete `~/.config/termilab-dev` to re-seed. `TERMILAB_DEV_SHARED_DATA=1`
+or an explicit `--user-data-dir` restores the old shared behaviour.
+
 Unsigned macOS builds need `CSC_IDENTITY_AUTO_DISCOVERY=false` in the environment, otherwise
 electron-builder looks for a signing identity. Distribution outside your own machine requires real
 signing + notarization.

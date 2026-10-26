@@ -43,6 +43,14 @@ if (process.platform === 'linux' && process.env.TERMILAB_USE_SYSTEM_IME !== '1')
 
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
+/* `npm run dev` gets its own userData (<userData>-dev, hosts seeded from the
+   real one) so it runs next to the installed app: electron/dev-data.js.
+   Before any service is required: store-service reads userData at load. */
+const devData = require('./dev-data').setupDevUserData(app);
+const devSeparate = devData.mode === 'separate';
+if (devSeparate) {
+  console.log(`[Main] Dev run: userData ${devData.dir}${devData.copied.length ? ` (seeded: ${devData.copied.join(', ')})` : ''}`);
+}
 /* Before any handler is registered: the web mirror's gateway calls the same
    functions (electron/web/ipc-tap.js). Electron's behaviour is unchanged. */
 require('./web/ipc-tap').install(ipcMain);
@@ -223,6 +231,7 @@ function webServerActive() {
 }
 
 async function startWebServer(identity) {
+  if (devSeparate) throw new Error('No web server in a development run');
   if (webServerActive()) return webServer.address();
   if (webStarting) return webStarting;
   webStarting = (async () => {
@@ -267,8 +276,10 @@ async function syncWebServer(identity) {
   return null;
 }
 
-/* remote-access.js starts/stops the server with the Tailscale identity */
-remoteAccess.configure({ syncServer: syncWebServer });
+/* remote-access.js starts/stops the server with the Tailscale identity.
+   A separate dev run never serves: the installed app owns Tailscale serve
+   and :7444, and the dev copy must not take them over or switch them off. */
+remoteAccess.configure({ syncServer: syncWebServer, ...(devSeparate ? { blocked: 'Remote access is off in a development run (npm run dev): the installed Termilab serves it' } : {}) });
 
 /* While the web mirror is on, closing the last window hides it instead: the
    browser mirrors this renderer's tabs, and the app keeps running for it
@@ -513,12 +524,14 @@ app.on('will-quit', () => {
 /* One Termilab per user (per userData): a second launch would restore the
    same workspace, re-attach the same kept sessions (kicking the first
    instance's tabs) and both would overwrite workspace.json. The second one
-   hands over to the first and quits. Dev runs are exempt: they share the
-   installed app's userData and must start while it is open.
+   hands over to the first and quits. A dev run on its own userData
+   (dev-data.js) has its own lock, so it starts while the installed app is
+   open; one that shares it (TERMILAB_DEV_SHARED_DATA=1, --user-data-dir)
+   is exempt, as before.
    The updater relaunch is unaffected: its waiter starts the new instance
    only after this process has exited (and released the lock). */
 const isDevRun = !!process.env.VITE_DEV_SERVER_URL;
-const primaryInstance = isDevRun || app.requestSingleInstanceLock();
+const primaryInstance = (isDevRun && !devSeparate) || app.requestSingleInstanceLock();
 if (!primaryInstance) {
   app.quit();
 } else {
@@ -564,7 +577,7 @@ app.whenReady().then(async () => {
     .catch(err => console.error('[Main] Agent API not started:', err.message));
   /* Remote access (Tailscale serve): revalidate a stored "on" and serve again,
      or turn it off if Tailscale is no longer ready. Never blocks the launch. */
-  remoteAccess.resume()
+  if (!devSeparate) remoteAccess.resume()
     .catch(err => console.error('[Main] Remote access not resumed:', err.message));
 
   // Back to the window: pick up what other devices changed meanwhile.
