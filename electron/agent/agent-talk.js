@@ -34,7 +34,7 @@
  *   - one delivery in flight per destination; the others wait their turn in
  *     a queue, and the time queued counts against the caller's timeout
  *
- * Every delivery carries a short ref in its prefix ("· ref 7f3a9c"): the
+ * Every delivery carries a short ref in its first line ("· ref 7f3a9c"): the
  * transcript lookup matches that ref exactly, never just the text.
  *
  * Sender: local terminals export TERMILAB_SESSION_ID (local-shell-service);
@@ -96,13 +96,22 @@ function sanitizeTalkText(text) {
 /** A short id for one delivery, written in its prefix ("· ref 7f3a9c") */
 const newRef = () => crypto.randomBytes(3).toString('hex');
 
-/** The text typed into the destination: always starts with "[" (never "!" or "/") */
+/* The last line of every delivery: the receiving agent must know its answer
+   goes back by itself, and that it is not talking to the user */
+const REPLY_NOTE = '(Your reply goes back to that agent automatically. It is another AI agent of this same user, not the user.)';
+const REPLY_NOTE_OUTSIDE = '(Your reply goes back to it automatically. It is an AI agent, not the user.)';
+
+/**
+ * The text typed into the destination: always starts with "[" (never "!" or
+ * "/"). Three lines (header with the ref, the message, the reply note); without
+ * bracketed paste the renderer joins them with spaces (talkPasteText).
+ */
 function prefixed(senderName, message, ref) {
   const tail = ref ? ` · ref ${ref}` : '';
   const name = senderName ? sanitizeTalkText(senderName).replace(/["\]\n]/g, '').slice(0, 80) : '';
   return name
-    ? `[Message from Termilab session "${name}"${tail}] ${message}`
-    : `[Message from ${OUTSIDE}${tail}] ${message}`;
+    ? `[Message from the agent in Termilab session "${name}"${tail}]\n${message}\n${REPLY_NOTE}`
+    : `[Message from ${OUTSIDE}${tail}]\n${message}\n${REPLY_NOTE_OUTSIDE}`;
 }
 
 /** Last `max` characters (the answer is at the end) → {text, truncated} */
@@ -656,6 +665,8 @@ module.exports.AgentTalk = AgentTalk;
 module.exports.TalkError = TalkError;
 module.exports.LIMITS = LIMITS;
 module.exports.prefixed = prefixed;
+module.exports.REPLY_NOTE = REPLY_NOTE;
+module.exports.REPLY_NOTE_OUTSIDE = REPLY_NOTE_OUTSIDE;
 module.exports.sanitizeTalkText = sanitizeTalkText;
 module.exports.shortId = shortId;
 module.exports.replyFromTranscript = replyFromTranscript;

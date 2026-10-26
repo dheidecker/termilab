@@ -66,7 +66,7 @@ The user may have other AI agents (Claude Code, Codex, ...) running in other Ter
 2. \`send_to_session {"session": "sempat", "message": "Which migration did you just add?"}\` types the message into that agent's input box, as if the user typed it, waits for its turn to end and returns \`reply\`, \`state\`, \`truncated\` and \`timedOut\` (CLI: \`termilab-cli send sempat "..."\`).
 3. A long task: \`timeoutSec\` (default 600, max 3600), or \`"wait": false\` and later \`wait_reply {"session": "sempat"}\`. \`timedOut: true\` returns what it has written so far: call \`wait_reply\` to keep waiting.
 
-The other agent sees the message prefixed with \`[Message from Termilab session "<your alias>" · ref <id>]\` (or \`an agent outside Termilab (unverified)\` when you do not run in a Termilab terminal). It does not see your conversation: make the message self-contained, and say what answer you need. Control characters are removed from the message, and without bracketed paste its lines are joined with spaces.
+The other agent sees the message between a first line \`[Message from the agent in Termilab session "<your alias>" · ref <id>]\` (or \`[Message from an agent outside Termilab (unverified) · ref <id>]\` when you do not run in a Termilab terminal) and a last line that tells it its reply comes back to you automatically and that you are another AI agent, not the user. It does not see your conversation: make the message self-contained, and say what answer you need. Control characters are removed from the message, and without bracketed paste its lines are joined with spaces.
 
 Rules:
 

@@ -11,8 +11,9 @@
 //  T1 cada shell local tiene TERMILAB_SESSION_ID
 //  T2 el agente falso se detecta (Sessions: agente, idle)
 //  T3 termilab-cli sessions lista las dos, sempat alcanzable
-//  T4 send sempat "ping" desde backend: "pong: [Message from Termilab session "backend"] ping"
-//  T5 el agente recibio un solo mensaje pegado, con el prefijo exacto
+//  T4 send sempat "ping" desde backend: "pong: [Message from the agent in Termilab session "backend" · ref …] ping (Your reply goes back …)"
+//     (la respuesta pasa por cleanReply: sin "● ", las lineas re-envueltas unidas)
+//  T5 el agente recibio un solo mensaje pegado: cabecera, mensaje y nota final, en tres lineas
 //  T6 un segundo mensaje enseguida tambien vuelve (el fin de turno no se pierde)
 //  T7 a si misma / a un alias que no existe: rechazado, nada escrito
 //  T8 "Don't let agents message this session" (accion del menu): rechazado
@@ -182,18 +183,20 @@ async function main() {
 
     const t0 = Date.now();
     const r1 = await cliHere('send sempat "ping"');
-    const want = /pong: \[Message from Termilab session "backend" · ref [0-9a-f]{6}\] ping/;
+    const NOTE = '(Your reply goes back to that agent automatically. It is another AI agent of this same user, not the user.)';
+    const reNote = NOTE.replace(/[.()]/g, '\\$&');
+    const want = new RegExp(`^pong: \\[Message from the agent in Termilab session "backend" · ref [0-9a-f]{6}\\] ping ${reNote}\\s*$`);
     ok('T4 send sempat "ping" from backend returns "pong: …" with the sender prefix', r1.code === 0 && want.test(r1.stdout),
       `exit ${r1.code}, stdout ${JSON.stringify(r1.stdout)}, stderr ${JSON.stringify(r1.stderr)}`);
     console.log(`     reply in ${Date.now() - t0} ms: ${JSON.stringify(r1.stdout.trim())}`);
     const got = received();
-    ok('T5 the agent got exactly one pasted message with that prefix', got.length === 1 && /^\[Message from Termilab session "backend" · ref [0-9a-f]{6}\] ping$/.test(got[0]), JSON.stringify(got));
+    ok('T5 the agent got exactly one pasted message with that prefix', got.length === 1 && new RegExp(`^\\[Message from the agent in Termilab session "backend" · ref [0-9a-f]{6}\\]\\nping\\n${reNote}$`).test(got[0]), JSON.stringify(got));
 
     const r2 = await cliHere('send --json sempat "second one"');
     let j2 = null;
     try { j2 = JSON.parse(r2.stdout); } catch (_) { j2 = null; }
     ok('T6 a second message right away also comes back (end of turn not lost)',
-      r2.code === 0 && !!j2 && /pong: \[Message from Termilab session "backend" · ref [0-9a-f]{6}\] second one/.test(j2.reply) && j2.timedOut === false && j2.state === 'idle',
+      r2.code === 0 && !!j2 && new RegExp(`^pong: \\[Message from the agent in Termilab session "backend" · ref [0-9a-f]{6}\\] second one ${reNote}$`).test(j2.reply) && j2.timedOut === false && j2.state === 'idle',
       `${r2.code} ${r2.stdout} ${r2.stderr}`);
 
     const self = await cliHere('send backend "hola"');
@@ -209,7 +212,7 @@ async function main() {
       await P.typeLine(`(${cli} send sempat "first in line" > ${o1} 2>&1 & ${cli} send sempat "second in line" > ${o2} 2>&1; wait); echo QUEUE-DONE`);
       await P.waitFor(async () => /^QUEUE-DONE/m.test(await P.visibleText()), 60000);
       const a = fs.readFileSync(o1, 'utf-8'); const b = fs.readFileSync(o2, 'utf-8');
-      const rx = (w) => new RegExp(`pong: \\[Message from Termilab session "backend" · ref [0-9a-f]{6}\\] ${w}`);
+      const rx = (w) => new RegExp(`pong: \\[Message from the agent in Termilab session "backend" · ref [0-9a-f]{6}\\] ${w} ${reNote}`);
       ok('T10 two sends at once to the same session: each gets ITS reply',
         rx('first in line').test(a) && !/second/.test(a) && rx('second in line').test(b) && !/first/.test(b) && received().length === 4,
         `${JSON.stringify(a)} | ${JSON.stringify(b)} | ${JSON.stringify(received())}`);
