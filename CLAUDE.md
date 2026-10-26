@@ -172,6 +172,14 @@ halves drift silently and nothing in the build catches it.
 
 ## Releasing
 
+**Testing a build locally:** a `.deb` with the same version as the published release gets overwritten
+by the updater on the next Quit (it installs the release it already downloaded). Install test builds
+only after the update is applied, or bump the version first. With remote access on, closing the window
+only hides it: restart with Settings → Quit Termilab.
+
+**Agents never open a real Claude Code or Codex UI in tests**: Codex's "Update now" prompt once broke the
+owner's global install. Use screen fixtures (`scripts/lib/fixtures/talk`).
+
 `electron-updater` checks GitHub Releases on startup (5s delay) and surfaces the result in
 Settings → About. In dev the updater IPC handlers are registered as stubs so that panel doesn't
 crash. Publishing: bump `version` in `package.json`, build, then `gh release create` with the
