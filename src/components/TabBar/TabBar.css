@@ -118,7 +118,8 @@
 
 /* "+" — new local terminal */
 .tab-add-btn,
-.broadcast-toggle-btn {
+.arrange-btn,
+.arrange-more-btn {
   width: 30px;
   height: 30px;
   flex-shrink: 0;
@@ -132,7 +133,9 @@
 }
 
 .tab-add-btn:hover,
-.broadcast-toggle-btn:hover {
+.arrange-btn:hover:not(:disabled),
+.arrange-more-btn:hover:not(:disabled),
+.arrange-more-btn.open {
   color: var(--text-primary);
   background: var(--hover-overlay);
 }
@@ -142,32 +145,66 @@
   height: 16px;
 }
 
-.broadcast-toggle-btn {
+/* Arrange panes: the button and its chevron read as one control */
+.arrange-group {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
   margin-right: 4px;
+  -webkit-app-region: no-drag;
 }
 
-.broadcast-toggle-btn svg {
+.arrange-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.arrange-btn svg {
   width: 15px;
   height: 15px;
 }
 
-.broadcast-toggle-btn.active {
-  color: var(--accent);
-  background: var(--accent-muted);
+.arrange-more-btn {
+  width: 16px;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }
 
-/* Broadcast on: a label next to the toggle, so it can't be missed */
+.arrange-more-btn svg {
+  width: 11px;
+  height: 11px;
+}
+
+.arrange-btn:disabled,
+.arrange-more-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.arrange-menu {
+  position: fixed;
+  min-width: 210px;
+}
+
+/* Broadcast on: a label in the bar, so it can't be missed; click turns it off */
 .broadcast-indicator {
   display: flex;
   align-items: center;
   gap: 5px;
   height: 22px;
   padding: 0 8px;
+  margin-right: 4px;
   border-radius: 11px;
   background: var(--accent-muted);
   color: var(--accent);
   flex-shrink: 0;
+  cursor: pointer;
   animation: fadeIn 0.15s ease;
+  -webkit-app-region: no-drag;
+}
+
+.broadcast-indicator:hover {
+  color: var(--text-primary);
 }
 
 .broadcast-indicator svg {

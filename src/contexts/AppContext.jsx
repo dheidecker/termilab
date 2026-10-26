@@ -2,6 +2,7 @@ import React, { createContext, useContext, useReducer, useEffect, useCallback, u
 import { normalizeSyncStatus } from '../components/Sync/helpers';
 import { mockConnect } from '../components/SFTP/fsApi';
 import * as Layout from '../components/SplitPane/layoutTree';
+import { arrange } from '../components/SplitPane/arrange';
 import { connectTab, markAbandoned } from '../components/SplitPane/sessions';
 import { listenForAdoptions, listenForMoves, moveTabToWindow as moveTabToWindowImpl, windowInfo } from '../components/SplitPane/windowMove';
 import { FEATURES, IS_WEB } from '../platform';
@@ -531,6 +532,16 @@ function baseReducer(state, action) {
       const tree = state.layouts[groupId];
       if (!tree) return state;
       return { ...state, layouts: { ...state.layouts, [groupId]: Layout.setRatioAt(tree, path, ratio) } };
+    }
+    /* Title bar "Arrange panes": same leaves (same sessions), new shape or
+       ratios. The overlays move; xterm refits and the pty gets the size. */
+    case 'ARRANGE_PANES': {
+      const { groupId, mode } = action.payload;
+      const tree = state.layouts[groupId];
+      if (!tree) return state;
+      const next = arrange(tree, mode);
+      if (JSON.stringify(next) === JSON.stringify(tree)) return state;
+      return { ...state, layouts: { ...state.layouts, [groupId]: next } };
     }
     case 'UPDATE_TAB':
       return { ...state, tabs: state.tabs.map(t => t.id === action.payload.id ? { ...t, ...action.payload } : t) };
@@ -1182,6 +1193,7 @@ export function AppProvider({ children }) {
     /* Its "agent finished" mark (pane glow, tab badge, taskbar count) goes */
     seePane: useCallback((paneId) => dispatch({ type: 'PANE_SEEN', payload: paneId }), []),
     setPaneRatio: useCallback((groupId, path, ratio) => dispatch({ type: 'PANE_RATIO', payload: { groupId, path, ratio } }), []),
+    arrangePanes: useCallback((groupId, mode) => dispatch({ type: 'ARRANGE_PANES', payload: { groupId, mode } }), []),
     setActiveTab: useCallback((tabId) => dispatch({ type: 'SET_ACTIVE_TAB', payload: tabId }), []),
     updateTab: useCallback((tab) => dispatch({ type: 'UPDATE_TAB', payload: tab }), []),
 
