@@ -1406,6 +1406,14 @@ async function main() {
     process.exit(failures ? 1 : 0);
   }
 
+  // ── AR. Ordenar paneles (SplitPane/arrange.js, funciones puras) ──
+  await require('./lib/check-arrange').seccionArrange({ check, ROOT });
+  if (process.env.TERMILAB_CHECK_ONLY === 'AR') {
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo AR)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // TERMILAB_CHECK_ONLY=LK: solo el grafo + el keeper local
   if (process.env.TERMILAB_CHECK_ONLY === 'LK') {
     await require('./lib/check-local-keeper').seccionLocalKeeper({ check, ROOT });

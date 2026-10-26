@@ -9,6 +9,7 @@ import { useBackHandler } from '../../hooks/useBackHandler';
 import { confirmCloseSftp } from '../SFTP/activeTransfers';
 import { memberTabs, groupLabel, groupOf, isTerminalTab, paneName, paneTitle, cleanAlias } from '../SplitPane/layoutTree';
 import InlineRename from '../SplitPane/InlineRename';
+import ArrangeButton from './ArrangeButton';
 import { useDrag, beginDrag, setDrag, DRAG_MIME, isLocalDrag } from '../SplitPane/dragState';
 import { cannotMove, selfWindowId, windowInfo, requestMoveHere, dropTarget } from '../SplitPane/windowMove';
 import { confirmCloseSessions, endSessions } from '../SplitPane/sessions';
@@ -381,22 +382,19 @@ export default function TabBar() {
         {!paneDrag && foreignDrop && <span className="tab-bar-drop-hint">Drop to move the tab to this window</span>}
       </div>
 
+      {/* Broadcast is toggled from the tab and pane menus; while it is on
+          this label says so, and a click on it turns it off */}
       {broadcast && (
-        <div className="broadcast-indicator">
+        <button
+          className="broadcast-indicator"
+          onClick={(e) => { e.stopPropagation(); actions.toggleBroadcast(); }}
+          title="Broadcast input is on — typing goes to every terminal. Click to turn it off."
+        >
           <BroadcastIcon />
           <span>Broadcast</span>
-        </div>
+        </button>
       )}
-      <button
-        className={`broadcast-toggle-btn ${broadcast ? 'active' : ''}`}
-        onClick={(e) => {
-          e.stopPropagation();
-          actions.toggleBroadcast();
-        }}
-        title={broadcast ? 'Disable Broadcast Input' : 'Enable Broadcast Input — type in all tabs at once'}
-      >
-        <BroadcastIcon />
-      </button>
+      <ArrangeButton />
 
       {pickerLive && (
         <ColorPopover
@@ -426,6 +424,11 @@ export default function TabBar() {
               ctxMembers.forEach(m => actions.setTabMuted(m.id, mute));
             }}>
               {ctxMembers.every(m => m.muted) ? 'Unmute Sound' : 'Mute Sound'}
+            </button>
+          )}
+          {ctxLead && (
+            <button className="tab-context-menu-item" onClick={actions.toggleBroadcast}>
+              {broadcast ? 'Turn Off Broadcast Input' : 'Broadcast Input to All Terminals'}
             </button>
           )}
           <button className="tab-context-menu-item" onClick={() => handleCloseTab(contextMenu.tab.id)}>

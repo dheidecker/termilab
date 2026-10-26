@@ -157,7 +157,10 @@ try {
   const two = await waitFor(async () => { const t = await terms(); return t.length === 2 && t.every(x => /\$\s*$/m.test(x.text)); }, 15000);
   ok('second local terminal opened', !!two, JSON.stringify((await terms()).map(x => [x.visible, x.text.trim().split('\n').slice(-1)[0]])) + ' tabs=' + await evaluate(`document.querySelectorAll('.tab-bar .tab, [role=tab]').length + '/' + document.querySelectorAll('.split-terminal-overlay').length + '/' + document.activeElement?.className`));
   await sleep(700);
-  await evaluate(`document.querySelector('.broadcast-toggle-btn').click()`);
+  /* Broadcast is turned on from the tab's context menu (the title bar button is gone) */
+  await evaluate(`(() => { const t = document.querySelector('.tab.active:not(.tab-home)'); const r = t.getBoundingClientRect(); t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.bottom })); })()`);
+  await sleep(200);
+  await evaluate(`[...document.querySelectorAll('.tab-context-menu-item')].find(b => /Broadcast Input/.test(b.textContent)).click()`);
   await sleep(300);
   ok('broadcast on', await evaluate(`!!document.querySelector('.broadcast-indicator')`));
   await send('Input.insertText', { text: 'echo BCAST-ON' });
@@ -186,7 +189,7 @@ try {
     ok('broadcast on: ... and NOT in the other terminal', (await clipsElsewhere()) === before);
   }
   await key('c', 'KeyC', 67, 2);
-  await evaluate(`document.querySelector('.broadcast-toggle-btn').click()`);
+  await evaluate(`document.querySelector('.broadcast-indicator').click()`);
 
   // ── Navigation guard ──
   const href0 = await evaluate('location.href');

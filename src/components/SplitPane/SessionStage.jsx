@@ -432,6 +432,9 @@ export default function SessionStage() {
           <button className="tab-context-menu-item" onClick={() => actions.setTabMuted(menu.paneId, !byId.get(menu.paneId)?.muted)}>
             {byId.get(menu.paneId)?.muted ? 'Unmute Sound' : 'Mute Sound'}
           </button>
+          <button className="tab-context-menu-item" onClick={actions.toggleBroadcast}>
+            {state.broadcast ? 'Turn Off Broadcast Input' : 'Broadcast Input to All Terminals'}
+          </button>
           <button className="tab-context-menu-item" onClick={() => detachPane(menu.paneId)}>Move to New Tab</button>
           <button className="tab-context-menu-item" onClick={() => splitPane(groupId, menu.paneId, 'horizontal')}>Split Right</button>
           <button className="tab-context-menu-item" onClick={() => splitPane(groupId, menu.paneId, 'vertical')}>Split Down</button>
