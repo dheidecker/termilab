@@ -215,6 +215,8 @@
 }
 
 .pane-header {
+  position: relative;
+  overflow: hidden;
   display: flex;
   align-items: center;
   height: 26px;
@@ -555,4 +557,68 @@
 @keyframes pane-agent-done-static {
   0% { opacity: 1; }
   100% { opacity: 0; }
+}
+
+/* ─── Agent activity over the pane's title bar (PaneHeaderActivity) ───
+   A light band sweeping across the header while the agent works, the whole
+   header pulsing amber while it waits, a green flash when it finishes. It
+   sits under the header's content (z-index 0, content above), takes no
+   clicks, and reads on any pane colour: the sweep is a translucent light,
+   the states tint over whatever background the header has. */
+.pane-header > *:not(.pane-header-activity) {
+  position: relative;
+  z-index: 1;
+}
+.pane-header-activity {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+.pane-header-activity.working::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 45%;
+  background: linear-gradient(90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 55%, transparent) 40%,
+    color-mix(in srgb, #fff 45%, transparent) 50%,
+    color-mix(in srgb, var(--accent) 55%, transparent) 60%,
+    transparent);
+  transform: translateX(-100%);
+  will-change: transform;
+  animation: pane-head-sweep 1.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+.pane-header-activity.working::after {
+  /* the bottom edge stays lit while it works */
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent);
+}
+@keyframes pane-head-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(223%); }
+}
+.pane-header-activity.waiting {
+  background: color-mix(in srgb, var(--color-warning) 55%, transparent);
+  will-change: opacity;
+  animation: pane-agent-wait 1.6s ease-in-out infinite;
+}
+.pane-header-activity.done {
+  background: color-mix(in srgb, var(--color-success) 70%, transparent);
+  animation: pane-agent-done 1.4s ease-out forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pane-header-activity.working::before { display: none; }
+  .pane-header-activity.working { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .pane-header-activity.waiting { animation: none; }
+  .pane-header-activity.done { animation: pane-agent-done-static 1.4s step-end forwards; }
 }

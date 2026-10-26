@@ -28,7 +28,9 @@ const shown = (agent) => {
   return null;
 };
 
-export default function AgentActivityLine({ agent }) {
+/** The shown state ('working' | 'waiting' | 'done' | null) with its hysteresis;
+    shared by the edge line (no header) and the pane header's sweep. */
+export function useAgentActivity(agent) {
   const target = shown(agent);
   const since = agent ? agent.since : 0;
   const [view, setView] = useState(() => (target === 'done' ? null : target));
@@ -60,6 +62,12 @@ export default function AgentActivityLine({ agent }) {
     return () => clearTimeout(t);
   }, [view, flashKey]);
 
+  const end = () => setView(v => (v === 'done' ? null : v));
+  return { view, flashKey, end };
+}
+
+export default function AgentActivityLine({ agent }) {
+  const { view, flashKey, end } = useAgentActivity(agent);
   if (!view) return null;
   return (
     <div
@@ -67,9 +75,26 @@ export default function AgentActivityLine({ agent }) {
       className={`pane-agent-line ${view}`}
       data-agent-line={view}
       aria-hidden="true"
-      onAnimationEnd={view === 'done' ? () => setView(v => (v === 'done' ? null : v)) : undefined}
+      onAnimationEnd={view === 'done' ? end : undefined}
     >
       {view === 'working' && <span className="pane-agent-line-bar" />}
     </div>
+  );
+}
+
+/* The same states over a pane's title bar: a light sweeping across it while
+   the agent works, an amber pulse while it waits, a green flash when done.
+   Much easier to see than the 2px line, which is kept for panes with no header. */
+export function PaneHeaderActivity({ agent }) {
+  const { view, flashKey, end } = useAgentActivity(agent);
+  if (!view) return null;
+  return (
+    <div
+      key={view === 'done' ? `done-${flashKey}` : view}
+      className={`pane-header-activity ${view}`}
+      data-agent-line={view}
+      aria-hidden="true"
+      onAnimationEnd={view === 'done' ? end : undefined}
+    />
   );
 }

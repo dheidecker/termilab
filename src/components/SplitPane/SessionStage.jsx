@@ -14,7 +14,7 @@ import InlineRename from './InlineRename';
 import { ColorPopover, anchorOf } from '../ColorPicker/ColorPicker';
 import { PaletteIcon } from '../Icons/icons';
 import AgentDot from '../Agents/AgentDot';
-import AgentActivityLine from './AgentActivityLine';
+import AgentActivityLine, { PaneHeaderActivity } from './AgentActivityLine';
 import './SplitPane.css';
 
 /*
@@ -131,7 +131,7 @@ function PaneToolbar({ onSplitH, onSplitV, onColor }) {
    and the pane's actions. With a colour the whole header is painted in it
    (text in white or near-black, whichever reads, see themes/tint.js).
    Double-click the name to rename this terminal for the session. */
-function PaneHeader({ tab, color, focused, renaming, onRename, onRenamed, onSplitH, onSplitV, onDetach, onClose, onMenu, onColor }) {
+function PaneHeader({ tab, color, activity, focused, renaming, onRename, onRenamed, onSplitH, onSplitV, onDetach, onClose, onMenu, onColor }) {
   const head = color ? solidHeader(color) : null;
   const alias = cleanAlias(tab.alias);
   return (
@@ -140,6 +140,7 @@ function PaneHeader({ tab, color, focused, renaming, onRename, onRenamed, onSpli
       style={head ? { '--pane-head-bg': head.bg, '--pane-head-ink': head.ink } : undefined}
       onContextMenu={onMenu}
     >
+      {activity && <PaneHeaderActivity agent={tab.agent} />}
       <div
         className="pane-handle"
         draggable={!renaming}
@@ -355,11 +356,13 @@ export default function SessionStage() {
               <div key={tab.doneAt} className={`pane-done-glow${tab.doneKind === 'blocked' ? ' blocked' : ''}`} aria-hidden="true" />
             )}
             {/* The agent's state on the pane's top edge (AgentActivityLine) */}
-            {shown && agentActivity && <AgentActivityLine agent={tab.agent} />}
+            {/* With a header the sweep lives there (PaneHeaderActivity); the line only without one */}
+            {shown && agentActivity && !(FEATURES.splitPanes && multi) && <AgentActivityLine agent={tab.agent} />}
             {FEATURES.splitPanes && shown && (multi ? (
               <PaneHeader
                 tab={tab}
                 color={color}
+                activity={agentActivity}
                 focused={id === focusId}
                 renaming={renamingLive && renaming.paneId === id}
                 onRename={() => startRename(id)}
