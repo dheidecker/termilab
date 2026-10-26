@@ -570,6 +570,9 @@
   z-index: 1;
 }
 .pane-header-activity {
+  /* The pane's own colour when it has one: a lighter and a deeper shade of it */
+  --act: var(--accent);
+  --act-light: color-mix(in srgb, #fff 45%, transparent);
   position: absolute;
   inset: 0;
   pointer-events: none;
@@ -585,9 +588,9 @@
   width: 45%;
   background: linear-gradient(90deg,
     transparent,
-    color-mix(in srgb, var(--accent) 55%, transparent) 40%,
-    color-mix(in srgb, #fff 45%, transparent) 50%,
-    color-mix(in srgb, var(--accent) 55%, transparent) 60%,
+    color-mix(in srgb, var(--act) 55%, transparent) 40%,
+    var(--act-light) 50%,
+    color-mix(in srgb, var(--act) 55%, transparent) 60%,
     transparent);
   transform: translateX(-100%);
   will-change: transform;
@@ -601,7 +604,11 @@
   right: 0;
   bottom: 0;
   height: 2px;
-  background: var(--accent);
+  background: var(--act);
+}
+.pane-header.has-color .pane-header-activity {
+  --act: color-mix(in srgb, var(--pane-head-bg) 55%, #fff);
+  --act-light: color-mix(in srgb, var(--pane-head-bg) 25%, #fff);
 }
 @keyframes pane-head-sweep {
   from { transform: translateX(-100%); }
@@ -618,7 +625,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .pane-header-activity.working::before { display: none; }
-  .pane-header-activity.working { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .pane-header-activity.working { background: color-mix(in srgb, var(--act) 35%, transparent); }
   .pane-header-activity.waiting { animation: none; }
   .pane-header-activity.done { animation: pane-agent-done-static 1.4s step-end forwards; }
 }
