@@ -19,6 +19,7 @@ import KnownHosts from './components/KnownHosts/KnownHosts';
 import Logs from './components/Logs/Logs';
 import AgentsDock from './components/Agents/AgentsDock';
 import { useSessionRequests } from './components/Agents/sessionActions';
+import { useAgentTalk } from './components/Agents/agentTalk';
 import { useMirrorSource } from './components/Mirror/mirror';
 import HostKeyPrompt from './components/HostKeyPrompt/HostKeyPrompt';
 import AgentApproval from './components/AgentApproval/AgentApproval';
@@ -72,6 +73,7 @@ function AppContent() {
   const closeAgentsDock = () => { saveAgentsDock(false); setAgentsDock(false); };
   /* Another window's Sessions dock renaming/colouring/closing a terminal here */
   useSessionRequests();
+  useAgentTalk();
   /* Web mirror: this window's tabs to the browsers, their orders back here */
   useMirrorSource(state, actions);
 

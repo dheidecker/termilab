@@ -304,7 +304,7 @@ function focusAgent(event, spec) {
 /* Sessions panel, for a row of another window: that window owns the tab, so
    it applies the action. rename (value: alias, '' = none), color (#rrggbb or
    null), mute (bool), close (the window is focused first: it may ask). */
-const SESSION_ACTIONS = new Set(['rename', 'color', 'mute', 'close']);
+const SESSION_ACTIONS = new Set(['rename', 'color', 'mute', 'talk', 'close']);
 function sessionAction(event, spec) {
   const entry = spec && spec.windowId != null ? windowRegistry.byId(spec.windowId) : null;
   const tabId = spec && typeof spec.tabId === 'string' ? spec.tabId : null;
@@ -314,6 +314,8 @@ function sessionAction(event, spec) {
   if (action === 'rename') value = typeof spec.value === 'string' ? spec.value.slice(0, 200) : null;
   else if (action === 'color') value = typeof spec.value === 'string' && /^#[0-9a-fA-F]{6}$/.test(spec.value) ? spec.value : null;
   else if (action === 'mute') value = spec.value === true;
+  /* talk: true = do not let agents message this terminal (agent-talk.js) */
+  else if (action === 'talk') value = spec.value === true;
   if (action === 'close') {
     const win = entry.win;
     try {
@@ -486,6 +488,29 @@ function registerIpcHandlers(mainWindow) {
   ipcMain.handle('agent:logs', wrapHandler(async () => agentService.log.list()));
 
   ipcMain.handle('agent:clear-logs', wrapHandler(async () => agentService.log.clear()));
+
+  /* Agent to agent (electron/agent/agent-talk.js): main asks the window that
+     OWNS a terminal to type a message into it ('agent-talk:op' {opId, kind:
+     send|read|watch, tabId, sessionId, deliveryId, text?}) and that window
+     answers here: the op's result, and later the end of the turn under the
+     delivery id. Never from a browser: the web gateway does not list it. */
+  agentService.talk.configure({
+    rows: () => windowRegistry.agentRows(null).rows,
+    background: () => backgroundSessions.list(),
+    talkIdOf: (sessionId) => localShellService.talkIdOf(sessionId),
+    push: (row, op) => {
+      let wc = row.sessionId ? windowRegistry.ownerOf(row.sessionId) : null;
+      if (!wc && row.windowId != null) { const e = windowRegistry.byId(row.windowId); wc = e ? e.wc : null; }
+      if (!wc || windowRegistry.isVirtual(wc)) return null;
+      return windowRegistry.sendTo(wc, 'agent-talk:op', op) ? wc : null;
+    },
+    home: () => os.homedir(),
+    log: agentService.log,
+  });
+  ipcMain.handle('agent-talk:reply', wrapHandler(async (event, id, payload) => {
+    if (windowRegistry.isVirtual(event.sender)) throw new Error('Not available from the web');
+    return agentService.talk.reply(event.sender, id, payload);
+  }));
 
   // Answer to an 'agent:approval-prompt' push (a destructive command). Only the
   // window that shows the prompt can answer it; anything but approve === true blocks.
@@ -1282,7 +1307,7 @@ function removeIpcHandlers() {
     'ssh:keeper-foreground', 'ssh:keeper-end', 'ssh:keeper-list', 'ssh:keeper-kill',
     'known-hosts:list', 'known-hosts:delete', 'known-hosts:import',
     'logs:list', 'logs:clear',
-    'agent:status', 'agent:logs', 'agent:clear-logs', 'agent:approval-response',
+    'agent:status', 'agent:logs', 'agent:clear-logs', 'agent:approval-response', 'agent-talk:reply',
     'cli:status', 'cli:install', 'cli:uninstall',
     'web:status', 'web:enable', 'web:disable', 'web:set-name', 'web:grant-operator', 'web:peers', 'app:quit',
     'sftp:list', 'sftp:realpath', 'sftp:stat', 'sftp:mkdir', 'sftp:create-file',

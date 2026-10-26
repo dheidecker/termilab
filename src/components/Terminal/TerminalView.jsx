@@ -20,6 +20,7 @@ import { pasteInto, copySelection, writeText as writeClipboardText } from './cli
 import { sessionStatus } from '../Mobile/sessions';
 import { liveSessionId } from '../SplitPane/sessions';
 import { registerTerminal, adoptedReady } from '../SplitPane/windowMove';
+import { extractReply } from './agentTalkText';
 import { playChime, playQuestionChime, TYPING_QUIET_MS } from './agentChime';
 import { detectAgent, screenTail, createAgentTracker, NEEDS_YOU_TEXT, parseChoices, cursorRowText, claudeSuggestion, screenCells } from './agentRules';
 import PromptActions from '../Agents/PromptActions';
@@ -91,6 +92,8 @@ export default function TerminalView({ tab }) {
      asked for them). A path of this computer/server means nothing to the
      other sessions. */
   const noBroadcastRef = useRef(false);
+  /* Agent to agent (agent-talk): send/read/watch of the live terminal, set in the effect */
+  const talkRef = useRef(null);
   const pasteHereOnly = (text) => {
     const t = termRef.current;
     if (!t) return;
@@ -352,6 +355,8 @@ export default function TerminalView({ tab }) {
         } catch (err) { reject(err); }
       })),
       sessionId: () => sessionIdRef.current || null,
+      /* Agent to agent: set further down, once the agent tracker exists */
+      talk: () => talkRef.current,
     });
     /* The pty's size changed because another client conducts it: this xterm
        follows, without refitting (that would fight it). The next key typed
@@ -398,6 +403,11 @@ export default function TerminalView({ tab }) {
        the tab, as before. When the window is not focused a desktop
        notification says which terminal it was. */
     let lastTyped = 0;
+    /* A message another agent sent (agent-talk, below) is being typed: that
+       is not the user typing, so a bell right after it is the agent, not a
+       shell complaining */
+    let talkInjecting = false;
+    const talkWatches = new Map();   // deliveryId -> {marker, text, emit, armed, check}
     /* Focusing or typing in a pane is looking at it: its "done" mark goes.
        From the textarea's own focus/keydown, NOT onData: xterm also emits
        onData by itself (focus reports \e[I/\e[O, cursor-position and DA
@@ -407,7 +417,7 @@ export default function TerminalView({ tab }) {
       const live = tabLiveRef.current || tab;
       if (live.doneAt) dispatch({ type: 'PANE_SEEN', payload: live.id });
     };
-    term.onData(() => { lastTyped = Date.now(); });
+    term.onData(() => { if (!talkInjecting) lastTyped = Date.now(); });
     if (term.textarea) {
       term.textarea.addEventListener('focus', seen);
       term.textarea.addEventListener('keydown', seen);
@@ -485,9 +495,16 @@ export default function TerminalView({ tab }) {
     const runScan = () => {
       if (disposed) return null;
       const prev = tracker.get();
+      const prevState = prev ? prev.state : null;
       const r = tracker.scan(detectAgent(screenTail(term), prev && prev.id), Date.now(),
         { typedRecently: Date.now() - lastKey < TYPING_QUIET_MS });
       if (r.changed) publish(r.agent);
+      /* A message from another agent waits for this turn to end: a short
+         turn (working → prompt in < 3 s) ends with no 'done' event */
+      if (talkWatches.size) {
+        if (r.event === 'blocked') talkTurn('blocked');
+        else if (r.event === 'done' || (r.changed && prevState === 'working' && r.agent && r.agent.state === 'idle')) talkTurn('done');
+      }
       /* An agent's menu only while it is blocked; a shell question ([Y/n])
          only with no agent, and only on the cursor's row */
       const a = r.agent;
@@ -527,6 +544,10 @@ export default function TerminalView({ tab }) {
       setTimeout(() => {
         if (disposed) return;
         const r = runScan();
+        if (talkWatches.size) {
+          const now = tracker.get();
+          talkTurn(now && now.state === 'blocked' ? 'blocked' : 'done');
+        }
         if (r && r.event) return;   // that scan already announced it
         const cur = tracker.get();
         if ((cur && cur.state === 'blocked') || NEEDS_YOU_TEXT.test(message || '')) {
@@ -540,6 +561,113 @@ export default function TerminalView({ tab }) {
         finished(message);
       }, 150);
     };
+    /* ─── Agent to agent (electron/agent/agent-talk.js) ───
+       Main asks THIS window (it owns the session) to type another agent's
+       message, exactly like the Composer: one paste (bracketed when the
+       program asked for it), then Enter as its own key, never broadcast.
+       A marker on the cursor's line says where the answer starts; the end
+       of the turn (bell / OSC, or working → idle prompt) is reported with
+       the new text under it. After a turn end the screen gets TALK_GRACE_MS:
+       an agent that picks up a queued message is working again by then, and
+       that was not our turn yet. */
+    const TALK_GRACE_MS = 1200;
+    /* The buffer's logical lines from the marker (TALK_ABOVE rows over the
+       cursor's line when the message was typed), and where that line is */
+    const TALK_ABOVE = 20;
+    const talkLines = (w) => {
+      const b = term.buffer.active;
+      const useMarker = w && w.marker && !w.marker.isDisposed && w.marker.line >= 0 && b.type !== 'alternate';
+      const from = useMarker ? w.marker.line : 0;
+      const lines = [];
+      let near = null;
+      for (let y = from; y < b.length; y++) {
+        const line = b.getLine(y);
+        if (!line) continue;
+        const str = line.translateToString(true);
+        if (line.isWrapped && lines.length) lines[lines.length - 1] += str;
+        else lines.push(str);
+        if (useMarker && y === from + w.above) near = lines.length - 1;
+      }
+      return { lines, near };
+    };
+    const talkText = (w, text) => {
+      const a = tracker.get();
+      const { lines, near } = talkLines(w);
+      return extractReply(lines, { text: text || (w && w.text) || '', agentId: a ? a.id : null, near });
+    };
+    const talkDrop = (id) => {
+      const w = talkWatches.get(id);
+      if (!w) return;
+      clearTimeout(w.check);
+      try { if (w.marker) w.marker.dispose(); } catch (_) { /* gone */ }
+      talkWatches.delete(id);
+    };
+    const talkEmit = (id, event) => {
+      const w = talkWatches.get(id);
+      if (!w) return;
+      const t = talkText(w);
+      talkDrop(id);
+      w.emit(id, { event, reply: t.reply, truncated: t.truncated });
+    };
+    function talkTurn(kind) {
+      for (const [id, w] of talkWatches) {
+        if (!w.armed) continue;
+        if (kind === 'blocked') { talkEmit(id, 'blocked'); continue; }
+        if (w.check) continue;
+        w.check = setTimeout(() => {
+          w.check = null;
+          if (disposed || !talkWatches.has(id)) return;
+          runScan();
+          const a = tracker.get();
+          if (a && a.state === 'working') return;   // a queued message started: not ours yet
+          talkEmit(id, a && a.state === 'blocked' ? 'blocked' : 'done');
+        }, TALK_GRACE_MS);
+      }
+    }
+    const talkType = (fn) => {
+      noBroadcastRef.current = true;
+      bypassRef.current = true;
+      talkInjecting = true;
+      try { fn(); } finally { noBroadcastRef.current = false; bypassRef.current = false; talkInjecting = false; }
+    };
+    const talk = {
+      send: (text, id, emit) => {
+        if (disposed) return { ok: false, code: 'unreachable', error: 'That terminal is closing.' };
+        if (hasApi() && !sessionIdRef.current) return { ok: false, code: 'unreachable', error: 'That terminal is not connected.' };
+        const live = tabLiveRef.current || tab;
+        if (live.talkBlocked) return { ok: false, code: 'blocked', error: 'The user does not let agents message this session.' };
+        runScan();
+        const a = tracker.get();
+        if (!a) return { ok: false, code: 'not-agent', error: 'No agent CLI is running in that terminal now (it looks like a plain shell). Nothing was sent.' };
+        if (a.state === 'blocked') return { ok: false, code: 'busy', error: 'That session is waiting for the user (a permission prompt or a question). Nothing was sent.' };
+        if (typeof text !== 'string' || !text || typeof id !== 'string') return { ok: false, error: 'Nothing to send.' };
+        let marker = null;
+        const buf = term.buffer.active;
+        const above = Math.min(TALK_ABOVE, buf.baseY + buf.cursorY);
+        try { marker = term.registerMarker(-above); } catch (_) { marker = null; }
+        while (talkWatches.size >= 4) talkDrop(talkWatches.keys().next().value);
+        const w = { marker, above, text, emit, armed: false, check: null };
+        talkWatches.set(id, w);
+        talkType(() => term.paste(text));
+        setTimeout(() => {
+          if (disposed || termRef.current !== term) return;
+          talkType(() => term.input('\r', true));
+          w.armed = true;
+        }, 120);
+        return { ok: true, state: a.state };
+      },
+      read: (id, text) => {
+        const t = talkText(talkWatches.get(id) || null, text);
+        const a = tracker.get();
+        return { reply: t.reply, truncated: t.truncated, state: a ? a.state : null };
+      },
+      watch: (id, text, emit) => {
+        if (!talkWatches.has(id)) talkWatches.set(id, { marker: null, above: 0, text, emit, armed: true, check: null });
+        return { ok: true };
+      },
+    };
+    talkRef.current = talk;
+
     term.onBell(() => attention('bell'));
     const oscText = (data) => (data || '').slice(0, 200);
     term.parser.registerOscHandler(9, (data) => {
@@ -1174,6 +1302,8 @@ export default function TerminalView({ tab }) {
       if (conductorListener) window.electronAPI?.session?.offEvents?.(conductorListener);
       followKey.dispose();
       clearTimeout(scanTimer);
+      for (const id of [...talkWatches.keys()]) talkDrop(id);
+      if (talkRef.current === talk) talkRef.current = null;
       if (term.textarea) term.textarea.removeEventListener('keydown', onKey);
       unregister();
       mountedRef.current = false;

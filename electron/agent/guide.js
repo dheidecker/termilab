@@ -58,6 +58,24 @@ You may run anything, except operations that destroy a project or a database: th
 
 If the user approves, exactly that command runs, that once. If the result is "Blocked: this command was classified as … and the user did not approve it", stop: do not retry it, rephrase it, split it up or reach the same result another way. Tell the user what you wanted to do and why, and let them decide.
 
+## Talking to another agent: list_sessions and send_to_session
+
+The user may have other AI agents (Claude Code, Codex, ...) running in other Termilab terminals, each with an alias they gave it ("sempat", "backend"). When asked "ask the sempat session ...", message that agent directly:
+
+1. \`list_sessions\` (CLI: \`termilab-cli sessions\`): every open terminal with \`session\` (its alias, or a short id), \`host\`, \`agent\` (\`claude\`, \`codex\`, ... or null), \`state\` (\`working\`, \`idle\`, \`waiting-permission\`, \`unknown\`) and \`reachable\`. \`self: true\` is the terminal you run in.
+2. \`send_to_session {"session": "sempat", "message": "Which migration did you just add?"}\` types the message into that agent's input box, as if the user typed it, waits for its turn to end and returns \`reply\`, \`state\`, \`truncated\` and \`timedOut\` (CLI: \`termilab-cli send sempat "..."\`).
+3. A long task: \`timeoutSec\` (default 600, max 3600), or \`"wait": false\` and later \`wait_reply {"session": "sempat"}\`. \`timedOut: true\` returns what it has written so far: call \`wait_reply\` to keep waiting.
+
+The other agent sees the message prefixed with \`[Message from Termilab session "<your alias>"]\` (or \`an agent outside Termilab\` when you do not run in a Termilab terminal). It does not see your conversation: make the message self-contained, and say what answer you need.
+
+Rules:
+
+- Only sessions with \`reachable: true\`: an agent CLI Termilab recognises. Never a plain shell (the text would run as commands), never your own session, never one in the background, never one the user blocked ("Don't let agents message this session").
+- A session waiting for a permission prompt or a question is refused and nothing is typed: the user has to answer it first. If it stops to ask during your message, \`state\` is \`waiting-permission\`: tell the user.
+- A busy session (\`working\`) still gets the message: the agent queues it (\`queued: true\`), and the reply comes after its current turn.
+- Up to 8000 characters per message and 30 messages per hour per session. Do not start a back-and-forth loop between agents; when in doubt, ask the user.
+- Every message is recorded in Termilab's Logs (from, to, length, result).
+
 ## Errors and what to do
 
 - "Termilab is not running": ask the user to open Termilab, then retry.
@@ -72,7 +90,7 @@ Every call is recorded in Termilab's Logs (tool, host, command, exit code, durat
 
 ## Command line (no MCP)
 
-The same actions from a shell: \`termilab-cli hosts\`, \`termilab-cli run [--cwd DIR] [--timeout S] <host> <command...>\` (exits with the command's exit code, 124 on timeout, 125 if it could not run), \`termilab-cli read <host> <path>\`, \`termilab-cli write [--mode 644] <host> <path> < file\`. Add \`--json\` for the full result.
+The same actions from a shell: \`termilab-cli hosts\`, \`termilab-cli sessions\`, \`termilab-cli send [--no-wait] [--timeout S] <session> <message...>\`, \`termilab-cli run [--cwd DIR] [--timeout S] <host> <command...>\` (exits with the command's exit code, 124 on timeout, 125 if it could not run), \`termilab-cli read <host> <path>\`, \`termilab-cli write [--mode 644] <host> <path> < file\`. Add \`--json\` for the full result.
 `;
 
 module.exports = { GUIDE };

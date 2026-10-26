@@ -188,6 +188,24 @@ You may run anything, except operations that destroy a project or a database: th
 
 If the user approves, exactly that command runs, that once. If the result is "Blocked: this command was classified as … and the user did not approve it", stop: do not retry it, rephrase it, split it up or reach the same result another way. Tell the user what you wanted to do and why, and let them decide.
 
+#### Talking to another agent: list_sessions and send_to_session
+
+The user may have other AI agents (Claude Code, Codex, ...) running in other Termilab terminals, each with an alias they gave it ("sempat", "backend"). When asked "ask the sempat session ...", message that agent directly:
+
+1. `list_sessions` (CLI: `termilab-cli sessions`): every open terminal with `session` (its alias, or a short id), `host`, `agent` (`claude`, `codex`, ... or null), `state` (`working`, `idle`, `waiting-permission`, `unknown`) and `reachable`. `self: true` is the terminal you run in.
+2. `send_to_session {"session": "sempat", "message": "Which migration did you just add?"}` types the message into that agent's input box, as if the user typed it, waits for its turn to end and returns `reply`, `state`, `truncated` and `timedOut` (CLI: `termilab-cli send sempat "..."`).
+3. A long task: `timeoutSec` (default 600, max 3600), or `"wait": false` and later `wait_reply {"session": "sempat"}`. `timedOut: true` returns what it has written so far: call `wait_reply` to keep waiting.
+
+The other agent sees the message prefixed with `[Message from Termilab session "<your alias>"]` (or `an agent outside Termilab` when you do not run in a Termilab terminal). It does not see your conversation: make the message self-contained, and say what answer you need.
+
+Rules:
+
+- Only sessions with `reachable: true`: an agent CLI Termilab recognises. Never a plain shell (the text would run as commands), never your own session, never one in the background, never one the user blocked ("Don't let agents message this session").
+- A session waiting for a permission prompt or a question is refused and nothing is typed: the user has to answer it first. If it stops to ask during your message, `state` is `waiting-permission`: tell the user.
+- A busy session (`working`) still gets the message: the agent queues it (`queued: true`), and the reply comes after its current turn.
+- Up to 8000 characters per message and 30 messages per hour per session. Do not start a back-and-forth loop between agents; when in doubt, ask the user.
+- Every message is recorded in Termilab's Logs (from, to, length, result).
+
 #### Errors and what to do
 
 - "Termilab is not running": ask the user to open Termilab, then retry.
@@ -202,7 +220,7 @@ Every call is recorded in Termilab's Logs (tool, host, command, exit code, durat
 
 #### Command line (no MCP)
 
-The same actions from a shell: `termilab-cli hosts`, `termilab-cli run [--cwd DIR] [--timeout S] <host> <command...>` (exits with the command's exit code, 124 on timeout, 125 if it could not run), `termilab-cli read <host> <path>`, `termilab-cli write [--mode 644] <host> <path> < file`. Add `--json` for the full result.
+The same actions from a shell: `termilab-cli hosts`, `termilab-cli sessions`, `termilab-cli send [--no-wait] [--timeout S] <session> <message...>`, `termilab-cli run [--cwd DIR] [--timeout S] <host> <command...>` (exits with the command's exit code, 124 on timeout, 125 if it could not run), `termilab-cli read <host> <path>`, `termilab-cli write [--mode 644] <host> <path> < file`. Add `--json` for the full result.
 <!-- agent-guide:end -->
 
 ### Worked example: a deploy through an interactive shell
@@ -245,6 +263,43 @@ Read-only lookalikes pass without a prompt: `grep -i drop`, `cat migration.sql`,
 
 What it cannot see: a script the agent wrote and then runs (`bash cleanup.sh`, `psql -f drop.sql`, `mysql < drop.sql`), a command assembled at run time (decoded from base64, read from a variable), shell aliases and functions, a program that deletes by itself (a Python one-liner), and line editing with the cursor keys in an interactive shell. It is a safety net against an agent's mistakes, not a sandbox.
 
+## Agents talking to each other
+
+When several AI agents run in Termilab terminals at once, one can ask another a question without you copying text between them. You tell Claude, in one terminal, "ask the sempat session which migration it just added"; Claude calls `list_sessions`, finds the terminal whose alias is `sempat`, and calls `send_to_session`. Termilab types the message into that agent's input box as if you had typed it, waits for its turn to end and hands the answer back. There are no threads or rooms: each message is one question and one answer.
+
+```
+  terminal "backend"                 Termilab                    terminal "sempat"
+  Claude Code ──send_to_session──>  finds "sempat"  ──types──>   Claude Code / Codex
+             <──────reply────────   waits for the end of turn <── answers, rings the bell
+```
+
+- **Which terminal.** The alias is the one you give a terminal in the Sessions dock (right-click → Rename…), matched without regard to case. Two terminals with the same alias are an error that lists both; give them different names. A terminal without an alias is reachable by the short name `list_sessions` shows (`s3f9a1`).
+- **What the other agent sees.** The text arrives prefixed with `[Message from Termilab session "backend"]`, the alias of the sender's terminal. Local terminals started by Termilab export `TERMILAB_SESSION_ID`, and `termilab-cli` / `termilab-mcp` pass it on, which is how Termilab knows who is asking. An agent not running in a local Termilab terminal (including one on an SSH host: the MCP server runs on this computer) is named `an agent outside Termilab`.
+- **How it is typed.** The window that shows the destination terminal types it, the same way the prompt composer does: one paste (bracketed paste when the program asked for it, so a multi-line message is not sent line by line) and then Enter as its own key. It is never sent to other terminals by broadcast input.
+- **When the turn ends.** When the agent rings the terminal bell or sends a desktop notification escape (OSC 9, 777 or 99), which Claude Code and Codex do at the end of a turn, or when its screen goes from "working" (spinner) back to its idle prompt. Termilab then waits 1.2 seconds more: an agent that picks up a queued message is working again by then, and the wait goes on. A bell right after the message is typed counts; a bell after you type in that terminal yourself is still treated as the shell complaining.
+- **Where the answer comes from.** For Claude Code in a local terminal, from its transcript (`~/.claude/projects/*/*.jsonl`, read only, found by the message text): every text block it wrote after the message, without tool output or screen decoration. Otherwise (Codex, other CLIs, Claude Code over SSH, or a transcript that is not there), from the screen: what the terminal shows below the echoed message, without the agent's input box, spinners and "Worked for 8s" lines. The screen answer is only as good as what is still in the terminal: an answer longer than the scrollback, or a full-screen TUI that redraws in place, leaves only its last part. Replies over 32,000 characters keep their end and say `truncated: true`.
+
+### Rules
+
+| Situation | Result |
+|---|---|
+| The terminal runs a plain shell, or a program Termilab does not recognise as an agent CLI | Refused. Typing a message into a shell would run it as commands, outside the approval of destructive commands. |
+| The terminal is the sender's own | Refused. |
+| The agent is waiting for you (a permission prompt, a question, a menu) | Refused before anything is typed; answer it first. If it stops to ask while working on the message, the call returns `state: "waiting-permission"` with what it showed. |
+| The agent is working on something else | Sent anyway: Claude Code queues it. The result says `queued: true`, and the reply is the one to this message. |
+| You turned it off for that terminal | Refused. |
+| The terminal is in the background (no window shows it) | Refused; reopen it from Sessions → Background. |
+| More than 8000 characters | Refused. Put long content in a file and point to it. |
+| More than 30 messages in an hour to the same terminal | Refused, against two agents looping on each other. |
+
+Every terminal with an agent can be messaged by default. To stop it, right-click the terminal in the Sessions dock → **Don't let agents message this session** (the same menu turns it back on). The choice stays with the terminal like its alias: it survives a restart with "Restore tabs on startup" and a trip through Background.
+
+Every message, delivered or refused, is recorded in Logs as `send_to_session`: from which terminal, to which, its length and the result. The text itself is shown only up to 200 characters.
+
+### Waiting for long answers
+
+`send_to_session` waits up to `timeoutSec` (default 600 seconds, at most 3600). If the turn has not ended by then, it returns what the screen shows so far with `timedOut: true`, and `wait_reply {"session": "sempat"}` keeps waiting for the same answer. `"wait": false` returns as soon as the message is typed. On the command line, `termilab-cli send --timeout S` exits with 124 in that case, and `--no-wait` does not wait at all.
+
 ## Command line reference
 
 ```
@@ -252,6 +307,8 @@ termilab-cli hosts [--json]
 termilab-cli run [--timeout S] [--cwd DIR] [--json] <host> <command...>
 termilab-cli read [--max-bytes N] [--json] <host> <path>
 termilab-cli write [--mode OCT] [--json] <host> <path>    < content
+termilab-cli sessions [--json]
+termilab-cli send [--no-wait] [--timeout S] [--json] <session> <message...>
 termilab-cli mcp
 termilab-cli guide
 termilab-cli help <command>      (or termilab-cli <command> --help)
@@ -306,6 +363,22 @@ termilab-cli read backup /var/backups/db.sql.gz > db.sql.gz
 ```
 
 Exit codes: 0 on success, 1 on failure, 2 for a usage error.
+
+### sessions and send
+
+`sessions` lists the terminals open in Termilab: session name, host, agent CLI, state and whether `send` can reach it (with the reason when it cannot). `send` types a message into the agent of another terminal and prints its reply on stdout (see [Agents talking to each other](#agents-talking-to-each-other)). Options go before the session; the words after it are the message, and `-` reads it from stdin.
+
+```bash
+$ termilab-cli sessions
+SESSION  HOST   AGENT   STATE    REACHABLE
+backend  local  claude  idle     yes
+sempat   local  claude  working  yes
+logs     local  -       unknown  no: no agent CLI detected (a plain shell or another program)
+$ termilab-cli send sempat "Which migration did you add last? Answer with its file name only."
+2026_10_26_120000_add_invoices_table.php
+```
+
+Exit codes: 0 with a reply (or sent, with `--no-wait`); **124** if the turn did not end in time (what it wrote so far is printed); 1 if it was refused; 2 for a usage error.
 
 ### Errors
 

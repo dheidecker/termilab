@@ -207,7 +207,7 @@ async function seccionAgent({ check, ROOT }) {
       const legacyList = await mcp.request('tools/list', {});
       assert.strictEqual(legacyList.result.ttlMs, undefined);
       const names = list.result.tools.map(t => t.name).sort();
-      assert.deepStrictEqual(names, ['close_shell', 'list_hosts', 'open_shell', 'read_file', 'read_output', 'run_command', 'send_input', 'write_file']);
+      assert.deepStrictEqual(names, ['close_shell', 'list_hosts', 'list_sessions', 'open_shell', 'read_file', 'read_output', 'run_command', 'send_input', 'send_to_session', 'wait_reply', 'write_file']);
       for (const t of list.result.tools) assert.strictEqual(t.inputSchema.type, 'object', `${t.name} sin inputSchema object`);
       const unsup = await mcp.request('tools/list', { _meta: { ...meta, 'io.modelcontextprotocol/protocolVersion': '1900-01-01' } });
       assert.strictEqual(unsup.error && unsup.error.code, -32022);

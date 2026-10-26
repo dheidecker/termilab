@@ -452,6 +452,13 @@ export default function AgentsDock({ onClose }) {
             <button className="tab-context-menu-item" onClick={() => act(menuRow, 'mute', !menuRow.muted)}>
               {menuRow.muted ? 'Unmute Sound' : 'Mute Sound'}
             </button>
+            {/* Agent to agent messages (electron/agent/agent-talk.js): on by default */}
+            {actions.setTabTalkBlocked && (
+              <button className="tab-context-menu-item" onClick={() => act(menuRow, 'talk', !menuRow.talkBlocked)}
+                title="Whether an AI agent in another terminal may type a message into this one (termilab-cli send, send_to_session)">
+                {menuRow.talkBlocked ? 'Let agents message this session' : "Don't let agents message this session"}
+              </button>
+            )}
             {why !== null && (
               <button className="tab-context-menu-item" disabled={!!why} title={why || undefined}
                 onClick={() => actions.moveTabToWindow(menuRow.groupId, 'new').catch(err => window.alert(`Could not move the tab: ${err.message}`))}>

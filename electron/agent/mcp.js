@@ -20,7 +20,7 @@
  */
 const path = require('path');
 const readline = require('readline');
-const { callTermilab, runTimeoutMs, closeAll, APPROVAL_WAIT_MS } = require('./client');
+const { callTermilab, runTimeoutMs, talkTimeoutMs, closeAll, APPROVAL_WAIT_MS } = require('./client');
 const { GUIDE } = require('./guide');
 
 const SERVER_INFO = { name: 'termilab', title: 'Termilab', version: readVersion() };
@@ -54,13 +54,15 @@ const INSTRUCTIONS = [
   '4. Files: read_file / write_file over SFTP (paths absolute or ~/relative; 4 MB max; write replaces the whole file).',
   'You act with exactly that host user\'s permissions (root or sudo included): be as careful as the user would be.',
   'Destructive commands need the user\'s approval: recursive deletes of project/home/system dirs, git reset --hard, '
-    + 'git clean -fdx, force push to main/master, DROP/TRUNCATE/DELETE without WHERE, dropdb, FLUSHALL, migrate:fresh, '
-    + 'db:drop, prisma migrate reset, docker volume rm, compose down -v. The call waits (up to 2 min) while Termilab asks '
+    + 'git clean -fdx, force push to main, DROP/TRUNCATE/DELETE without WHERE, dropdb, FLUSHALL, migrate:fresh, '
+    + 'docker volume rm, compose down -v. The call waits (up to 2 min) while Termilab asks '
     + 'the user. "Blocked: ..." = the user said no: do not retry, rephrase or work around it; ask the user.',
   'Errors: "Termilab is not running" -> ask the user to open Termilab. Host key not trusted or CHANGED -> ask the user to '
     + 'connect to that host once from Termilab and check the key; agents can never accept host keys, never work around it. '
     + '"No host named" -> call list_hosts. "matches N hosts" -> use the id. Authentication failed -> the user must fix the '
     + 'host in Termilab.',
+  '5. Another AI agent in a Termilab terminal ("ask the sempat session X"): list_sessions, then send_to_session '
+    + '{"session":"sempat","message":"X"} returns its reply (timedOut -> wait_reply). Rules: see the guide.',
   'Every call is recorded in Termilab\'s Logs. Full guide: resource termilab://guide.',
 ].join('\n');
 
@@ -188,6 +190,45 @@ const TOOLS = [
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   },
+  {
+    name: 'list_sessions',
+    title: 'List Termilab sessions',
+    description: 'The terminals open in Termilab (tabs and Background), to talk to another AI agent running in one of them. Each: session (its alias, or a short id), alias, host ("local" or the host label), agent ("claude", "codex"... or null), state (working, idle, waiting-permission, unknown), reachable (true = send_to_session can message it; note says why not), self (true = the terminal you run in). Takes no arguments: {}.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
+    name: 'send_to_session',
+    title: 'Message another agent',
+    description: 'Type a message into another Termilab terminal where an AI agent CLI runs (Claude Code, Codex...), as if the user typed it in its input box, and wait for that agent to finish its turn. Returns reply (its answer), state, truncated, timedOut. The message arrives prefixed with [Message from Termilab session "<your alias>"]. Only to sessions with reachable: true in list_sessions: never a plain shell, never your own session, not while it waits for a permission or a question (error, nothing typed). A busy agent queues it (queued: true). Up to 8000 characters; 30 messages per hour per session. On timedOut: true, call wait_reply. Example: {"session":"sempat","message":"Which branch are you on?"}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session: { type: 'string', description: 'The session\'s alias (case-insensitive) or session name from list_sessions. Example: "sempat".' },
+        message: { type: 'string', description: 'What to tell or ask that agent, up to 8000 characters. Self-contained: it does not see your conversation.' },
+        wait: { type: 'boolean', description: 'Wait for its turn to end and return the reply. Default true. false: return as soon as it is typed.' },
+        timeoutSec: { type: 'number', description: 'Seconds to wait for the reply. Default 600, maximum 3600. Then the result has timedOut: true and what it has written so far.' },
+      },
+      required: ['session', 'message'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
+    name: 'wait_reply',
+    title: 'Wait for an agent\'s reply',
+    description: 'Keep waiting for the reply to the last message sent with send_to_session to that session (after timedOut: true, or wait: false). Returns the same fields as send_to_session. Example: {"session":"sempat","timeoutSec":900}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session: { type: 'string', description: 'The same session as in send_to_session.' },
+        timeoutSec: { type: 'number', description: 'Seconds to wait. Default 600, maximum 3600.' },
+      },
+      required: ['session'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
 ];
 const TOOL_NAMES = new Set(TOOLS.map(t => t.name));
 
@@ -228,7 +269,9 @@ const toolError = (message, modern) => ({
 async function callTool(name, args, client) {
   const a = args && typeof args === 'object' ? args : {};
   /* Termilab enforces its own command timeout; give it room to answer (and the user to approve) */
-  const timeoutMs = name === 'run_command' ? runTimeoutMs(a.timeout_s) : 120000 + (name === 'send_input' ? APPROVAL_WAIT_MS : 0);
+  const timeoutMs = name === 'run_command' ? runTimeoutMs(a.timeout_s)
+    : (name === 'send_to_session' || name === 'wait_reply') ? talkTimeoutMs(name === 'send_to_session' && a.wait === false ? 0 : a.timeoutSec)
+      : 120000 + (name === 'send_input' ? APPROVAL_WAIT_MS : 0);
   return callTermilab(name, a, { timeoutMs, client });
 }
 

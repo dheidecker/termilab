@@ -70,6 +70,7 @@ function sanitizeWindow(raw) {
     if (alias) tab.alias = alias;
     if (typeof t.color === 'string' && (t.color === 'none' || COLOR_RE.test(t.color))) tab.color = t.color;
     if (t.muted === true) tab.muted = true;
+    if (t.talkBlocked === true) tab.talkBlocked = true;
     if (t.hidden === true) tab.hidden = true;
     tab.sessionKey = str(t.sessionKey, 80) || id;
     ids.add(id);

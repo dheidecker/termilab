@@ -7,7 +7,7 @@
  *                              which order to reconnect
  *
  * Per terminal tab only: kind (host | local | quick), host id, label, alias,
- * colour, mute, hidden (a pane of a split), sessionKey. Never scrollback,
+ * colour, mute, "no agent messages", hidden (a pane of a split), sessionKey. Never scrollback,
  * never a password: a quick connect (not a saved host) is remembered only to
  * say on restore that it was not reconnected. SFTP tabs are not restored.
  */
@@ -42,6 +42,7 @@ export function snapshotWindow(state) {
     if (alias) out.alias = alias;
     if (typeof t.color === 'string' && t.color) out.color = t.color;
     if (t.muted) out.muted = true;
+    if (t.talkBlocked) out.talkBlocked = true;
     if (t.hidden) out.hidden = true;
     return out;
   });
@@ -79,6 +80,7 @@ export function restorePlan(saved, hosts) {
     if (s.alias) common.alias = s.alias;
     if (s.color) common.color = s.color;
     if (s.muted) common.muted = true;
+    if (s.talkBlocked) common.talkBlocked = true;
     if (s.hidden) common.hidden = true;
     if (s.kind === 'local') {
       tabs.push({ ...common, type: 'local-terminal', label: s.label || 'Local Terminal', sessionId: `local-${s.id}` });

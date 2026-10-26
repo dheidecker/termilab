@@ -36,6 +36,7 @@ const localExec = require('./local-exec');
 const { ConnPool, fingerprint } = require('./conn-pool');
 const destructive = require('./destructive');
 const approvals = require('./approval');
+const agentTalk = require('./agent-talk');
 
 const LIMITS = {
   output: 256 * 1024,          // run_command, each of stdout / stderr
@@ -142,6 +143,7 @@ class AgentService {
     this.shells = new Map();
     this.broadcast = null;      // (channel, data) => void, set by ipc-handlers
     this.approver = approvals;  // ask({client, host, tool, command, category, ...}) -> {approved, reason}
+    this.talk = agentTalk;      // agent to agent messages (agent-talk.js); ipc-handlers wires it
     this.idleMs = IDLE_MS;
     this.limits = { ...LIMITS };
     this._sweep = null;
@@ -290,7 +292,12 @@ class AgentService {
     }
     try {
       /* `client` (the MCP client's name) only labels the approval prompt; it grants nothing */
-      const ctx = { client: typeof req.client === 'string' ? req.client.slice(0, 80) : null };
+      const ctx = {
+        client: typeof req.client === 'string' ? req.client.slice(0, 80) : null,
+        /* TERMILAB_SESSION_ID of the terminal the caller runs in (agent-talk.js):
+           only names the sender of a message; it grants nothing */
+        from: typeof req.from === 'string' ? req.from.slice(0, 120) : null,
+      };
       const result = await this.call(req.method, req.params || {}, ctx);
       reply({ result });
     } catch (err) {
@@ -313,6 +320,9 @@ class AgentService {
       case 'close_shell': return this.closeShellTool(params);
       case 'read_file': return this.readFile(params);
       case 'write_file': return this.writeFile(params);
+      case 'list_sessions': return this.talk.listSessions({ from: ctx.from });
+      case 'send_to_session': return this.talk.send({ ...params, from: ctx.from }, ctx);
+      case 'wait_reply': return this.talk.waitReply({ ...params, from: ctx.from });
       default: return fail(`Unknown method ${method}`, 'unknown-method');
     }
   }

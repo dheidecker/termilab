@@ -156,6 +156,8 @@ export function mirrorActions(dispatch) {
     setTabAlias: (tabId, alias) => { send({ type: 'rename', tabId, alias: alias || '' }).catch(() => {}); },
     setTabColor: async (tabId, color) => { await send({ type: 'color', tabId, color: color && color !== 'none' ? color : null }); return null; },
     setTabMuted: (tabId, muted) => { send({ type: 'mute', tabId, muted: !!muted }).catch(() => {}); },
+    /* Whether agents may message a terminal (agent-talk) is decided on the PC only */
+    setTabTalkBlocked: null,
     splitPane: (groupId, paneId, direction) => {
       send({ type: 'split', groupId, paneId, direction, tabId: fresh(), ...browserSize() }).catch(() => {});
     },

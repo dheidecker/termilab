@@ -1,0 +1,219 @@
+// Un agente le habla a otro por su sesion de Termilab, de punta a punta:
+// Termilab real bajo xvfb (dist/ de `npm run build`), dos pestanas locales.
+// En la pestana "sempat" corre un agente FALSO (scripts/lib/fake-agent-talk.mjs:
+// la caja de entrada de Claude Code, bracketed paste, spinner y BEL al final
+// del turno), que el renderer reconoce como agente. Desde la otra pestana,
+// "backend" (una shell), `termilab-cli send sempat "ping"` tiene que devolver
+// "pong: ..." con el prefijo de remitente de "backend".
+//
+//   npm run build && node scripts/e2e-agent-talk.mjs
+//
+//  T1 cada shell local tiene TERMILAB_SESSION_ID
+//  T2 el agente falso se detecta (Sessions: agente, idle)
+//  T3 termilab-cli sessions lista las dos, sempat alcanzable
+//  T4 send sempat "ping" desde backend: "pong: [Message from Termilab session "backend"] ping"
+//  T5 el agente recibio un solo mensaje pegado, con el prefijo exacto
+//  T6 un segundo mensaje enseguida tambien vuelve (el fin de turno no se pierde)
+//  T7 a si misma / a un alias que no existe: rechazado, nada escrito
+//  T8 "Don't let agents message this session" (accion del menu): rechazado
+//  T9 agent-logs.json tiene los envios
+// HOME y userData temporales: no toca tu ~/.config/termilab ni tu ~/.claude.
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const ROOT = path.join(path.dirname(new URL(import.meta.url).pathname), '..');
+const ELECTRON = require('electron');
+const NODE = process.execPath;
+const CLI = path.join(ROOT, 'electron', 'agent', 'cli.js');
+const FAKE = path.join(ROOT, 'scripts', 'lib', 'fake-agent-talk.mjs');
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+const results = [];
+const ok = (name, cond, extra = '') => {
+  results.push(`${cond ? 'ok  ' : 'FAIL'} ${name}${extra && !cond ? ` — ${extra}` : ''}`);
+  console.log(results[results.length - 1]);
+};
+
+if (!fs.existsSync(path.join(ROOT, 'dist', 'index.html'))) { console.error('falta dist/index.html: npm run build'); process.exit(1); }
+if (spawnSync('which', ['xvfb-run']).status !== 0) { console.error('falta xvfb-run'); process.exit(1); }
+
+/* Every xterm of the page (hidden tabs included), via the React fiber of each .terminal-wrapper */
+const TERMS = `(() => [...document.querySelectorAll('.terminal-wrapper')].map((el) => {
+  let f = el[Object.keys(el).find(k => k.startsWith('__reactFiber$'))]; let t = null;
+  while (f && !t) { let h = f.memoizedState; while (h && typeof h === 'object' && 'next' in h) { const c = h.memoizedState && h.memoizedState.current; if (c && c.buffer && c.buffer.active) { t = c; break; } h = h.next; } f = f.return; }
+  return { t, visible: !!el.offsetParent };
+}).filter(x => x.t))()`;
+const VISIBLE = `(${TERMS}.find(x => x.visible) || {}).t`;
+
+async function cdpTo(port, log) {
+  let target = null;
+  for (let i = 0; i < 120 && !target; i++) {
+    await sleep(300);
+    try { target = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find(t => t.type === 'page' && t.url.endsWith('/dist/index.html')); } catch (_) { /* not yet */ }
+  }
+  if (!target) throw new Error(`no page target on ${port}\n${log().slice(-2000)}`);
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise(r => ws.addEventListener('open', r));
+  let cid = 0; const wait = new Map();
+  ws.addEventListener('message', (m) => { const d = JSON.parse(m.data); const w = wait.get(d.id); if (w) { wait.delete(d.id); d.error ? w.reject(new Error(d.error.message)) : w.resolve(d.result); } });
+  const cdp = (method, params = {}) => new Promise((resolve, reject) => { const i = ++cid; wait.set(i, { resolve, reject }); ws.send(JSON.stringify({ id: i, method, params })); });
+  const ev = async (expr) => { const r = await cdp('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 500)); return r.result.value; };
+  const waitFor = async (fn, ms = 15000) => { const t0 = Date.now(); for (;;) { let v = null; try { v = await fn(); } catch (_) { v = null; } if (v) return v; if (Date.now() - t0 > ms) return v; await sleep(150); } };
+  const visibleText = () => ev(`(() => { const t = ${VISIBLE}; if (!t) return ''; const b = t.buffer.active; const o = []; for (let i = 0; i < b.length; i++) o.push(b.getLine(i).translateToString(true)); return o.join('\\n'); })()`);
+  const key = (k, code, vk, modifiers = 0, text) => cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, windowsVirtualKeyCode: vk, modifiers, ...(text ? { text } : {}) })
+    .then(() => cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, modifiers }));
+  const typeLine = async (text) => {
+    await ev(`(() => { const t = ${VISIBLE}; t.focus(); return true; })()`);
+    await cdp('Input.insertText', { text });
+    await key('Enter', 'Enter', 13, 0, '\r');
+  };
+  const click = async (selectorJs) => {
+    const p = await ev(`(() => { const el = ${selectorJs}; if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    if (!p) return false;
+    for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, x: p.x, y: p.y, button: type === 'mouseMoved' ? 'none' : 'left', clickCount: 1 });
+    return true;
+  };
+  const ctrlT = async () => {
+    await click(`document.querySelector('.tab.tab-home')`);
+    await sleep(300);
+    await ev('document.activeElement && document.activeElement.blur && document.activeElement.blur()');
+    await key('t', 'KeyT', 84, 2);
+  };
+  return { ev, waitFor, visibleText, typeLine, click, ctrlT, close: () => { try { ws.close(); } catch (_) { /* gone */ } } };
+}
+
+function launch(args, env) {
+  const e = { ...process.env, TERMILAB_NO_DEVTOOLS: '1', ...env };
+  delete e.VITE_DEV_SERVER_URL; delete e.ELECTRON_RUN_AS_NODE; delete e.TERMILAB_SESSION_ID;
+  for (const k of Object.keys(e)) if (/^CLAUDE_?CODE/.test(k)) delete e[k];
+  const p = spawn('xvfb-run', ['-a', '-s', '-screen 0 1600x1000x24', ELECTRON, ...args, '--no-sandbox'], { env: e, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  let log = ''; p.stdout.on('data', d => { log += d; }); p.stderr.on('data', d => { log += d; });
+  return {
+    log: () => log,
+    close: async () => {
+      try { process.kill(-p.pid, 'SIGTERM'); } catch (_) { /* gone */ }
+      for (let i = 0; i < 80 && p.exitCode === null; i++) await sleep(100);
+      try { process.kill(-p.pid, 'SIGKILL'); } catch (_) { /* gone */ }
+    },
+  };
+}
+
+async function main() {
+  delete process.env.SSH_AUTH_SOCK;
+  const base = fs.mkdtempSync('/tmp/tlat-e2e-');   // short: the keeper socket must fit in sun_path
+  const home = path.join(base, 'h');
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(path.join(home, '.bash_profile'), `PS1='e2e\\$ '\nexport LANG=C.UTF-8\n`);
+  fs.writeFileSync(path.join(home, '.bashrc'), `PS1='e2e\\$ '\n`);
+  const userData = path.join(base, 'ud');
+  fs.mkdirSync(path.join(userData, 'data'), { recursive: true, mode: 0o700 });
+  const fakeLog = path.join(base, 'fake.log');
+  let pc = null; let P = null;
+  const tabs = `[...document.querySelectorAll('.tab:not(.tab-home)')]`;
+  const rowsNow = async () => ((await P.ev('window.electronAPI.window.agents()')) || {}).rows || [];
+  const rowOf = async (alias) => (await rowsNow()).find(r => r.alias === alias) || null;
+  const showTab = async (i) => { await P.click(`${tabs}[${i}]`); await sleep(400); };
+  /* termilab-cli run inside the visible terminal; stdout/stderr to files, the exit code on screen */
+  let n = 0;
+  const cliHere = async (args, ms = 60000) => {
+    const id = ++n;
+    const so = path.join(base, `out-${id}.txt`); const se = path.join(base, `err-${id}.txt`);
+    /* The userData is a test one: the CLI must be told (a kept shell gets a filtered environment) */
+    await P.typeLine(`TERMILAB_USER_DATA=${userData} ${NODE} ${CLI} ${args} > ${so} 2> ${se}; echo CLI-${id}-EXIT-$?`);
+    const m = await P.waitFor(async () => (await P.visibleText()).match(new RegExp(`^CLI-${id}-EXIT-(\\d+)`, 'm')), ms);
+    const read = (f) => { try { return fs.readFileSync(f, 'utf-8'); } catch (_) { return ''; } };
+    return { code: m ? Number(m[1]) : null, stdout: read(so), stderr: read(se) };
+  };
+  const received = () => { try { return fs.readFileSync(fakeLog, 'utf-8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch (_) { return []; } };
+
+  try {
+    const CDP = 19600 + Math.floor(Math.random() * 400);
+    pc = launch([ROOT, `--user-data-dir=${userData}`, `--remote-debugging-port=${CDP}`], { HOME: home, SHELL: '/bin/bash', LANG: 'C.UTF-8', TERMILAB_USER_DATA: userData });
+    P = await cdpTo(CDP, pc.log);
+    await P.waitFor(() => P.ev('!!document.querySelector(".app")'));
+    await sleep(800);
+
+    /* Two local terminals: backend (a shell) and sempat (the fake agent) */
+    await P.ctrlT();
+    const p1 = await P.waitFor(async () => /e2e\$\s*$/m.test(await P.visibleText()), 20000);
+    await P.ctrlT();
+    const p2 = await P.waitFor(async () => (await P.ev(`${tabs}.length`)) === 2 && /e2e\$\s*$/m.test(await P.visibleText()), 20000);
+    if (!p1 || !p2) throw new Error(`no shell prompt\n${pc.log().slice(-1500)}`);
+    const two = await P.waitFor(async () => { const r = await rowsNow(); return r.length === 2 && r.every(x => x.sessionId) ? r : null; }, 10000);
+    if (!two) throw new Error('the Sessions rows never listed both terminals');
+    for (const [row, alias] of [[two[0], 'backend'], [two[1], 'sempat']]) {
+      await P.ev(`window.electronAPI.window.sessionAction(${JSON.stringify({ windowId: row.windowId, tabId: row.tabId, action: 'rename', value: alias })})`);
+    }
+    await P.waitFor(async () => (await rowOf('backend')) && (await rowOf('sempat')), 5000);
+
+    /* sempat (visible now): its shell has the id, then the fake agent replaces it */
+    await P.typeLine('echo "SID=[$TERMILAB_SESSION_ID]"');
+    const sid = await P.waitFor(async () => (await P.visibleText()).match(/^SID=\[([^\]\n]+)\]/m), 5000);
+    ok('T1 a local Termilab shell exports TERMILAB_SESSION_ID', !!sid, (await P.visibleText()).slice(-300));
+    await P.typeLine(`FAKE_AGENT_LOG=${fakeLog} exec ${NODE} ${FAKE}`);
+    const seen = await P.waitFor(async () => { const r = await rowOf('sempat'); return r && r.agentId === 'claude' && r.state === 'idle' ? r : null; }, 15000);
+    ok('T2 the fake agent is recognised in "sempat" (Sessions: claude, idle)', !!seen, JSON.stringify(await rowOf('sempat')));
+
+    /* backend: a plain shell that runs termilab-cli */
+    await showTab(0);
+    await P.waitFor(async () => /e2e\$\s*$/m.test(await P.visibleText()), 5000);
+    const ls = await cliHere('sessions --json');
+    let list = null;
+    try { list = JSON.parse(ls.stdout).sessions; } catch (_) { list = null; }
+    const sem = list && list.find(s => s.session === 'sempat');
+    const me = list && list.find(s => s.session === 'backend');
+    ok('T3 termilab-cli sessions: sempat reachable (claude), backend is self and not reachable (a shell)',
+      !!sem && sem.reachable === true && sem.agent === 'claude' && !!me && me.self === true && me.reachable === false, `${ls.code} ${ls.stdout} ${ls.stderr}`);
+
+    const t0 = Date.now();
+    const r1 = await cliHere('send sempat "ping"');
+    const want = 'pong: [Message from Termilab session "backend"] ping';
+    ok('T4 send sempat "ping" from backend returns "pong: …" with the sender prefix', r1.code === 0 && r1.stdout.includes(want),
+      `exit ${r1.code}, stdout ${JSON.stringify(r1.stdout)}, stderr ${JSON.stringify(r1.stderr)}`);
+    console.log(`     reply in ${Date.now() - t0} ms: ${JSON.stringify(r1.stdout.trim())}`);
+    ok('T5 the agent got exactly one pasted message with that prefix', JSON.stringify(received()) === JSON.stringify(['[Message from Termilab session "backend"] ping']), JSON.stringify(received()));
+
+    const r2 = await cliHere('send --json sempat "second one"');
+    let j2 = null;
+    try { j2 = JSON.parse(r2.stdout); } catch (_) { j2 = null; }
+    ok('T6 a second message right away also comes back (end of turn not lost)',
+      r2.code === 0 && !!j2 && j2.reply.includes('pong: [Message from Termilab session "backend"] second one') && j2.timedOut === false && j2.state === 'idle',
+      `${r2.code} ${r2.stdout} ${r2.stderr}`);
+
+    const self = await cliHere('send backend "hola"');
+    const shell = await cliHere('send nadie "hola"');
+    ok('T7 to itself / to an unknown session: refused, nothing typed',
+      self.code === 1 && /your own session/.test(self.stderr) && shell.code === 1 && /No session named "nadie"/.test(shell.stderr) && received().length === 2,
+      `${self.code} ${self.stderr} | ${shell.code} ${shell.stderr}`);
+
+    const row = await rowOf('sempat');
+    await P.ev(`window.electronAPI.window.sessionAction(${JSON.stringify({ windowId: row.windowId, tabId: row.tabId, action: 'talk', value: true })})`);
+    await P.waitFor(async () => (await rowOf('sempat')).talkBlocked === true, 5000);
+    const blocked = await cliHere('send sempat "hola"');
+    ok('T8 "Don\'t let agents message this session": refused, nothing typed',
+      blocked.code === 1 && /does not let agents message/.test(blocked.stderr) && received().length === 2, `${blocked.code} ${blocked.stderr}`);
+
+    await sleep(300);
+    let logs = [];
+    try { logs = JSON.parse(fs.readFileSync(path.join(userData, 'data', 'agent-logs.json'), 'utf-8')); } catch (_) { logs = []; }
+    const sends = logs.filter(e => e.tool === 'send_to_session');
+    ok('T9 agent-logs.json records every attempt (2 delivered, 3 refused)',
+      sends.filter(e => e.ok).length === 2 && sends.filter(e => !e.ok).length === 3 && sends.every(e => /^from session "backend" \(\d+ chars\)/.test(e.command)),
+      JSON.stringify(sends.map(e => [e.ok, e.host, e.command, e.error])));
+  } catch (err) {
+    ok('e2e ran without throwing', false, err && err.stack);
+    if (pc) console.log(pc.log().slice(-2000));
+  } finally {
+    if (P) P.close();
+    if (pc) await pc.close();
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+  const failed = results.filter(r => r.startsWith('FAIL')).length;
+  console.log(failed ? `\ne2e-agent-talk: ${failed} fallo(s) de ${results.length}` : `\ne2e-agent-talk: todo en verde (${results.length})`);
+  process.exit(failed ? 1 : 0);
+}
+
+main();

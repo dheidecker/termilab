@@ -135,6 +135,7 @@ AI agents, bots and scripts can use the hosts saved in Termilab **without ever s
 
 - **MCP server** for Claude Code, Codex CLI, Gemini CLI, Cursor and other MCP clients: `claude mcp add --scope user termilab -- termilab-cli mcp`.
 - **Command line** for scripts: `termilab-cli hosts`, `termilab-cli run <host> <command>` (exits with the remote exit code), `termilab-cli read` / `write`.
+- **Agents talking to each other**: an agent in one terminal can ask the agent in another ("ask the sempat session ...") with `send_to_session` or `termilab-cli send sempat "..."`; Termilab types the message there and returns the reply. Only to terminals running an agent CLI, never a plain shell; right-click a session to turn it off ([details](docs/agents.md#agents-talking-to-each-other)).
 - deb and pacman install `termilab-cli` in `/usr/bin`; AppImage, Windows and macOS use the app binary with `--cli` (for example `Termilab.AppImage --cli hosts`).
 - Termilab must be open, and each host's key must have been trusted once from Termilab. Every action is listed in **Logs**.
 

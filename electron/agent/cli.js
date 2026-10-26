@@ -8,6 +8,8 @@
  *   termilab-cli run [--timeout S] [--cwd DIR] [--json] <host> <command...>
  *   termilab-cli read [--json] <host> <path>
  *   termilab-cli write [--mode 644] [--json] <host> <path>   (content on stdin)
+ *   termilab-cli sessions [--json]                            (terminals open in Termilab)
+ *   termilab-cli send [--no-wait] [--timeout S] [--json] <session> <message...>
  *   termilab-cli mcp                                          (the MCP server)
  *   termilab-cli guide                                        (the agent guide)
  *
@@ -20,7 +22,7 @@
  * Node built-ins only.
  */
 const os = require('os');
-const { callTermilab, runTimeoutMs } = require('./client');
+const { callTermilab, runTimeoutMs, talkTimeoutMs } = require('./client');
 
 const EXIT_USAGE = 2;
 const EXIT_RUN_FAILED = 125;
@@ -36,6 +38,8 @@ Usage:
   termilab-cli run <host> <command...>              Run a command, exit with its exit code
   termilab-cli read <host> <path>                   Print a file to stdout
   termilab-cli write <host> <path> [--mode 644]     Write stdin to a file
+  termilab-cli sessions [--json]                    List the terminals open in Termilab
+  termilab-cli send <session> <message...>          Message the agent in another terminal
   termilab-cli mcp                                  Run the MCP server on stdio
   termilab-cli guide                                Print the guide for AI agents
   termilab-cli help <command>                       Help for one command
@@ -87,6 +91,31 @@ Create or overwrite a file on <host> with what comes on stdin (up to 4 MB).
   --json       Print { host, path, bytes_written }
 Example:
   termilab-cli write --mode 644 web /etc/motd < motd.txt
+`,
+  sessions: `Usage: termilab-cli sessions [--json]
+
+List the terminals open in Termilab (tabs and Background): the session name
+(its alias, or a short id), the host, the agent CLI running in it (claude,
+codex...), its state, and whether \`send\` can message it.
+  --json   Print the full list as JSON
+`,
+  send: `Usage: termilab-cli send [options] <session> <message...>
+
+Type <message> into another Termilab terminal where an AI agent CLI runs
+(Claude Code, Codex...), as if the user typed it, wait for that agent's turn to
+end and print its reply. <session> is an alias from \`termilab-cli sessions\`
+(case-insensitive). The words after it are joined with spaces; "-" reads the
+message from stdin. It arrives prefixed with [Message from Termilab session
+"<this terminal's alias>"].
+  --no-wait     Return as soon as it is typed
+  --timeout S   Wait at most S seconds for the reply (default 600, max 3600);
+                then print what it has so far and exit 124
+  --json        Print the full result as JSON
+
+Only to a terminal running an agent CLI (never a plain shell), never this
+terminal, not while it waits for the user's permission or answer, and not if
+the user turned agent messages off for it. 8000 characters at most, 30
+messages per hour per session.
 `,
   guide: `Usage: termilab-cli guide
 
@@ -301,7 +330,50 @@ async function cmdWrite(argv) {
   return 0;
 }
 
-const COMMANDS = { hosts: cmdHosts, run: cmdRun, read: cmdRead, write: cmdWrite };
+async function cmdSessions(argv) {
+  const { opts, pos } = parseArgs(argv, { json: 'flag' });
+  if (opts.help) { out(HELP.sessions); return 0; }
+  if (pos.length) throw new UsageError(`sessions takes no arguments (got "${pos[0]}").`);
+  const { sessions } = await callTermilab('list_sessions', {});
+  if (opts.json) { printJson({ sessions }); return 0; }
+  if (!sessions.length) { err('termilab-cli: no terminal is open in Termilab.'); return 0; }
+  const rows = sessions.map(x => [x.session + (x.self ? ' (this one)' : ''), x.host, x.agent || '-', x.state, x.reachable ? 'yes' : `no: ${x.note || ''}`]);
+  out(`${table(rows, ['SESSION', 'HOST', 'AGENT', 'STATE', 'REACHABLE'])}\n`);
+  return 0;
+}
+
+async function cmdSend(argv) {
+  const { opts, pos, rest } = parseArgs(argv, { 'no-wait': 'flag', timeout: 'value', json: 'flag' }, { restAfter: 1 });
+  if (opts.help) { out(HELP.send); return 0; }
+  const [session, ...words] = [...pos, ...rest];
+  if (!session) throw new UsageError('send needs a session and a message.');
+  let message = words.join(' ');
+  if (message === '-') message = (await readStdin()).toString('utf-8');
+  if (!message.trim()) throw new UsageError(`send needs a message for "${session}".`);
+  const params = { session, message, wait: !opts['no-wait'] };
+  if (opts.timeout !== undefined) {
+    const t = Number(opts.timeout);
+    if (!Number.isFinite(t) || t <= 0) throw new UsageError('--timeout must be a positive number of seconds.');
+    params.timeoutSec = t;
+  }
+  let r;
+  try {
+    r = await callTermilab('send_to_session', params, { timeoutMs: talkTimeoutMs(params.wait ? params.timeoutSec : 0), client: 'termilab-cli' });
+  } catch (e) {
+    err(`termilab-cli: ${e.message}`);
+    return 1;
+  }
+  if (opts.json) { printJson(r); return r.timedOut ? EXIT_TIMEOUT : 0; }
+  if (!params.wait) { err(`termilab-cli: sent to "${r.session}"${r.queued ? ' (it was busy: queued)' : ''}.`); return 0; }
+  if (r.reply) out(r.reply.endsWith('\n') ? r.reply : `${r.reply}\n`);
+  if (r.queued) err(`termilab-cli: "${r.session}" was busy; the message was queued.`);
+  if (r.state === 'waiting-permission') err(`termilab-cli: "${r.session}" stopped to ask the user something; they must answer it in Termilab.`);
+  if (r.truncated) err('termilab-cli: the reply was cut (only its end is shown).');
+  if (r.timedOut) { err(`termilab-cli: no end of turn yet; this is what "${r.session}" wrote so far.`); return EXIT_TIMEOUT; }
+  return 0;
+}
+
+const COMMANDS = { hosts: cmdHosts, run: cmdRun, read: cmdRead, write: cmdWrite, sessions: cmdSessions, send: cmdSend };
 
 async function main(argv = process.argv.slice(2)) {
   const [cmd, ...rest] = argv;
@@ -310,7 +382,7 @@ async function main(argv = process.argv.slice(2)) {
   if (cmd === 'help') {
     const topic = rest[0];
     if (!topic) { out(HELP.main); return 0; }
-    if (!HELP[topic] || topic === 'main') { err(`termilab-cli: no command "${topic}". Commands: hosts, run, read, write, mcp, guide.`); return EXIT_USAGE; }
+    if (!HELP[topic] || topic === 'main') { err(`termilab-cli: no command "${topic}". Commands: hosts, run, read, write, sessions, send, mcp, guide.`); return EXIT_USAGE; }
     out(HELP[topic]);
     return 0;
   }
@@ -332,7 +404,7 @@ async function main(argv = process.argv.slice(2)) {
   }
   const fn = COMMANDS[cmd];
   if (!fn) {
-    err(`termilab-cli: unknown command "${cmd}". Commands: hosts, run, read, write, mcp, guide. See termilab-cli --help.`);
+    err(`termilab-cli: unknown command "${cmd}". Commands: hosts, run, read, write, sessions, send, mcp, guide. See termilab-cli --help.`);
     return EXIT_USAGE;
   }
   try {

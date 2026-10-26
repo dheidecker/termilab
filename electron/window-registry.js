@@ -122,6 +122,8 @@ function cleanSessionRows(rows) {
       kind: r.kind === 'local' ? 'local' : 'ssh',
       connected: r.connected === true,
       muted: r.muted === true,
+      /* The user turned off agent messages to this terminal (agent-talk.js) */
+      talkBlocked: r.talkBlocked === true,
       agentId: agent ? text(r.agentId, 32) : null,
       name: agent ? (text(r.name, 40) || 'Agent') : null,
       state: agent ? r.state : null,

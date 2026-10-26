@@ -1,5 +1,6 @@
 /*
- * What the Sessions dock's row menu does: Rename, Color, Mute, Close. A row
+ * What the Sessions dock's row menu does: Rename, Color, Mute, agent
+ * messages on/off, Close. A row
  * of this window acts here; one of another window goes through main
  * (window:session-action) and THAT window applies it (window:session-request,
  * heard by useSessionRequests, mounted once in App on desktop). Close asks
@@ -28,12 +29,17 @@ function applyHere(tabId, action, value, { state, actions }) {
   if (action === 'rename') actions.setTabAlias(tabId, value || '');
   else if (action === 'color') return actions.setTabColor(tabId, value || null);
   else if (action === 'mute') actions.setTabMuted(tabId, !!value);
+  else if (action === 'talk') {
+    if (!actions.setTabTalkBlocked) return false;
+    actions.setTabTalkBlocked(tabId, !!value);
+  }
   else if (action === 'close') return closeSessionPane(tab, actions);
   else return false;
   return true;
 }
 
-/* action: rename (value: the alias, '' = none) | color (#rrggbb | null) | mute (bool) | close */
+/* action: rename (value: the alias, '' = none) | color (#rrggbb | null) | mute (bool)
+   | talk (bool: true = agents may not message it) | close */
 export function runSessionAction(row, action, value, ctx) {
   if (!row || !row.tabId) return Promise.resolve(false);
   if (row.self !== false || !FEATURES.multiWindow) return Promise.resolve(applyHere(row.tabId, action, value, ctx));

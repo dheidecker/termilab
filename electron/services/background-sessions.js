@@ -13,7 +13,7 @@ const crypto = require('crypto');
  *
  *   <userData>/data/background-sessions.json   (next to keeper-state.json)
  *   { v: 1, sessions: [{ keeperId, sessionKey, kind: 'local'|'ssh', hostId,
- *                        label, alias, color, agent: {id, name}|null, detachedAt }] }
+ *                        label, alias, color, agent: {id, name}|null, talkBlocked?, detachedAt }] }
  *
  * Local to this device: never synced, never sent anywhere but this app's own
  * windows. No secrets: the connection config (password, key) is never read
@@ -49,6 +49,8 @@ function cleanRecord(r) {
     alias: text(r.alias, 40) || null,
     color: hexColor(r.color),
     agent,
+    /* "Don't let agents message this session", kept next to the alias */
+    talkBlocked: r.talkBlocked === true,
     detachedAt: Number.isFinite(r.detachedAt) ? r.detachedAt : Date.now(),
   };
 }
@@ -116,6 +118,7 @@ class BackgroundSessions {
         color: r.color || null,
         label: r.host || null,
         agent: r.agentId || r.name ? { id: r.agentId || null, name: r.name || null } : null,
+        talkBlocked: r.talkBlocked === true,
       });
     }
     while (this._meta.size > META_CAP) this._meta.delete(this._meta.keys().next().value);
@@ -139,6 +142,7 @@ class BackgroundSessions {
       alias: meta.alias,
       color: meta.color,
       agent: meta.agent,
+      talkBlocked: meta.talkBlocked === true,
       detachedAt: Date.now(),
     });
     if (!rec) return null;

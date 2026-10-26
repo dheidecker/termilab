@@ -40,6 +40,8 @@ class LocalShellService {
     this.ents = new Map();
     /** sessionId -> { kept, notice } of its spawn */
     this.infos = new Map();
+    /** sessionId -> TERMILAB_SESSION_ID of its shell */
+    this.talkIds = new Map();
     /* Local session keeper (local-keeper.js); the harness can turn it off */
     this.keeperEnabled = true;
     /** @type {import('electron').BrowserWindow | null} */
@@ -89,11 +91,19 @@ class LocalShellService {
     const cols = options.cols || 80;
     const rows = options.rows || 24;
     const cwd = options.cwd || os.homedir();
+    /* Who this terminal is, for agent-to-agent messages (electron/agent/agent-talk.js):
+       an agent CLI started here inherits it, and termilab-cli / termilab-mcp
+       send it as the sender. Stable for a kept session (its keeper id), so a
+       shell that outlives a reattach still names the right terminal. */
+    let kSess = null;
+    try { kSess = options.sessionKey ? localKeeper.sessionFor(options.sessionKey) : null; } catch (_) { kSess = null; }
+    const talkId = kSess ? `k${kSess.id}` : sessionId;
+    const extraEnv = { ...(options.env || {}), TERMILAB_SESSION_ID: talkId };
 
     // Merge environment: inherit process.env, add custom vars
     const env = {
       ...process.env,
-      ...(options.env || {}),
+      ...extraEnv,
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
     };
@@ -121,7 +131,7 @@ class LocalShellService {
     let notice = null;
     if (options.sessionKey && process.platform === 'linux' && this.keeperEnabled && await localKeeper.wanted()) {
       try {
-        const k = await localKeeper.open({ sessionKey: options.sessionKey, cols, rows, cwd, shell, env: { ...(options.env || {}), TERM: 'xterm-256color', COLORTERM: 'truecolor' } });
+        const k = await localKeeper.open({ sessionKey: options.sessionKey, cols, rows, cwd, shell, env: { ...extraEnv, TERM: 'xterm-256color', COLORTERM: 'truecolor' } });
         if (k.fallback) notice = `Session keeping unavailable for local terminals (${k.reason}): using a plain shell`;
         else kept = k;
       } catch (err) {
@@ -150,7 +160,7 @@ class LocalShellService {
           : { mode: 'direct' };
         if (decision.mode === 'systemd-run') {
           unit = ptyEscape.unitName(sessionId);
-          spawnEnv = ptyEscape.filterEnv(process.env, { ...(options.env || {}), TERM: 'xterm-256color', COLORTERM: 'truecolor' });
+          spawnEnv = ptyEscape.filterEnv(process.env, { ...extraEnv, TERM: 'xterm-256color', COLORTERM: 'truecolor' });
           file = decision.systemdRun;
           args = ptyEscape.buildSystemdRunArgs({ unit, shell, shellArgs, setenv: spawnEnv });
         }
@@ -160,6 +170,7 @@ class LocalShellService {
       this._launch(sessionId, spec, kept ? { ...kept, spec, reattaches: [], sessionKey: String(options.sessionKey) } : null);
       if (unit) this.units.set(sessionId, unit);
       this.infos.set(sessionId, { kept: !!kept, notice });
+      this.talkIds.set(sessionId, talkId);
       /* Logs section: start/end only, never what was typed or printed */
       const logId = connectionLogService.start({ type: 'local' });
       this.logIds.set(sessionId, logId);
@@ -168,6 +179,11 @@ class LocalShellService {
       windowRegistry.release(sessionId);
       throw new Error(`Failed to spawn local shell "${shell}": ${err.message}`);
     }
+  }
+
+  /** The TERMILAB_SESSION_ID its shell got (agent-talk.js), or null */
+  talkIdOf(sessionId) {
+    return this.talkIds.get(sessionId) || null;
   }
 
   /** {kept, notice} of a spawn (local:spawn returns it with the id) */
@@ -223,6 +239,7 @@ class LocalShellService {
       this._dropWriter(sessionId);
       this.units.delete(sessionId);
       this.infos.delete(sessionId);
+      this.talkIds.delete(sessionId);
       this._endLog(sessionId);
       windowRegistry.release(sessionId);
     });

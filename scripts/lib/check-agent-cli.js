@@ -109,7 +109,7 @@ async function checksCliRunning({ check, ROOT, dir, files, sshd, salida }) {
     assert.strictEqual(h.code, 0);
     assert.strictEqual(h.stderr, '');
     assert.match(h.stdout.toString(), /Run `termilab-cli guide` for how AI agents should use this\.\n$/);
-    for (const c of ['hosts', 'run', 'read', 'write', 'mcp', 'guide']) {
+    for (const c of ['hosts', 'run', 'read', 'write', 'sessions', 'send', 'mcp', 'guide']) {
       const x = await run(['help', c]);
       assert.strictEqual(x.code, 0, c);
       assert.match(x.stdout.toString(), new RegExp(`^Usage: termilab-cli ${c}`));
@@ -140,7 +140,7 @@ async function checksCliRunning({ check, ROOT, dir, files, sshd, salida }) {
     const code = await new Promise((resolve) => { child.once('exit', resolve); child.stdin.end(); });
     const by = Object.fromEntries(lines.map(l => [l.id, l]));
     assert.strictEqual(by[1].result.serverInfo.name, 'termilab');
-    assert.ok(by[2].result.tools.length === 8);
+    assert.ok(by[2].result.tools.length === 11);
     assert.strictEqual(by[3].result.structuredContent.stdout, 'por-mcp\n');
     assert.strictEqual(code, 0);
   });

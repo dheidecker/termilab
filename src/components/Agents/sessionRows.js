@@ -21,6 +21,8 @@ export function localSessionRows(state) {
         kind: t.type === 'local-terminal' ? 'local' : 'ssh',
         connected: !!t.sessionId,
         muted: !!t.muted,
+        /* "Don't let agents message this session" (agent-talk.js) */
+        talkBlocked: !!t.talkBlocked,
         title: paneTitle(t),
         alias: cleanAlias(t.alias) || null,
         host: t.label || 'Terminal',

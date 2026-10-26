@@ -31,8 +31,14 @@ const terminals = new Map();
  *                                 i.e. exactly at this point of its queue
  *                                 (a join: main keeps sending meanwhile)
  *   sessionId(): string|null      the live session it shows
+ *   talk(): {send, read, watch}|null   agent to agent (TerminalView, agentTalk.js)
  * }
  */
+/** The registered terminal of tab `tabId` in this window, or null (agent-talk) */
+export function terminalEntry(tabId) {
+  return terminals.get(tabId) || null;
+}
+
 export function registerTerminal(tabId, entry) {
   terminals.set(tabId, entry);
   ensureJoinListener();

@@ -356,6 +356,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('agent:approval-cancel', listener);
     },
     respondApproval: (requestId, approve) => invoke('agent:approval-response', { requestId, approve: approve === true }),
+    /* Agent to agent (electron/agent/agent-talk.js): main asks the window that
+       owns a terminal to type a message into it, or to read what it answered:
+         {opId, kind: 'send'|'read'|'watch', tabId, sessionId, deliveryId, text?}
+       The window answers talkReply(opId, result) and, when the turn ends,
+       talkReply(deliveryId, {event: 'done'|'blocked', reply, truncated}).
+       One subscriber (useAgentTalk). */
+    onTalkOp: (callback) => {
+      const listener = (event, payload) => callback(payload);
+      ipcRenderer.on('agent-talk:op', listener);
+      return listener;
+    },
+    removeTalkListener: (listener) => {
+      if (listener) ipcRenderer.removeListener('agent-talk:op', listener);
+    },
+    talkReply: (id, payload) => invoke('agent-talk:reply', id, payload || {}),
   },
 
   // ─── Port Forwarding (Active Tunnels) ─────────────────

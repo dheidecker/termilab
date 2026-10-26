@@ -146,6 +146,7 @@ function attachKeeperTab(dispatch, host, id, extra = {}) {
   const look = {
     ...(extra.alias ? { alias: extra.alias } : {}),
     ...(extra.color ? { color: extra.color } : {}),
+    ...(extra.talkBlocked ? { talkBlocked: true } : {}),
     ...(extra.fromBackground ? { fromBackground: true } : {}),
     ...(extra.noSwitch ? { noSwitch: true } : {}),
     ...(extra.spawnSize ? { spawnSize: extra.spawnSize } : {}),
@@ -827,6 +828,13 @@ export function AppProvider({ children }) {
       dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, muted: !!muted } });
     }, []),
 
+    /* "Don't let agents message this session" (electron/agent/agent-talk.js):
+       kept with the alias (workspace restore, Background record) */
+    setTabTalkBlocked: useCallback((tabId, blocked) => {
+      if (!stateRef.current.tabs.some(t => t.id === tabId)) return;
+      dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, talkBlocked: !!blocked } });
+    }, []),
+
     setTabAlias: useCallback((tabId, alias) => {
       if (!stateRef.current.tabs.some(t => t.id === tabId)) return;
       dispatch({ type: 'UPDATE_TAB', payload: { id: tabId, alias: Layout.cleanAlias(alias) || null } });
@@ -1046,7 +1054,7 @@ export function AppProvider({ children }) {
        → {tabId} | {gone:true} | {noHost:true} */
     reopenBackgroundSession: useCallback(async (rec, opts) => {
       const o = opts && typeof opts === 'object' && typeof opts.tabId === 'string' ? opts : {};
-      const extra = { alias: rec.alias || null, color: rec.color || null, fromBackground: true, tabId: o.tabId, noSwitch: !!o.noSwitch, spawnSize: o.spawnSize || null };
+      const extra = { alias: rec.alias || null, color: rec.color || null, talkBlocked: rec.talkBlocked === true, fromBackground: true, tabId: o.tabId, noSwitch: !!o.noSwitch, spawnSize: o.spawnSize || null };
       if (rec.kind === 'local') {
         const local = hasApi() ? api().localShell : null;
         if (local && typeof local.keeperList === 'function') {

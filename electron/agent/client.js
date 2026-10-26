@@ -44,7 +44,9 @@ function callTermilab(method, params, { timeoutMs = 120000, client = null } = {}
     const timer = setTimeout(() => done(codedError('timeout', 'Termilab did not answer in time.')), timeoutMs);
     sock.setEncoding('utf-8');
     /* client: who is asking (MCP clientInfo name, "termilab-cli"), shown when the user must approve */
-    sock.on('connect', () => sock.write(`${JSON.stringify({ id, token, method, params, ...(client ? { client } : {}) })}\n`));
+    /* from: the Termilab terminal this runs in (local shells export it), the sender of send_to_session */
+    const from = typeof process.env.TERMILAB_SESSION_ID === 'string' && process.env.TERMILAB_SESSION_ID ? process.env.TERMILAB_SESSION_ID : null;
+    sock.on('connect', () => sock.write(`${JSON.stringify({ id, token, method, params, ...(client ? { client } : {}), ...(from ? { from } : {}) })}\n`));
     sock.on('data', (d) => {
       buf += d;
       const nl = buf.indexOf('\n');
@@ -71,9 +73,16 @@ function runTimeoutMs(timeoutS) {
   return (secs + 60) * 1000 + APPROVAL_WAIT_MS;
 }
 
+/* send_to_session / wait_reply: Termilab enforces the wait itself (default 600 s, max 3600) */
+function talkTimeoutMs(timeoutSec) {
+  const n = Number(timeoutSec);
+  const secs = timeoutSec === undefined || timeoutSec === null || !Number.isFinite(n) ? 600 : Math.min(Math.max(n, 0), 3600);
+  return (secs + 60) * 1000;
+}
+
 function closeAll() {
   for (const s of openSockets) { try { s.destroy(); } catch (_) { /* gone */ } }
   openSockets.clear();
 }
 
-module.exports = { callTermilab, runTimeoutMs, closeAll, NOT_RUNNING, APPROVAL_WAIT_MS };
+module.exports = { callTermilab, runTimeoutMs, talkTimeoutMs, closeAll, NOT_RUNNING, APPROVAL_WAIT_MS };

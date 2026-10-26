@@ -1463,6 +1463,14 @@ async function main() {
     process.exit(failures ? 1 : 0);
   }
 
+  // TERMILAB_CHECK_ONLY=AT: solo el grafo + un agente le habla a otro por su sesion (agent-talk)
+  if (process.env.TERMILAB_CHECK_ONLY === 'AT') {
+    await require('./lib/check-agent-talk').seccionAgentTalk({ check, ROOT });
+    console.log(results.join('\n'));
+    console.log(failures ? `\n${failures} comprobacion(es) fallidas` : '\nTodo en verde (solo AT)');
+    process.exit(failures ? 1 : 0);
+  }
+
   // TERMILAB_CHECK_ONLY=AM: solo el grafo + avisos a varios clientes (PC + navegadores)
   if (process.env.TERMILAB_CHECK_ONLY === 'AM') {
     await require('./lib/check-approvals-multi').seccionAprobacionesMulti({ check, ROOT, handlers });
@@ -1542,6 +1550,8 @@ async function main() {
   // ── AG. Agentes de IA: socket local + MCP por stdio, sshd real, sin secretos ──
   await require('./lib/check-agent').seccionAgent({ check, ROOT });
   await require('./lib/check-agent-pool').seccionAgentPool({ check, ROOT });
+  // ── AT. Un agente le habla a otro por su sesion de Termilab (agent-talk) ──
+  await require('./lib/check-agent-talk').seccionAgentTalk({ check, ROOT });
   // ── DX. Comandos destructivos de agentes: clasificador + Run once / Block ──
   await require('./lib/check-destructive').seccionDestructive({ check, ROOT });
   // ── AM. Avisos (aprobaciones, huellas) a la ventana del PC y a todos los navegadores ──
