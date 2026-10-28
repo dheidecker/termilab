@@ -17,7 +17,7 @@ const sftpService = require('./sftp-service');
  *    client (sftpService.getSFTP: never a new connection) to the same folder
  *    under the remote home, with progress pushed to the window that asked.
  *
- * Only images (sniffed from the bytes, not trusted from the name), at most
+ * Only images and PDFs (sniffed from the bytes, not trusted from the name), at most
  * MAX_ITEMS per call and MAX_BYTES each. Every save/upload first deletes
  * files older than MAX_AGE_MS in that uploads folder (bounded, best effort).
  * The folders are refused when they are symlinks, not directories or not
@@ -33,11 +33,12 @@ const STEP_TIMEOUT_MS = 20000;
 const CHUNK = 32 * 1024;
 const IN_FLIGHT = 8;
 
-const ONLY_IMAGES = 'Only images can be attached';
+const ONLY_IMAGES = 'Only images and PDFs can be attached';
 
-/** The image type of `buf` from its magic bytes: 'png' | 'jpg' | 'gif' | 'webp' | null */
+/** The type of `buf` from its magic bytes: 'png' | 'jpg' | 'gif' | 'webp' | 'pdf' | null */
 function sniff(buf) {
   if (!buf || buf.length < 12) return null;
+  if (buf.toString('latin1', 0, 5) === '%PDF-') return 'pdf';
   if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
   if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
   if (buf.toString('latin1', 0, 4) === 'GIF8') return 'gif';
@@ -74,7 +75,7 @@ class UploadError extends Error {}
  */
 async function loadItems(items) {
   if (!Array.isArray(items) || !items.length) throw new UploadError('Nothing to attach');
-  if (items.length > MAX_ITEMS) throw new UploadError(`At most ${MAX_ITEMS} images at a time`);
+  if (items.length > MAX_ITEMS) throw new UploadError(`At most ${MAX_ITEMS} files at a time`);
   const out = [];
   for (const it of items) {
     if (!it || typeof it !== 'object') throw new UploadError(ONLY_IMAGES);

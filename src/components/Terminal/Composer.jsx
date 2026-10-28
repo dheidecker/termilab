@@ -368,7 +368,7 @@ export default function Composer({ tab, color, focusSignal, onSend, onAttach, on
             <input
               ref={fileRef}
               type="file"
-              accept="image/png,image/jpeg,image/gif,image/webp"
+              accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,.pdf"
               multiple
               hidden
               onChange={(e) => { const files = [...(e.target.files || [])]; e.target.value = ''; attach(files); taRef.current?.focus(); }}

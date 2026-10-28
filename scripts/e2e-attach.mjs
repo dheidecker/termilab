@@ -131,7 +131,7 @@ try {
   await drag('dragOver', [txt]);
   await drag('drop', [txt]);
   const refused = await waitFor(() => evaluate(`document.querySelector('.terminal-attach-status.error')?.textContent || ''`), 3000);
-  ok('non-image refused with "Only images can be attached"', refused === 'Only images can be attached', refused);
+  ok('non-image refused with "Only images and PDFs can be attached"', refused === 'Only images and PDFs can be attached', refused);
   ok('nothing typed for the refused file', !(await screen()).includes('notes.txt'));
 
   // Clipboard image: Ctrl+Shift+V -> pasteInto -> onImage (pasteImageRef) -> attachImages

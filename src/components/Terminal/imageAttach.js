@@ -1,5 +1,5 @@
 /*
- * Images into a terminal, for an agent CLI running there (Claude Code,
+ * Images and PDFs into a terminal, for an agent CLI running there (Claude Code,
  * Codex) that reads images by path: drop image files on a pane, or paste an
  * image from the clipboard, and its path is typed at the prompt.
  *
@@ -18,11 +18,11 @@ import { DRAG_MIME } from '../SplitPane/dragState';
 import { liveSessionId } from '../SplitPane/sessions';
 import { IS_WEB } from '../../platform';
 
-export const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
-const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+export const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf'];
+const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf'];
 export const MAX_BYTES = 20 * 1024 * 1024;
 export const MAX_ITEMS = 10;
-export const ONLY_IMAGES = 'Only images can be attached';
+export const ONLY_IMAGES = 'Only images and PDFs can be attached';
 
 const api = () => (typeof window !== 'undefined' && window.electronAPI && window.electronAPI.attach) || null;
 export const canAttach = () => !!api();
@@ -62,7 +62,7 @@ const isImage = (it) => IMAGE_EXTS.includes(extOf(it.name)) || IMAGE_MIMES.inclu
 /** The reason these items cannot be attached, or null. */
 export function refusal(items) {
   if (!items.length) return null;
-  if (items.length > MAX_ITEMS) return `At most ${MAX_ITEMS} images at a time`;
+  if (items.length > MAX_ITEMS) return `At most ${MAX_ITEMS} files at a time`;
   if (!items.every(isImage)) return ONLY_IMAGES;
   const big = items.find(it => it.size > MAX_BYTES);
   if (big) return `${big.name} is larger than 20 MB`;

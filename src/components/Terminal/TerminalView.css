@@ -369,7 +369,7 @@
   z-index: 40;
 }
 
-/* "Uploading captura.png… 60%" / "Only images can be attached" */
+/* "Uploading captura.png… 60%" / "Only images and PDFs can be attached" */
 .terminal-attach-status {
   position: absolute;
   left: 12px;

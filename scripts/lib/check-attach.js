@@ -70,6 +70,8 @@ async function seccionAttach({ check, ROOT, handlers }) {
       assert.strictEqual(up.sniff(img), 'png');
       assert.strictEqual(up.sniff(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0])), 'jpg');
       assert.strictEqual(up.sniff(Buffer.from('GIF89a......')), 'gif');
+      assert.strictEqual(up.sniff(Buffer.from('%PDF-1.7\n%\xe2\xe3')), 'pdf');
+      assert.strictEqual(up.sniff(Buffer.from('PDF-1.7 not really')), null);
       assert.strictEqual(up.sniff(Buffer.from('RIFF\0\0\0\0WEBPVP8 ')), 'webp');
       assert.strictEqual(up.sniff(Buffer.from('#!/bin/sh\necho hi\n')), null);
       const when = new Date(2026, 9, 14, 9, 5, 7);
@@ -111,7 +113,7 @@ async function seccionAttach({ check, ROOT, handlers }) {
 
     await check('UP3 local: no-imagen, > 20 MB y > 10 se niegan sin escribir nada', async () => {
       const before = fs.readdirSync(upDir).length;
-      await assert.rejects(up.saveLocal([{ data: Buffer.from('#!/bin/sh\nrm -rf ~\n'), name: 'evil.png' }]), /Only images can be attached/);
+      await assert.rejects(up.saveLocal([{ data: Buffer.from('#!/bin/sh\nrm -rf ~\n'), name: 'evil.png' }]), /Only images and PDFs can be attached/);
       await assert.rejects(up.saveLocal([{ data: img, name: 'ok.png' }, { data: Buffer.from('hola'), name: 'x.txt' }]), /Only images/);
       await assert.rejects(up.saveLocal([{ data: png(1, 1, 20 * 1024 * 1024 + 10), name: 'big.png' }]), /larger than 20 MB/);
       await assert.rejects(up.saveLocal(Array.from({ length: 11 }, () => ({ data: img, name: 'a.png' }))), /At most 10/);
@@ -222,7 +224,7 @@ async function seccionAttach({ check, ROOT, handlers }) {
 
         await check('UP7 remoto: no-imagen y > 20 MB se niegan sin crear nada', async () => {
           const before = fs.readdirSync(rUp).length;
-          await assert.rejects(call(sid, 'u2', [{ data: Buffer.from('#!/bin/sh\n'), name: 'x.png' }]), /Only images can be attached/);
+          await assert.rejects(call(sid, 'u2', [{ data: Buffer.from('#!/bin/sh\n'), name: 'x.png' }]), /Only images and PDFs can be attached/);
           await assert.rejects(call(sid, 'u3', [{ data: png(1, 1, 20 * 1024 * 1024 + 1), name: 'big.png' }]), /larger than 20 MB/);
           assert.strictEqual(fs.readdirSync(rUp).length, before);
           assert.ok(!pushes.some(p => p.uploadId === 'u2' || p.uploadId === 'u3'), 'empujo progreso de algo negado');
@@ -271,8 +273,8 @@ async function seccionAttach({ check, ROOT, handlers }) {
       assert.strictEqual(ia.shellQuote('/tmp/my shots/it\'s.png'), `'/tmp/my shots/it'\\''s.png'`);
       assert.strictEqual(ia.shellQuote('/tmp/$(id).png'), `'/tmp/$(id).png'`);
       const it = (name, size = 10) => ({ name, size, mime: '' });
-      assert.strictEqual(ia.refusal([it('a.PNG'), it('b.jpeg'), it('c.webp'), it('d.gif')]), null);
-      assert.strictEqual(ia.refusal([it('a.png'), it('notes.txt')]), 'Only images can be attached');
+      assert.strictEqual(ia.refusal([it('a.PNG'), it('b.jpeg'), it('c.webp'), it('d.gif'), it('informe.PDF')]), null);
+      assert.strictEqual(ia.refusal([it('a.png'), it('notes.txt')]), 'Only images and PDFs can be attached');
       assert.match(ia.refusal([it('a.png', 21 * 1024 * 1024)]), /larger than 20 MB/);
       assert.match(ia.refusal(Array.from({ length: 11 }, () => it('a.png'))), /At most 10/);
       const dt = (...types) => ({ dataTransfer: { types } });
