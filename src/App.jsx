@@ -281,7 +281,7 @@ function AppContent() {
   }
 
   return (
-    <div className="app">
+    <div className={`app${IS_WEB ? ' app-web' : ''}`}>
       <Titlebar
         sidebarCollapsed={homeActive ? sidebarCollapsed : !sessionSidebar}
         onToggleSidebar={toggleSidebar}

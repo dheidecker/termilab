@@ -31,6 +31,20 @@ const ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 const KEEPER_RE = /^[a-z0-9]{8,40}$/;
 const COMMANDS = new Set(['open-host', 'open-local', 'close', 'rename', 'color', 'mute', 'split', 'reopen', 'background-end']);
 
+const AGENT_STATES = new Set(['working', 'blocked', 'done', 'idle']);
+/* The agent CLI the PC recognised in a terminal and what it is doing: the
+   browser shows the PC's (its own xterm may be scaled or freshly joined, and
+   scan wrong). Null when there is none. */
+const cleanAgent = (a) => {
+  if (!a || typeof a !== 'object' || typeof a.id !== 'string' || !a.id || !AGENT_STATES.has(a.state)) return null;
+  return {
+    id: a.id.slice(0, 40),
+    name: typeof a.name === 'string' ? a.name.slice(0, 60) : null,
+    state: a.state,
+    since: Number.isFinite(a.since) ? a.since : 0,
+  };
+};
+
 const str = (v, n) => (typeof v === 'string' && v ? v.slice(0, n) : null);
 const id = (v) => (typeof v === 'string' && ID_RE.test(v) ? v : null);
 const size = (v) => (Number.isInteger(v) && v > 0 && v < 10000 ? v : null);
@@ -76,6 +90,7 @@ function cleanReport(raw) {
       elsewhere: t.elsewhere === true,
       kept: t.kept === true,
       sessionKey: str(t.sessionKey, 80),
+      agent: cleanAgent(t.agent),
     };
     out.tabs.push(tab);
   }

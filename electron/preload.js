@@ -597,6 +597,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('session:join-screen', listener);
       return listener;
     },
+    /* This client clicked / focused that session's pane: it conducts the
+       pty's size from now on (window-registry.js takeConductor). Send the
+       resize first: it is the size the pty takes. */
+    conduct: (sessionId) => ipcRenderer.send('session:conduct', sessionId),
     /* {sessionId, cols, rows}: the pty's size changed (another client conducts) */
     onSize: (cb) => {
       const listener = (event, payload) => cb(payload);

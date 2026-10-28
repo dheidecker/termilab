@@ -36,13 +36,39 @@ export function mirrorSnapshot(state) {
     elsewhere: !!t.elsewhere,
     kept: !!t.kept,
     sessionKey: t.sessionKey || null,
+    /* What the agent in it is doing, as THIS PC scans it: the browser shows
+       this one (its own xterm may be scaled or freshly joined and scan wrong) */
+    agent: t.agent && t.agent.id ? { id: t.agent.id, name: t.agent.name || null, state: t.agent.state, since: t.agent.since || 0 } : null,
   }));
   return { tabs, layouts: state.layouts || {}, focusedPane: state.focusedPane || {} };
 }
 
 /* What the browser keeps of its own copy of a tab across states: marks it
-   computed from the stream itself (agent detection, done/bell marks) */
+   computed from the stream itself (done/bell marks). The agent's state is
+   the PC's (mirrorSnapshot), kept here only when the PC sends none (an
+   older PC). */
 const OWN = ['doneAt', 'doneKind', 'notify', 'agent'];
+
+/* A layout without its divider ratios: which panes there are and how they split */
+export const layoutShape = (tree) => (tree ? JSON.stringify(tree, (k, v) => (k === 'ratio' ? undefined : v)) : '');
+
+/**
+ * Browser: each group's layout as this browser shows it. The STRUCTURE is the
+ * PC's; the SIZES (divider ratios, an Arrange Panes done here) are this
+ * browser's own: a new mirror:state keeps the local tree of a group whose PC
+ * structure did not change since the last state, and takes the PC's when it
+ * did (a pane opened, closed, moved on the PC). `prevPc` = the PC's layouts
+ * of the previous state.
+ */
+export function mergeMirrorLayouts(local, pc, prevPc) {
+  const out = {};
+  for (const g of Object.keys(pc || {})) {
+    const mine = local && local[g];
+    const before = prevPc && prevPc[g];
+    out[g] = mine && before && layoutShape(before) === layoutShape(pc[g]) ? mine : pc[g];
+  }
+  return out;
+}
 
 /** Browser: rows of the Sessions panel, `self` = the window this browser mirrors. */
 export function markMirrorRows(agentsAll, windowId) {
@@ -79,9 +105,13 @@ export function applyMirrorState(state, p) {
       mirror: true,
     });
     if (m.color) t.color = m.color;
+    if (m.agent !== undefined) {
+      if (m.agent && m.agent.id) t.agent = m.agent; else delete t.agent;
+    }
     return t;
   });
-  const layouts = p.layouts && typeof p.layouts === 'object' ? p.layouts : {};
+  const pcLayouts = p.layouts && typeof p.layouts === 'object' ? p.layouts : {};
+  const layouts = mergeMirrorLayouts(state.layouts, pcLayouts, state.mirror && state.mirror.pcLayouts);
   const ids = new Set(tabs.map(t => t.id));
   const visible = tabs.filter(t => !t.hidden);
   /* This client's own tab and focus: kept while they exist */
@@ -101,7 +131,7 @@ export function applyMirrorState(state, p) {
     if (mine && tree.includes(`"tabId":${JSON.stringify(mine)}`)) focusedPane[g] = mine;
     else if (p.focusedPane && p.focusedPane[g]) focusedPane[g] = p.focusedPane[g];
   }
-  const mirror = { windowId: p.windowId ?? null, number: p.number ?? null, windows: Array.isArray(p.windows) ? p.windows : [], pending: nextPending, ready: true };
+  const mirror = { windowId: p.windowId ?? null, number: p.number ?? null, windows: Array.isArray(p.windows) ? p.windows : [], pending: nextPending, ready: true, pcLayouts };
   return {
     ...state,
     tabs,

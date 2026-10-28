@@ -82,6 +82,7 @@ fakeIpcMain.handle('attach:upload', envelope(async (event, sid, uploadId, items)
   return { sizes: items.map(i => i.data.length), first: items[0].data };
 }));
 fakeIpcMain.on('ssh:send-data', (event, sid, data) => { seen.sendData.push([event.sender, sid, data]); });
+fakeIpcMain.on('session:conduct', (event, sid) => { (seen.conduct = seen.conduct || []).push([event.sender, sid]); });
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'termilab-web-'));
 const distDir = path.join(tmp, 'dist-web');
@@ -523,6 +524,15 @@ async function main() {
     assert.strictEqual(seen.sendData.length, 1);
     assert.strictEqual(seen.sendData[0][0], events.connected[0]);
     assert.deepStrictEqual(seen.sendData[0].slice(1), ['s1', 'ls\r']);
+  });
+
+  await check('WS25 session:conduct (clic o foco en un panel de la web) esta en la lista blanca y llega a ipcMain.on', async () => {
+    assert.ok(WEB_CHANNELS.has('session:conduct'));
+    c.send('session:conduct', ['s1']);
+    await new Promise(r => setTimeout(r, 100));
+    assert.strictEqual((seen.conduct || []).length, 1);
+    assert.strictEqual(seen.conduct[0][0], events.connected[0]);
+    assert.strictEqual(seen.conduct[0][1], 's1');
   });
 
   await check('WS11 ssh:connect: fuera por defecto (espejo); con el canal abierto usa la password guardada y nunca vuelve', async () => {

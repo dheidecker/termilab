@@ -45,9 +45,10 @@
  *  - every per-session event goes to the owner AND to each viewer;
  *  - a viewer may type and resize (mayUse), like the owner;
  *  - the pty has one size, set by the session's CONDUCTOR: the last client
- *    that typed in it (the owner until someone else types). Only the
+ *    that typed in it, or clicked / focused its pane (takeConductor, from
+ *    'session:conduct'): the owner until someone else does. Only the
  *    conductor's resize reaches the pty; the others' are remembered, and
- *    applied the moment that client types (it becomes the conductor). The
+ *    applied the moment that client takes over (it becomes the conductor). The
  *    very first real size of a session is taken from ANY client, so a
  *    waitSize session opens even when the owner's window is hidden. Each
  *    time the pty's size changes, 'session:size' {sessionId, cols, rows}
@@ -706,8 +707,19 @@ class WindowRegistry {
    * when the keystroke lands. No-op without viewers.
    */
   noteInput(sessionId, by, data) {
-    if (!this._hasViewers(sessionId)) return;
     if (typeof data === 'string' && AUTO_REPLY.test(data)) return;
+    this.takeConductor(sessionId, by);
+  }
+
+  /**
+   * Client `by` interacted with `sessionId` without typing (a click or the
+   * focus in its pane, its window resized while that pane was the last one
+   * it touched: 'session:conduct'): it conducts the size, exactly as if it
+   * had typed. Same order rule: its resize, sent first, is the one applied.
+   * No-op without viewers.
+   */
+  takeConductor(sessionId, by) {
+    if (!this._hasViewers(sessionId)) return;
     const wc = this._wc(by);
     if (!wc) return;
     const was = this.conductorOf(sessionId);

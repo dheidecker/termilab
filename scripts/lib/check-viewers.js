@@ -33,6 +33,9 @@
  *  V13 mirror:command llega al renderer del PC (limpio) y mirror:state vuelve
  *      al navegador con el sessionId vivo; ordenes malas o desde el PC, no.
  *  V14 web:clients / web:kick: solo el PC; aviso al PC al conectar.
+ *  V16 conductor por interaccion: session:conduct (clic o foco en el panel)
+ *      lo cambia sin teclear y aplica su tamano; las respuestas automaticas
+ *      de xterm no; sin espectadores no hace nada; un tercero ajeno, nada.
  */
 const assert = require('assert');
 const path = require('path');
@@ -337,6 +340,60 @@ async function seccionEspectadores({ check, ROOT, handlers, onHandlers }) {
       for (const V of [A, B, C]) V.win.cerrar();
     });
 
+    await check('V16 conductor por interaccion: un clic o foco (session:conduct) lo cambia, no solo una tecla; las respuestas automaticas no', async () => {
+      const [A, B, D] = nuevas('A-v16', 'B-v16', 'D-v16');
+      const sid = 'v16-sid';
+      registry.claim(sid, A.wc);
+      onHandlers.get('ssh:resize')({ sender: A.wc }, sid, 160, 40);
+      /* Sin espectadores no hace nada (escritorio con la web apagada) */
+      pty.length = 0;
+      onHandlers.get('session:conduct')({ sender: A.wc }, sid);
+      assert.deepStrictEqual(pty, [], 'session:conduct sin espectadores toco el pty');
+      assert.strictEqual(A.de('session:conductor').length, 0, 'session:conductor sin espectadores');
+      await contestar(A, await unir(B, sid), { data: '' });
+      /* El navegador mide su panel: se recuerda, no llega al pty */
+      pty.length = 0;
+      onHandlers.get('ssh:resize')({ sender: B.wc }, sid, 100, 30);
+      assert.deepStrictEqual(pty, [], 'el resize de un no conductor llego al pty');
+      /* Respuestas automaticas de xterm (foco, posicion del cursor, DA): no cuentan */
+      for (const auto of ['\x1b[I', '\x1b[O', '\x1b[12;40R', '\x1b[?1;2c', '\x1b]11;rgb:0000/0000/0000\x07']) {
+        onHandlers.get('ssh:send-data')({ sender: B.wc }, sid, auto);
+      }
+      assert.deepStrictEqual(pty.filter(([c]) => c === 'ssh:resize'), [], 'una respuesta automatica cambio el tamano');
+      assert.strictEqual(registry.conductorOf(sid), A.wc, 'una respuesta automatica cambio de conductor');
+      /* Un clic / foco en el panel del navegador, sin teclear: conduce B y el pty toma su tamano */
+      pty.length = 0;
+      onHandlers.get('session:conduct')({ sender: B.wc }, sid);
+      assert.deepStrictEqual(pty, [['ssh:resize', sid, 100, 30]], `al pty llego: ${JSON.stringify(pty)}`);
+      assert.strictEqual(registry.conductorOf(sid), B.wc);
+      assert.deepStrictEqual(A.de('session:conductor').pop()[1], { sessionId: sid, conducting: false });
+      assert.deepStrictEqual(B.de('session:conductor').pop()[1], { sessionId: sid, conducting: true });
+      assert.ok(A.de('session:size').some(([, p]) => p.cols === 100 && p.rows === 30), 'la duena no supo del nuevo tamano');
+      /* Repetirlo no hace nada; un tercero ajeno no puede */
+      pty.length = 0;
+      onHandlers.get('session:conduct')({ sender: B.wc }, sid);
+      onHandlers.get('session:conduct')({ sender: D.wc }, sid);
+      onHandlers.get('session:conduct')({ sender: B.wc }, 42);
+      assert.deepStrictEqual(pty, []);
+      assert.strictEqual(registry.conductorOf(sid), B.wc, 'un tercero se hizo conductor');
+      /* De vuelta al PC: un clic alli y recupera el conductor con su tamano */
+      onHandlers.get('session:conduct')({ sender: A.wc }, sid);
+      assert.deepStrictEqual(pty, [['ssh:resize', sid, 160, 40]]);
+      assert.strictEqual(registry.conductorOf(sid), A.wc);
+      /* local:* igual */
+      const lsid = 'v16-pty';
+      registry.claim(lsid, A.wc);
+      onHandlers.get('local:resize')({ sender: A.wc }, lsid, 150, 45);
+      await contestar(A, await unir(B, lsid), { data: '' });
+      onHandlers.get('local:resize')({ sender: B.wc }, lsid, 90, 28);
+      pty.length = 0;
+      onHandlers.get('session:conduct')({ sender: B.wc }, lsid);
+      assert.deepStrictEqual(pty, [['local:resize', lsid, 90, 28]]);
+      registry.release(sid);
+      registry.release(lsid);
+      for (const V of [A, B, D]) V.win.cerrar();
+    });
+
     await check('V7 el primer resize real de un espectador abre la shell diferida (waitSize) con la duena oculta', async () => {
       sshService.resize = real.sresize;
       const [A, B] = nuevas('A-v7', 'B-v7');
@@ -579,7 +636,7 @@ async function seccionEspectadores({ check, ROOT, handlers, onHandlers }) {
       try {
         const tabs = [
           { id: 't1', type: 'local-terminal', label: 'Local Terminal', sessionId: 'pty-1', hostConfig: { password: 'nunca' } },
-          { id: 't2', type: 'terminal', label: 'Prod', hostId: 'h1', sessionId: 'ssh-2', connecting: false },
+          { id: 't2', type: 'terminal', label: 'Prod', hostId: 'h1', sessionId: 'ssh-2', connecting: false, agent: { id: 'claude', name: 'Claude Code', state: 'working', since: 5, extra: 'x' } },
           { id: 't3', type: 'sftp', label: 'SFTP' },
         ];
         let r = await handlers.get('mirror:report')({ sender: A.wc }, { tabs, layouts: {}, focusedPane: {} });
@@ -593,6 +650,8 @@ async function seccionEspectadores({ check, ROOT, handlers, onHandlers }) {
         assert.deepStrictEqual(st.data.tabs.map(t => [t.id, t.sessionId]), [['t1', 'pty-1'], ['t2', 'ssh-2']]);
         assert.strictEqual(st.data.windowId, registry.entryOf(A.wc).id);
         assert.ok(!JSON.stringify(st.data).includes('nunca'), 'el estado lleva campos de mas');
+        /* El estado del agente segun el PC viaja limpio (la web muestra ese, no su propio escaneo) */
+        assert.deepStrictEqual(st.data.tabs.map(t => t.agent), [null, { id: 'claude', name: 'Claude Code', state: 'working', since: 5 }]);
         /* Un navegador que reporta: ignorado */
         r = await handlers.get('mirror:report')({ sender: W.wc }, { tabs: [] });
         assert.strictEqual(r.data, false);

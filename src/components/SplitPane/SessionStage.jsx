@@ -1,9 +1,9 @@
 import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import TerminalView from '../Terminal/TerminalView';
 import { useApp } from '../../contexts/AppContext';
-import { FEATURES } from '../../platform';
+import { FEATURES, IS_WEB } from '../../platform';
 import {
-  layoutOf, collectIds, isTerminalTab, groupOf, focusedPaneOf, zoneFromPoint, paneName, paneTitle, cleanAlias,
+  layoutOf, collectIds, isTerminalTab, leaf, groupOf, focusedPaneOf, zoneFromPoint, paneName, paneTitle, cleanAlias,
 } from './layoutTree';
 import { useDrag, beginDrag, setDrag } from './dragState';
 import { confirmCloseSessions, endSessions } from './sessions';
@@ -178,6 +178,55 @@ function PaneHeader({ tab, color, activity, focused, renaming, onRename, onRenam
   );
 }
 
+/* Web mirror on a narrow screen (a phone): one pane at a time, full size,
+   and a row of chips to pick which. Below this width four panes side by
+   side are unreadable. */
+const NARROW_QUERY = '(max-width: 719.98px)';
+function useNarrow() {
+  const mq = IS_WEB && typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(NARROW_QUERY) : null;
+  const [narrow, setNarrow] = useState(() => !!mq && mq.matches);
+  useEffect(() => {
+    if (!mq) return undefined;
+    const on = () => setNarrow(mq.matches);
+    on();
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
+  return narrow;
+}
+
+/* The chips: each pane's name in its colour, and what its agent is doing
+   (a dot that pulses while it works, amber while it waits for you), so a
+   pane that is not on screen still shows it is busy. */
+function PanePicker({ panes, current, hosts, onPick }) {
+  return (
+    <div className="pane-picker" role="tablist" aria-label="Panes">
+      {panes.map((t) => {
+        const color = tabColor(t, hosts);
+        const st = t.agent && t.agent.state;
+        const agent = st === 'working' ? 'working' : st === 'blocked' ? 'waiting' : null;
+        return (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={t.id === current}
+            className={`pane-chip${t.id === current ? ' active' : ''}`}
+            data-pane-chip={t.id}
+            style={color ? { '--pane-color': color } : undefined}
+            title={paneTitle(t)}
+            onClick={() => onPick(t.id)}
+          >
+            <span className="pane-chip-swatch" aria-hidden="true" />
+            <span className="pane-chip-name">{paneName(t)}</span>
+            {agent && <span className={`pane-chip-agent ${agent}`} data-chip-agent={agent} role="img" aria-label={agent === 'working' ? 'Agent working' : 'Agent waiting for you'} />}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 const ZONE_TEXT = { left: 'Left', right: 'Right', top: 'Top', bottom: 'Bottom', center: 'Swap' };
 
 export default function SessionStage() {
@@ -206,13 +255,18 @@ export default function SessionStage() {
 
   const active = byId.get(activeTabId);
   const groupId = active && !active.hidden ? active.id : null;
-  const tree = groupId ? layoutOf(layouts, groupId) : null;
+  const fullTree = groupId ? layoutOf(layouts, groupId) : null;
+  const allPaneIds = collectIds(fullTree);
+  const narrow = useNarrow() && allPaneIds.length > 1;
+  const focusId = groupId ? focusedPaneOf(state, groupId) : null;
+  /* Narrow: the focused pane alone, the others behind the chips */
+  const soloId = narrow ? (allPaneIds.includes(focusId) ? focusId : allPaneIds[0]) : null;
+  const tree = soloId ? leaf(soloId) : fullTree;
   const paneIds = collectIds(tree);
   const multi = paneIds.length > 1;
   const treeKey = tree ? JSON.stringify(tree) : '';
   /* The same without divider ratios: releasing a divider is not a new layout */
   const shapeKey = tree ? JSON.stringify(tree, (k, v) => (k === 'ratio' ? undefined : v)) : '';
-  const focusId = groupId ? focusedPaneOf(state, groupId) : null;
   const paneIdsRef = useRef(paneIds);
   paneIdsRef.current = paneIds;
 
@@ -325,7 +379,15 @@ export default function SessionStage() {
   const isSelf = (id) => drag?.kind === 'pane' && drag.paneId === id;
 
   return (
-    <div className="session-stage" ref={stageRef} style={{ display: groupId ? 'flex' : 'none' }}>
+    <div className={`session-stage${narrow ? ' narrow' : ''}`} ref={stageRef} style={{ display: groupId ? 'flex' : 'none' }}>
+      {narrow && (
+        <PanePicker
+          panes={allPaneIds.map(id => byId.get(id)).filter(Boolean)}
+          current={soloId}
+          hosts={state.hosts}
+          onPick={(id) => focusPane(groupId, id)}
+        />
+      )}
       <div className="split-skeleton">
         {tree && <Skeleton key={`${groupId}|${sig(tree)}`} node={tree} path={[]} slotRef={slotRef} onRatio={onRatio} />}
       </div>

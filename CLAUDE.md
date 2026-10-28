@@ -139,8 +139,14 @@ PC's tabs and sessions. Code in `electron/web/`; browser bundle from `vite.web.c
   until added there. Each browser is a virtual webContents (id ≥ 1000000) in `window-registry`.
 - **A browser never owns a session.** It joins as a viewer (`session:join`), output fans out in main
   (the keeper takes one client only — never a second attach). Tab changes from the web are
-  `mirror:command`s executed by the PC renderer. The pty size follows the last client that typed
-  (`session:size`, `session:conductor`).
+  `mirror:command`s executed by the PC renderer. The pty size follows the last client that typed in,
+  clicked or focused that pane (`session:conduct`, `session:size`, `session:conductor`; xterm's
+  automatic replies never count). A client that does not conduct keeps the pty's cols/rows and scales
+  its xterm to fit (CSS transform) — only while someone else conducts, never with the web off.
+- **Layout is per client:** the browser takes the PC's pane *structure*; divider ratios and Arrange
+  panes are its own (`mergeMirrorLayouts`), kept until the PC's structure changes. Under 720 px the
+  web shows one pane at a time with chips. The agent state shown in the web is the PC's (`agent` in
+  `mirror:report`), not the browser's own scan.
 - Approvals (destructive agent commands, new host keys) go to every client; first answer wins.
 
 ### Build pipeline quirk

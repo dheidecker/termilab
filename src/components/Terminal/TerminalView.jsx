@@ -35,6 +35,18 @@ import { terminalFontFamily } from './fontStack';
 
 const hasApi = () => typeof window !== 'undefined' && !!window.electronAPI;
 
+/* Who conducts a shared session's size (window-registry.js) follows the
+   user: the pane this renderer's user touched last (click, focus, key), and
+   when the last real gesture happened (a focus right after one is the user's,
+   one out of the blue is the app focusing a pane by itself). */
+let lastTouchedSid = null;
+let lastGesture = { at: 0, key: false, target: null };
+if (typeof window !== 'undefined') {
+  const gesture = (e) => { lastGesture = { at: Date.now(), key: e.type === 'keydown', target: e.target || null }; };
+  for (const ev of ['pointerdown', 'keydown', 'touchstart']) window.addEventListener(ev, gesture, { capture: true, passive: true });
+}
+const GESTURE_FOCUS_MS = 700;
+
 export default function TerminalView({ tab }) {
   const { state, dispatch, actions } = useApp();
   const termRef = useRef(null);
@@ -295,6 +307,45 @@ export default function TerminalView({ tab }) {
        size: {cols, rows} the pty has, which this xterm follows until the
        user types here again. Null: this pane's own fit rules. */
     let follow = null;
+    /* Following: the xterm keeps the pty's cols/rows and is SCALED to fit
+       its pane (CSS transform, origin top left) instead of being cut off or
+       overflowing. Only ever while another client conducts, so a desktop
+       with nobody watching never scales. */
+    let scaled = false;
+    let scaleKey = '';
+    const fitScale = () => {
+      const el = term.element;
+      const box = containerRef.current;
+      if (!el || !box || disposed) return;
+      if (!follow) {
+        if (scaled) {
+          el.style.width = ''; el.style.height = ''; el.style.transform = ''; el.style.transformOrigin = '';
+          scaled = false;
+          scaleKey = '';
+        }
+        return;
+      }
+      const screen = el.querySelector('.xterm-screen');
+      if (!screen) return;
+      const vp = el.querySelector('.xterm-viewport');
+      const bar = vp && vp.clientWidth > 0 ? Math.min(24, Math.max(0, vp.offsetWidth - vp.clientWidth)) : 0;
+      const w = screen.offsetWidth + bar;
+      const h = screen.offsetHeight;
+      const cs = getComputedStyle(box);
+      const aw = box.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+      const ah = box.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+      if (!w || !h || aw <= 0 || ah <= 0) return;
+      const key = `${w}x${h}@${aw}x${ah}`;
+      if (key === scaleKey) return;
+      scaleKey = key;
+      /* Never enlarged (blurry); a hair under the exact fit so rounding never overflows */
+      const k = Math.min(1, aw / w, ah / h);
+      el.style.width = `${w}px`;
+      el.style.height = `${h}px`;
+      el.style.transformOrigin = '0 0';
+      el.style.transform = k < 1 ? `scale(${Math.floor(k * 1000) / 1000})` : '';
+      scaled = true;
+    };
     const pushSize = (force = false) => {
       if (!sendSize || disposed || !laidOut()) return;
       /* Following the conductor: its size is not ours to report */
@@ -368,15 +419,21 @@ export default function TerminalView({ tab }) {
          else shows the session). Stop following and fit back to the pane. */
       if (p.release) {
         follow = null;
+        conductor = true;
+        fitScale();
         try { fitAddon.fit(); } catch (_) { /* not laid out */ }
         pushSize();
         return;
       }
       const { cols, rows } = p;
       if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols <= 0 || rows <= 0) return;
-      if (cols === term.cols && rows === term.rows) { follow = null; return; }
+      /* Its own size echoed back (it conducts): nothing to follow */
+      if (cols === term.cols && rows === term.rows && conductor) { follow = null; fitScale(); return; }
       follow = { cols, rows };
-      try { term.resize(cols, rows); } catch (_) { /* disposed */ }
+      if (cols !== term.cols || rows !== term.rows) {
+        try { term.resize(cols, rows); } catch (_) { /* disposed */ }
+      }
+      requestAnimationFrame(fitScale);
     }) || null;
     /* OSC 52 copies apply only in the client that typed last in this
        session (main: 'session:conductor'), so the PC and a browser never
@@ -384,16 +441,57 @@ export default function TerminalView({ tab }) {
        conducts until the browser types. Typing or clicking here takes it
        back at once (main agrees as soon as the input arrives). */
     let conducting = !(IS_WEB && tab.mirror);
+    /* What main last said (conducting above is also set optimistically by a
+       key or a mouse press, for OSC 52) */
+    let conductor = !(IS_WEB && tab.mirror);
     const conductorListener = window.electronAPI?.session?.onConductor?.((p) => {
       if (disposed || !p || p.sessionId !== sessionIdRef.current) return;
       conducting = !!p.conducting;
+      conductor = !!p.conducting;
+      /* Someone else conducts at this very size: keep it (and scale) even if this pane changes */
+      if (!conductor && !follow && term.cols > 0 && term.rows > 0) follow = { cols: term.cols, rows: term.rows };
     }) || null;
-    const followKey = term.onKey(() => {
-      if (!follow) return;
-      follow = null;
-      try { fitAddon.fit(); } catch (_) { /* not laid out */ }
+    /* The user interacted with this pane (a key, a click, a focus they caused,
+       its window resized while it was the last one touched): this client
+       conducts the size. Its fitted size first, then 'session:conduct', so
+       the pty takes exactly that. Nobody else on the session (no viewers):
+       nothing to do, nothing sent. */
+    const claim = () => {
+      const sid = sessionIdRef.current;
+      if (disposed || !sid) return;
+      lastTouchedSid = sid;
+      if (!follow && conductor) return;
+      conductor = true;
+      conducting = true;
+      if (follow) {
+        follow = null;
+        fitScale();
+        try { fitAddon.fit(); } catch (_) { /* not laid out */ }
+      }
       pushSize(true);
-    });
+      window.electronAPI?.session?.conduct?.(sid);
+    };
+    const followKey = term.onKey(() => claim());
+    const followRender = term.onRender(() => { if (follow) fitScale(); });
+    /* A focus the user caused: a key (Tab, a shortcut) or a press inside
+       this pane. Not the app focusing a pane by itself (a tab opened, a
+       layout changed): opening a tab is not taking over its sessions. */
+    const onPaneFocus = () => {
+      const g = lastGesture;
+      if (Date.now() - g.at > GESTURE_FOCUS_MS) return;
+      const box = containerRef.current;
+      if (g.key || (box && g.target instanceof Node && box.contains(g.target))) claim();
+    };
+    term.textarea?.addEventListener('focus', onPaneFocus);
+    let winResizeTimer = 0;
+    const onWinResize = () => {
+      clearTimeout(winResizeTimer);
+      winResizeTimer = setTimeout(() => {
+        if (disposed || !sessionIdRef.current || lastTouchedSid !== sessionIdRef.current || !laidOut()) return;
+        claim();
+      }, 150);
+    };
+    window.addEventListener('resize', onWinResize);
 
     /* ─── Attention: bell mark, agent chime, desktop notification ───
        Agent CLIs (Claude Code, Codex...) end a turn with BEL or a
@@ -468,6 +566,9 @@ export default function TerminalView({ tab }) {
     let lastKey = 0;
     const onKey = () => { lastKey = Date.now(); };
     const publish = (agent) => {
+      /* Web mirror: the PC's own scan (mirror:state) is the one shown; this
+         xterm may be scaled or freshly joined and read the screen wrong */
+      if (IS_WEB && tab.mirror) return;
       const live = tabLiveRef.current || tab;
       dispatch({ type: 'AGENT_STATE', payload: { id: live.id, agent } });
     };
@@ -764,7 +865,7 @@ export default function TerminalView({ tab }) {
        on the document, since a drag may end outside the pane. */
     let lastSelected = '';
     let selecting = false;
-    const onSelectStart = (e) => { conducting = true; if (e.button === 0) selecting = true; };
+    const onSelectStart = (e) => { conducting = true; claim(); if (e.button === 0) selecting = true; };
     const onSelectEnd = (e) => {
       if (e.button !== 0 || !selecting) return;
       selecting = false;
@@ -1211,6 +1312,7 @@ export default function TerminalView({ tab }) {
         if (p.sized && Number.isInteger(p.cols) && Number.isInteger(p.rows) && p.cols > 0 && p.rows > 0) {
           follow = { cols: p.cols, rows: p.rows };
           try { term.resize(p.cols, p.rows); } catch (_) { /* disposed */ }
+          requestAnimationFrame(fitScale);
         }
         if (p.data) term.write(p.data);
         if (!p.history) term.writeln('\x1b[2m[Joined live: earlier output is not available here]\x1b[0m');
@@ -1254,7 +1356,8 @@ export default function TerminalView({ tab }) {
 
     /* ResizeObserver for auto-fit (an adopted screen: once it is written) */
     const ro = new ResizeObserver(() => {
-      if (follow) return;   // another client conducts the size (see sizeListener)
+      /* Another client conducts the size (see sizeListener): only rescale */
+      if (follow) { fitScale(); return; }
       try { fitAddon.fit(); } catch (e) { /* ignore */ }
       /* Shown at last (a tab restored hidden), or at a size equal to the
          placeholder: nothing resized, but the pty has not heard it yet */
@@ -1284,7 +1387,8 @@ export default function TerminalView({ tab }) {
       const fam = term.options.fontFamily;
       term.options.fontFamily = 'monospace';
       term.options.fontFamily = fam;
-      try { fitAddon.fit(); } catch (e) { /* not laid out */ }
+      if (follow) requestAnimationFrame(fitScale);
+      else try { fitAddon.fit(); } catch (e) { /* not laid out */ }
       term.refresh(0, term.rows - 1);
     };
     const fonts = document.fonts;
@@ -1318,6 +1422,10 @@ export default function TerminalView({ tab }) {
       if (sizeListener) window.electronAPI?.session?.offEvents?.(sizeListener);
       if (conductorListener) window.electronAPI?.session?.offEvents?.(conductorListener);
       followKey.dispose();
+      followRender.dispose();
+      term.textarea?.removeEventListener('focus', onPaneFocus);
+      window.removeEventListener('resize', onWinResize);
+      clearTimeout(winResizeTimer);
       clearTimeout(scanTimer);
       for (const id of [...talkWatches.keys()]) talkDrop(id);
       if (talkRef.current === talk) talkRef.current = null;

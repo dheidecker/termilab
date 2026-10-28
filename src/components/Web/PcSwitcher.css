@@ -140,3 +140,19 @@ button.pc-switcher-item:focus-visible {
   outline: none;
   border-color: var(--border-focus);
 }
+
+/* Web mirror on a phone: the top bar keeps the open tab readable. "Hosts"
+   and "PC:" go down to their icon / the name, tabs may shrink. Desktop
+   windows (no .app-web) are untouched. */
+@media (max-width: 719.98px) {
+  .app-web .tab-home .tab-label,
+  .app-web .pc-switcher-label { display: none; }
+  .app-web .tab-home { padding: 0 9px; }
+  .app-web .tab { min-width: 108px; max-width: 150px; flex-shrink: 1; padding: 0 6px 0 8px; gap: 5px; }
+  .app-web .tab:not(.tab-home) .tab-icon { display: none; }
+  .app-web .tab-home { min-width: 0; flex-shrink: 0; }
+  .app-web .pc-switcher-btn { max-width: 92px; }
+  /* One pane at a time there (SessionStage's chips): nothing to arrange */
+  .app-web .arrange-group { display: none; }
+  .app-web .tab-bar-drag { min-width: 0; }
+}

@@ -541,6 +541,15 @@ function registerIpcHandlers(mainWindow) {
     sshService.sendData(sessionId, data);
   });
 
+  /* Any client of a session (PC window or browser) clicked or focused its
+     pane, or resized its window with that pane last touched: it conducts
+     the size from now on, as if it had typed. Its resize (sent just before)
+     is the size the pty takes. ssh and local sessions alike. */
+  ipcMain.on('session:conduct', (event, sessionId) => {
+    if (typeof sessionId !== 'string' || !mayUse(event, sessionId, 'session:conduct')) return;
+    windowRegistry.takeConductor(sessionId, event && event.sender);
+  });
+
   ipcMain.on('ssh:resize', (event, sessionId, cols, rows) => {
     if (!mayUse(event, sessionId, 'ssh:resize')) return;
     windowRegistry.resize(sessionId, event && event.sender, cols, rows, (c, r) => sshService.resize(sessionId, c, r));
@@ -1360,6 +1369,7 @@ function removeIpcHandlers() {
 
   ipcMain.removeAllListeners('ssh:send-data');
   ipcMain.removeAllListeners('ssh:resize');
+  ipcMain.removeAllListeners('session:conduct');
   ipcMain.removeAllListeners('local:write');
   ipcMain.removeAllListeners('local:resize');
   ipcMain.removeAllListeners('window:minimize');

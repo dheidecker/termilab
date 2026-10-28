@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../contexts/AppContext';
-import { FEATURES, IS_WEB } from '../../platform';
+import { FEATURES } from '../../platform';
 import { layoutOf, collectIds, isTerminalTab } from '../SplitPane/layoutTree';
 
 /*
@@ -9,8 +9,10 @@ import { layoutOf, collectIds, isTerminalTab } from '../SplitPane/layoutTree';
  * layout tree changes (SplitPane/arrange.js): the same sessions stay in the
  * same panes, and xterm's ResizeObserver refits each one and resizes its pty.
  *
- * Not on the web mirror: its layout comes from the PC and mirror:command has
- * no order for it. Not on Android (no split panes).
+ * On the web mirror it arranges this browser's own copy only: the panes come
+ * from the PC, their sizes are each browser's (Mirror/mirror.js
+ * mergeMirrorLayouts), and nothing is sent to the PC. Not on Android (no
+ * split panes).
  */
 
 const Svg = ({ children }) => (
@@ -51,7 +53,7 @@ export default function ArrangeButton() {
     return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc); };
   }, [menu]);
 
-  if (IS_WEB || !FEATURES.splitPanes) return null;
+  if (!FEATURES.splitPanes) return null;
 
   const openMenu = (e) => {
     e.preventDefault();

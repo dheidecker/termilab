@@ -48,7 +48,7 @@ const WEB_CHANNELS = new Set([
   'local:write', 'local:resize',
   'local:keeper-foreground', 'local:keeper-list',
   // Viewer of the PC's sessions (window-registry.js)
-  'session:join', 'session:leave', 'session:snapshot',
+  'session:join', 'session:leave', 'session:snapshot', 'session:conduct',
   // The PC window's tabs, and orders for it
   'mirror:state', 'mirror:command', 'mirror:select',
   // Hosts, groups, snippets, settings: read. Keys and stored forwards are read
